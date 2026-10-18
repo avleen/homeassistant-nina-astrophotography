@@ -404,7 +404,7 @@ and `autofocus_timeout`. Coverage is incomplete:
 The dome entities were built from the API specification and have not been
 tested with real dome hardware. If you have a dome, please report what works
 and what doesn't on the
-[issue tracker](https://github.com/avleen/homeassistant-nina-astrophotography/issues).
+[issue tracker](https://github.com/dgivens/homeassistant-nina-astrophotography/issues).
 
 `switch.<instance>_livestack` exists whether or not the Livestack plugin is
 installed. Without the plugin it reads `off`, and turning it on raises an

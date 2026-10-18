@@ -9,16 +9,18 @@ Monitor and control a [N.I.N.A.](https://nighttime-imaging.eu) imaging rig from
 Home Assistant, through N.I.N.A.'s
 [Advanced API plugin](https://github.com/christian-photo/ninaAPI) (v2).
 
-You get sensors for the camera, mount, focuser, guider, weather and the
-current session; buttons and actions to cool, slew, park, focus and run
-sequences; Home Assistant events for everything N.I.N.A. reports; six
-dashboard cards; and six automation blueprints.
+It provides:
 
-This is a fork of
-[dgivens/homeassistant-nina-astrophotography](https://github.com/dgivens/homeassistant-nina-astrophotography),
-which is itself a fork of the original
-[C3X0Astro/homeassistant-nina-astrophotography](https://github.com/C3X0Astro/homeassistant-nina-astrophotography).
-Licensed GPL-3.0, like the original.
+- sensors for the camera, mount, focuser, guider, weather and the current
+  session
+- buttons and actions to cool, slew, park, focus and run sequences
+- Home Assistant events for everything N.I.N.A. reports
+- six dashboard cards
+- six automation blueprints
+
+This is a maintained fork of
+[C3X0Astro/homeassistant-nina-astrophotography](https://github.com/C3X0Astro/homeassistant-nina-astrophotography),
+which is no longer updated. Licensed GPL-3.0, like the original.
 
 **Upgrading from 1.4.x?** Follow [the upgrade guide](docs/upgrading-to-2.0.md)
 first.
@@ -39,7 +41,7 @@ first.
 ### With HACS
 
 1. In HACS, open the **⋮** menu → **Custom repositories**.
-2. Enter `https://github.com/avleen/homeassistant-nina-astrophotography`, choose
+2. Enter `https://github.com/dgivens/homeassistant-nina-astrophotography`, choose
    type **Integration**, and click **Add**.
 3. Search HACS for **N.I.N.A. Astrophotography** and click **Download**.
 4. Restart Home Assistant.
@@ -161,12 +163,12 @@ on the imported blueprint and pick your rig's entities.
 
 | Blueprint | What it does |
 |---|---|
-| [Unsafe conditions abort](https://github.com/avleen/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/weather_abort.yaml) | When the safety monitor reports unsafe or stops reporting: stop the sequence, park, warm the camera, close the dome. Can resume when conditions clear. |
-| [Session startup](https://github.com/avleen/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/session_startup.yaml) | Unpark, start tracking, open the dome, cool the camera, load and start a sequence. |
-| [Session shutdown](https://github.com/avleen/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/session_shutdown.yaml) | At a set time: stop, park, warm the camera, close the dome. |
-| [Meridian flip warning](https://github.com/avleen/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/meridian_flip_warning.yaml) | Notifies before a meridian flip, when it starts, and when it finishes. |
-| [Guiding alert](https://github.com/avleen/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/guiding_alert.yaml) | Notifies, and optionally runs autofocus, when guiding RMS stays high. |
-| [Imaging stall alert](https://github.com/avleen/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/imaging_stall_alert.yaml) | Notifies when frames stop for a bad reason (N.I.N.A. unreachable, mount parked mid-sequence, no frames), and clears when they resume. [Details](docs/reference.md#the-imaging-stall-alert-blueprint). |
+| [Unsafe conditions abort](https://github.com/dgivens/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/weather_abort.yaml) | When the safety monitor reports unsafe or stops reporting: stop the sequence, park, warm the camera, close the dome. Can resume when conditions clear. |
+| [Session startup](https://github.com/dgivens/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/session_startup.yaml) | Unpark, start tracking, open the dome, cool the camera, load and start a sequence. |
+| [Session shutdown](https://github.com/dgivens/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/session_shutdown.yaml) | At a set time: stop, park, warm the camera, close the dome. |
+| [Meridian flip warning](https://github.com/dgivens/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/meridian_flip_warning.yaml) | Notifies before a meridian flip, when it starts, and when it finishes. |
+| [Guiding alert](https://github.com/dgivens/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/guiding_alert.yaml) | Notifies, and optionally runs autofocus, when guiding RMS stays high. |
+| [Imaging stall alert](https://github.com/dgivens/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/imaging_stall_alert.yaml) | Notifies when frames stop for a bad reason (N.I.N.A. unreachable, mount parked mid-sequence, no frames), and clears when they resume. [Details](docs/reference.md#the-imaging-stall-alert-blueprint). |
 
 Alternatively, copy the `blueprints/automation/nina_astrophotography/` folder
 into `config/blueprints/automation/` and reload automations.
@@ -285,5 +287,5 @@ others. Cards aren't affected, but your automations are.
 `last_image_*` sensors show the last light frame.
 
 **Dome problems.** The dome support hasn't been tested on real hardware.
-Please [open an issue](https://github.com/avleen/homeassistant-nina-astrophotography/issues)
+Please [open an issue](https://github.com/dgivens/homeassistant-nina-astrophotography/issues)
 with what you see.
