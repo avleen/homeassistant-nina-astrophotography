@@ -52,6 +52,11 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
   darker counterpart of its colour, at least 3:1 on white, so R still reads
   as red and Ha as rose. A filter keeps its slot's colour whichever theme is
   showing, and the dark colours are unchanged.
+- **A good autofocus is no longer reported as rejected** (#201).
+  `binary_sensor.<instance>_focuser_autofocus_failed` and the autofocus card
+  judged a run on its worst curve, even one its fitting doesn't use, such as a
+  trend line on a `HYPERBOLIC` run. A run is now judged only on the curves its
+  fitting uses, and the card's legend marks the others `not judged`.
 
 ---
 
