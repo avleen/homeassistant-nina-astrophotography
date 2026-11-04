@@ -472,14 +472,15 @@ class NinaFrameStatsCard extends HTMLElement {
 
     if (hasData) {
       requestAnimationFrame(() => {
-        this._drawSparkline("hfr-chart", this._hfr, "#7b8de8", true, lightColours);
-        this._drawSparkline("stars-chart", this._stars, "#5bcfcf", false, lightColours);
-        this._drawSparkline("adu-chart", this._adu, "#f4a261", false, lightColours);
+        this._drawSparkline("hfr-chart", this._hfr, "#7b8de8", true, lightColours, 2);
+        this._drawSparkline("stars-chart", this._stars, "#5bcfcf", false, lightColours, 0);
+        this._drawSparkline("adu-chart", this._adu, "#f4a261", false, lightColours, 0);
       });
     }
   }
 
-  _drawSparkline(canvasId, data, fillColour, showAvgLine, colours) {
+  // Prints the series' high and low on the left and its newest value on the right.
+  _drawSparkline(canvasId, data, fillColour, showAvgLine, colours, digits) {
     const canvas = this.shadowRoot.getElementById(canvasId);
     if (!canvas) return;
 
@@ -497,7 +498,8 @@ class NinaFrameStatsCard extends HTMLElement {
     const minVal = Math.min(...valid) * 0.95;
     const maxVal = Math.max(...valid) * 1.05;
     const range = maxVal - minVal || 1;
-    const pad = { l: 4, r: 4, t: 6, b: 4 };
+    // The side margins hold the numbers: five digits of ADU at 10 px.
+    const pad = { l: 34, r: 36, t: 6, b: 4 };
     const plotW = W - pad.l - pad.r;
     const plotH = H - pad.t - pad.b;
 
@@ -600,18 +602,25 @@ class NinaFrameStatsCard extends HTMLElement {
       }
     }
 
-    const lastY = yOf(data[data.length - 1]);
-    if (lastY !== null) {
-      const v = data[data.length - 1];
-      const label = typeof v === "number" && v > 100
-        ? Math.round(v).toString()
-        : typeof v === "number"
-        ? v.toFixed(2)
-        : "";
-      ctx.font = "bold 10px sans-serif";
-      ctx.fillStyle = "rgba(255,255,255,0.85)";
-      ctx.fillText(label, xOf(data.length - 1) + 4, Math.max(lastY, 14));
+    // The high and low sit at the margin's ends, not level with their points:
+    // on a flat night those are within a line of text of each other.
+    ctx.font = "9px sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,0.55)";
+    ctx.textAlign = "right";
+    const high = Math.max(...valid);
+    const low = Math.min(...valid);
+    ctx.fillText(high.toFixed(digits), pad.l - 5, pad.t + 7);
+    if (low.toFixed(digits) !== high.toFixed(digits)) {
+      ctx.fillText(low.toFixed(digits), pad.l - 5, H - pad.b);
     }
+
+    // Beside the newest frame that measured anything, kept on the canvas.
+    const newest = data.length - 1 - [...data].reverse().findIndex((v) => v !== null);
+    ctx.font = "bold 10px sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.textAlign = "left";
+    ctx.fillText(data[newest].toFixed(digits), W - pad.r + 6,
+      Math.min(Math.max(yOf(data[newest]) + 3, 9), H - 2));
   }
 
   getCardSize() { return 7; }
