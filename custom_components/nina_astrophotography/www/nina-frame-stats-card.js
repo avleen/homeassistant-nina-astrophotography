@@ -2,8 +2,7 @@
  * N.I.N.A. Frame Statistics Card
  * Displays per-frame HFR trend, star count, ADU sparklines and per-filter
  * frame counts for the session's recent lights, published by the integration
- * so they survive a page reload. Each sparkline prints its high and low on the
- * left and the newest frame's value on the right.
+ * so they survive a page reload.
  *
  * Ships with the integration and registers itself as a dashboard resource —
  * nothing to copy or add under Resources. One rig needs no configuration at
@@ -480,6 +479,7 @@ class NinaFrameStatsCard extends HTMLElement {
     }
   }
 
+  // Prints the series' high and low on the left and its newest value on the right.
   _drawSparkline(canvasId, data, fillColour, showAvgLine, colours, digits) {
     const canvas = this.shadowRoot.getElementById(canvasId);
     if (!canvas) return;
