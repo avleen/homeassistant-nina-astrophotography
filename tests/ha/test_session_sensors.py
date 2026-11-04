@@ -48,7 +48,9 @@ async def test_the_last_image_sensors_ignore_calibration_frames(
 async def test_integration_time_sums_actual_exposures(
     hass: HomeAssistant, loaded_entry: MockConfigEntry, advance
 ) -> None:
-    """Count x shortest exposure gives 2.75 h on this night — a 2.25x error."""
+    """Each frame's own exposure, summed: the night mixes exposure lengths, so
+    count x shortest exposure would read 2.75 h.
+    """
     await advance("dawn_flats")
     assert float(state_of(hass, SESSION_INTEGRATION_TIME).state) == pytest.approx(
         6.20, abs=0.02
@@ -84,25 +86,48 @@ async def test_recent_frames_is_every_type_newest_first_and_bounded(
     hass: HomeAssistant, loaded_entry: MockConfigEntry, advance
 ) -> None:
     """Unlike the sensor's own LIGHT-only state, `recent_frames` is every type
-    this process saved, which a dashboard's strip must label correctly
-    whatever it lands on. The newest frame of the night is a flat, not a
-    light (see the ignores-calibration test above).
+    this process saved, each carrying its own, which a dashboard's strip must
+    label correctly whatever it lands on: filter alone cannot tell a flat from
+    a light. The newest frame of the night is a flat (see the
+    ignores-calibration test above).
     """
     await advance("dawn_flats")
     recent = state_of(hass, LAST_IMAGE_MEAN_ADU).attributes["recent_frames"]
     assert len(recent) == 20
-    assert recent[0]["mean"] == pytest.approx(33139.77, abs=0.01)
-
-
-async def test_recent_frames_name_their_type(
-    hass: HomeAssistant, loaded_entry: MockConfigEntry, advance
-) -> None:
-    """A strip of flats must not read as a run of lights: filter alone cannot
-    tell them apart, so each frame carries its type.
-    """
-    await advance("dawn_flats")
-    recent = state_of(hass, LAST_IMAGE_MEAN_ADU).attributes["recent_frames"]
     assert recent[0]["image_type"] == "FLAT"
+
+
+def _number(state: str):
+    return pytest.approx(float(state))
+
+
+@pytest.mark.parametrize(
+    ("field", "sensor", "parse"),
+    [
+        ("hfr", LAST_IMAGE_HFR, _number),
+        ("stars", "sensor.n_i_n_a_last_image_star_count", _number),
+        ("exposure", "sensor.n_i_n_a_last_image_exposure", _number),
+        ("rms", "sensor.n_i_n_a_last_image_rms", _number),
+        ("target", "sensor.n_i_n_a_last_image_target", str),
+    ],
+)
+async def test_recent_frames_carry_each_frames_own_readings(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    rig,
+    set_up_at,
+    freezer,
+    field: str,
+    sensor: str,
+    parse,
+) -> None:
+    """The panel describes the frame it shows, which can be any of these. While
+    guiding the newest frame is the newest light, so it reads as the sensor does.
+    """
+    freezer.move_to("2026-09-05T06:43:39+00:00")  # the capture, in its session
+    await set_up_at(hass, config_entry, rig, "imaging_guiding")
+    recent = state_of(hass, LAST_IMAGE_MEAN_ADU).attributes["recent_frames"]
+    assert recent[0][field] == parse(state_of(hass, sensor).state)
 
 
 async def test_recent_lights_survive_a_dawn_flat_run(
@@ -151,9 +176,8 @@ async def test_the_session_start_sensor_is_the_most_recent_local_noon(
 
 @pytest.mark.parametrize(
     "suffix",
-    # The 1.4.5 spellings are the point: the pushed family won (§5.2.4), so the
-    # survivor keeps the PUSHED entity's unique_id and the polled duplicate is
-    # the one that goes.
+    # The 1.4.5 spellings are the point: of the two families §5.2.4 collapses,
+    # the survivor keeps the PUSHED entity's unique_id.
     [
         "frame_session_count",
         "frame_session_integration",
@@ -185,7 +209,7 @@ async def test_a_surviving_session_sensor_keeps_its_1_4_5_unique_id(
         "image_last_mean_adu",
         "image_count",
         # ...and the pushed family's presentation tail, which the cards compute
-        # for themselves in phase D.
+        # for themselves.
         "frame_rolling_avg_hfr",
         "frame_rolling_avg_stars",
         "frame_rolling_avg_adu",

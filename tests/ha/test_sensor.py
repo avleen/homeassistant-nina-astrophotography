@@ -28,6 +28,11 @@ SEQUENCE_PROGRESS = "sensor.n_i_n_a_sequence_progress"
 WAIT_ENDS_AT = "sensor.n_i_n_a_wait_ends_at"
 LAST_FRAME_AT = "sensor.n_i_n_a_last_frame_at"
 SITE_LATITUDE = "sensor.n_i_n_a_site_latitude"
+GUIDER_RMS = (
+    "sensor.n_i_n_a_guider_rms_total",
+    "sensor.n_i_n_a_guider_rms_ra",
+    "sensor.n_i_n_a_guider_rms_declination",
+)
 
 
 async def test_the_meridian_sentinel_is_unknown_but_a_real_reading_is_minutes(
@@ -76,7 +81,7 @@ async def test_the_cut_sensors_are_not_registered(
 ) -> None:
     """§5.2.3's read-only mirrors, the driver names §5.1 moved onto the device
     registry, and `sequence_status` — node status persists from prior runs, so
-    it reported RUNNING on an idle rig (§6.2).
+    it reads RUNNING on an idle rig (§6.2).
     """
     await advance("imaging_guiding")
     assert registered(SENSOR_DOMAIN, entity_registry, loaded_entry, suffix) is None
@@ -119,6 +124,33 @@ async def test_the_kept_sensors_keep_their_1_4_5_unique_id(
     assert registered(SENSOR_DOMAIN, entity_registry, loaded_entry, suffix) is not None
 
 
+@pytest.mark.parametrize(
+    "state",
+    [
+        "scheduler_waiting_lost_lock",
+        "simulator_guider_calibrating",
+        "simulator_guider_connected",
+    ],
+)
+async def test_guide_rms_reads_unknown_unless_the_guider_is_guiding(
+    hass: HomeAssistant, config_entry, rig, set_up_at, state: str
+) -> None:
+    """Outside `Guiding`, N.I.N.A. reports the last run's RMS or 0, and either
+    in long-term statistics is guiding that never happened.
+    """
+    await set_up_at(hass, config_entry, rig, state)
+    readings = [state_of(hass, entity_id).state for entity_id in GUIDER_RMS]
+    assert readings == ["unknown"] * 3
+
+
+async def test_guide_rms_reads_the_reported_figures_while_guiding(
+    hass: HomeAssistant, config_entry, rig, set_up_at
+) -> None:
+    await set_up_at(hass, config_entry, rig, "imaging_guiding")
+    readings = [float(state_of(hass, entity_id).state) for entity_id in GUIDER_RMS]
+    assert readings == pytest.approx([0.413, 0.369, 0.184], abs=0.001)
+
+
 async def test_the_sequence_target_is_the_one_the_scheduler_announced(
     hass: HomeAssistant, loaded_entry
 ) -> None:
@@ -132,8 +164,9 @@ async def test_the_sequence_target_is_the_one_the_scheduler_announced(
 async def test_sequence_progress_is_unknown_where_no_node_counts_iterations(
     hass: HomeAssistant, loaded_entry, entity_registry
 ) -> None:
-    """The truth about what this API exposes on a Target Scheduler rig.
-    Inventing a percentage from node statuses would be worse (§6.2).
+    """No node on a Target Scheduler rig counts iterations, so there is no
+    percentage to report; inventing one from node statuses would be worse
+    (§6.2).
     """
     entity_registry.async_update_entity(SEQUENCE_PROGRESS, disabled_by=None)
     await hass.config_entries.async_reload(loaded_entry.entry_id)
@@ -146,7 +179,7 @@ async def test_the_flip_sensor_publishes_the_offset_a_warning_needs(
 ) -> None:
     """`meridian_flip_warning.yaml` reads this attribute by name to place its
     early warning. Rename or drop it and the blueprint silently falls back to
-    warning AT the flip — which is the bug the attribute exists to fix.
+    warning AT the flip.
     """
     flip = state_of(hass, FLIP)
 

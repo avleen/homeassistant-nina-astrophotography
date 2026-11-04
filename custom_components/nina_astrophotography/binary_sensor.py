@@ -5,6 +5,10 @@ A disconnected device makes its entities unavailable, so equipment has no
 dropped monitor from N.I.N.A. unreachable or Home Assistant restarting, and a
 roof-close automation must act on the first.
 
+`reachable` is the same idea for N.I.N.A. itself: it turns `off` on the first
+failed poll and stays available through the outage, while every other entity
+keeps its last value for the grace period and then goes unavailable.
+
 **`safety_unsafe` is `on` when conditions are unsafe**, as Home Assistant's
 `SAFETY` device class means it.
 """
@@ -24,8 +28,14 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .coordinator import NinaConfigEntry, NinaData
-from .device import observed, read_field
-from .entity import NinaDescribedEntity, NinaEntityDescription, async_add_observed
+from .device import read_field, supports
+from .entity import (
+    NinaDescribedEntity,
+    NinaEntityDescription,
+    async_add_observed,
+    usable,
+)
+from .sequence import refocus_temperature
 
 PARALLEL_UPDATES = 0
 
@@ -35,11 +45,13 @@ class NinaBinarySensorDescription(NinaEntityDescription, BinarySensorEntityDescr
     """A binary sensor, plus how to read it out of the snapshot.
 
     `survives_disconnect` keeps an entity available while its device is down,
-    for the one whose job is to report that.
+    for the one whose job is to report that; `survives_outage` likewise while
+    N.I.N.A. is unreachable.
     """
 
     value: Callable[[NinaData], bool | None]
     survives_disconnect: bool = False
+    survives_outage: bool = False
 
 
 def _unsafe(data: NinaData) -> bool | None:
@@ -80,7 +92,8 @@ def _autofocus_verdict(data: NinaData) -> Mapping[str, Any]:
     """Why the verdict was reached, and the R² and threshold it compared.
 
     A hung run and a rejected one need different fixes. The R² sensor ships
-    disabled, so the value judged is carried here.
+    disabled, so the value judged is carried here. The sequence's refocus
+    threshold rides along for the autofocus card's drift flag.
     """
     return {
         "reason": _autofocus_reason(data),
@@ -88,10 +101,28 @@ def _autofocus_verdict(data: NinaData) -> Mapping[str, Any]:
         if (report := data.autofocus_report) is None
         else report.r_squared,
         "r_squared_threshold": data.profile.r_squared_threshold,
+        "refocus_temperature_delta": refocus_temperature(data.sequence),
     }
 
 
+def _flip_slew(data: NinaData) -> Mapping[str, Any]:
+    """`slews_at`: when the flip's wait ends, estimated from the last tracked
+    countdown; `None` outside a flip, or where nothing places it.
+    """
+    flip = data.meridian_flip
+    return {"slews_at": None if flip is None else flip.slews_at}
+
+
 DESCRIPTIONS: tuple[NinaBinarySensorDescription, ...] = (
+    NinaBinarySensorDescription(
+        key="reachable",
+        translation_key="reachable",
+        device_class=BinarySensorDeviceClass.CONNECTIVITY,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        kind=None,
+        survives_outage=True,
+        value=lambda data: data.reachable,
+    ),
     NinaBinarySensorDescription(
         key="safety_unsafe",
         translation_key="safety_unsafe",
@@ -131,6 +162,16 @@ DESCRIPTIONS: tuple[NinaBinarySensorDescription, ...] = (
         value=read_field("mount", "at_home"),
     ),
     NinaBinarySensorDescription(
+        key="mount_meridian_flip",
+        translation_key="mount_meridian_flip",
+        device_class=BinarySensorDeviceClass.RUNNING,
+        kind="mount",
+        # On through the wait before the slew, while the countdown sensor
+        # reads `unknown` because N.I.N.A. has turned tracking off.
+        value=lambda data: data.meridian_flip is not None,
+        attributes=_flip_slew,
+    ),
+    NinaBinarySensorDescription(
         key="autofocus_failed",
         translation_key="autofocus_failed",
         device_class=BinarySensorDeviceClass.PROBLEM,
@@ -144,8 +185,8 @@ DESCRIPTIONS: tuple[NinaBinarySensorDescription, ...] = (
         device_class=BinarySensorDeviceClass.RUNNING,
         kind=None,
         # The sequencer, not the camera: waiting out a target's start window is
-        # running and not imaging. Deliberately not 1.4.5's `sequence_running`
-        # `unique_id`, which meant `imaging`.
+        # running and not imaging. Not 1.4.5's `sequence_running` `unique_id`,
+        # which meant `imaging`.
         value=lambda data: data.running,
     ),
     NinaBinarySensorDescription(
@@ -199,30 +240,40 @@ DESCRIPTIONS: tuple[NinaBinarySensorDescription, ...] = (
         # The sky position angle means nothing until the rotator is synced.
         value=read_field("rotator", "synced"),
     ),
-    # From the spec alone; no hardware has validated the dome.
     NinaBinarySensorDescription(
         key="dome_at_park",
         translation_key="dome_at_park",
-        entity_registry_enabled_default=False,
         kind="dome",
-        verified=False,
+        supported=supports("dome", "can_park"),
         value=read_field("dome", "at_park"),
     ),
     NinaBinarySensorDescription(
         key="dome_at_home",
         translation_key="dome_at_home",
+        entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         kind="dome",
-        verified=False,
+        supported=supports("dome", "can_find_home"),
         value=read_field("dome", "at_home"),
     ),
     NinaBinarySensorDescription(
         key="dome_slewing",
         translation_key="dome_slewing",
-        entity_registry_enabled_default=False,
+        device_class=BinarySensorDeviceClass.MOVING,
         kind="dome",
-        verified=False,
+        # The azimuth: a simulated dome's shutter moves with it off, and a
+        # roll-off roof has no azimuth to slew.
+        supported=supports("dome", "can_set_azimuth"),
         value=read_field("dome", "slewing"),
+    ),
+    NinaBinarySensorDescription(
+        key="dome_synchronized",
+        translation_key="dome_synchronized",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        kind="dome",
+        supported=supports("dome", "can_set_azimuth"),
+        # Unknown unless following; false for a moment after every mount slew.
+        value=read_field("dome", "synchronized"),
     ),
 )
 
@@ -235,6 +286,10 @@ class NinaBinarySensor(NinaDescribedEntity, BinarySensorEntity):
     @property
     def _survives_disconnect(self) -> bool:
         return self.entity_description.survives_disconnect
+
+    @property
+    def available(self) -> bool:
+        return self.entity_description.survives_outage or super().available
 
     @property
     def is_on(self) -> bool | None:
@@ -253,6 +308,6 @@ async def async_setup_entry(
         lambda data: (
             (d.key, partial(NinaBinarySensor, coordinator, entry, d))
             for d in DESCRIPTIONS
-            if observed(data, d.kind)
+            if usable(data, d)
         ),
     )

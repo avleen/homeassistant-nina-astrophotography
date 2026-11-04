@@ -25,7 +25,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from functools import partial
-from typing import Any
+from typing import Any, get_args
 
 from homeassistant.components.sensor import (
     DOMAIN as SENSOR_DOMAIN,
@@ -51,15 +51,16 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import derive
-from .api.models import Frame, TargetBreakdown
+from .api.models import Frame, ShutterState, TargetBreakdown
 from .const import DOMAIN
 from .coordinator import NinaConfigEntry, NinaCoordinator, NinaData
-from .device import channel_key, channels_for, observed, read_field
+from .device import channel_key, channels_for, read_field
 from .entity import (
     NinaChannelEntity,
     NinaDescribedEntity,
     NinaEntityDescription,
     async_add_observed,
+    usable,
 )
 from .sequence import progress_percent
 
@@ -125,15 +126,31 @@ def _minutes_to_meridian_flip(data: NinaData) -> float | None:
 
 
 def _flip_bounds(data: NinaData) -> Mapping[str, Any]:
-    """The reading at which N.I.N.A. actually flips: (Max − Min), not zero,
-    and per profile.
-    """
+    """`flip_fires_at_minutes`: see `derive.flip_offset_minutes`."""
     minimum = data.profile.min_minutes_after_meridian
     maximum = data.profile.max_minutes_after_meridian
     return {
         "flip_fires_at_minutes": None
         if minimum is None or maximum is None
         else derive.flip_offset_minutes(minimum, maximum)
+    }
+
+
+def _dome_interlocks(data: NinaData) -> Mapping[str, Any]:
+    """N.I.N.A.'s own dome interlocks, from the profile: what it enforces
+    whatever Home Assistant does. `None` until the profile is read.
+    """
+    profile = data.profile
+    return {
+        "close_on_unsafe": profile.dome_close_on_unsafe,
+        "refuse_unsafe_shutter_move": profile.dome_refuse_unsafe_shutter_move,
+        "refuse_open_without_safety_monitor": (
+            profile.dome_refuse_open_without_safety_monitor
+        ),
+        "refuse_unpark_while_shut": profile.dome_refuse_unpark_while_shut,
+        "park_mount_before_shutter_move": profile.dome_park_mount_before_shutter_move,
+        "park_dome_before_shutter_move": profile.dome_park_before_shutter_move,
+        "find_home_before_park": profile.dome_find_home_before_park,
     }
 
 
@@ -191,15 +208,21 @@ _BY_FILTER = _breakdown("by_filter")
 def _recent_frames(data: NinaData) -> tuple[Mapping[str, Any], ...]:
     """Recent frames of every type, newest first, for the image panel card.
 
-    Hand-picked fields rather than `asdict(frame)`: this is the card's
-    contract, not `Frame`'s.
+    The fields are hand-picked: this is the card's contract, not `Frame`'s.
+    Each frame carries its own readings, which the `last_image_*` sensors hold
+    only for the newest light.
     """
     return tuple(
         {
             "date": frame.date.isoformat(),
             "filename": frame.filename,
             "image_type": frame.image_type,
+            "target": frame.target_name,
             "filter": frame.filter_name,
+            "exposure": frame.exposure_time,
+            "hfr": frame.hfr,
+            "stars": frame.stars,
+            "rms": frame.rms_arcsec,
             "mean": frame.mean,
             "median": frame.median,
             "min": frame.min,
@@ -489,9 +512,8 @@ EQUIPMENT: tuple[NinaSensorDescription, ...] = (
     NinaSensorDescription(
         key="mount_side_of_pier",
         translation_key="mount_side_of_pier",
-        entity_category=EntityCategory.DIAGNOSTIC,
         kind="mount",
-        # Not whether a flip has happened: that needs ASCOM's
+        # Not whether a flip is due: that needs ASCOM's
         # `DestinationSideOfPier`, which this API does not expose.
         value=read_field("mount", "side_of_pier"),
     ),
@@ -729,14 +751,14 @@ EQUIPMENT: tuple[NinaSensorDescription, ...] = (
         value=lambda data: progress_percent(data.sequence),
     ),
     # ── Dome ─────────────────────────────────────────────────────────────
-    # From the spec alone; no hardware has validated it.
     NinaSensorDescription(
         key="dome_shutter_status",
         translation_key="dome_shutter_status",
-        entity_registry_enabled_default=False,
+        device_class=SensorDeviceClass.ENUM,
+        options=list(get_args(ShutterState)),
         kind="dome",
-        verified=False,
         value=read_field("dome", "shutter_status"),
+        attributes=_dome_interlocks,
     ),
 )
 
@@ -1017,7 +1039,7 @@ async def async_setup_entry(
 
     def _observed(data: NinaData) -> Iterator[tuple[str, Callable[[], SensorEntity]]]:
         for description in DESCRIPTIONS:
-            if observed(data, description.kind):
+            if usable(data, description):
                 yield (
                     description.key,
                     partial(NinaSensor, coordinator, entry, description),
