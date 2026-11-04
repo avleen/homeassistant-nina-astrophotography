@@ -42,6 +42,22 @@ Excluding the endpoint entirely would leave a polled endpoint with no fixture,
 no drift coverage and no mapper test. Never denylist it — its secret surface
 is too large to redact confidently.
 
+## The test VM's profiles (`rig/`)
+
+`rig/` holds what the test VM loads (`docs/test-vm.md` §4.4), not captures:
+`nina-simulator.profile` (N.I.N.A.'s XML), `phd2-simulator.phdcfg`
+(`phd2.exe -s`), `omnisim-telescope.xml` (OmniSim's telescope settings), and
+the two sequences. They were made in the VM, against OmniSim, so every device
+is simulated.
+
+The same guard reads every format, with one difference: a value the VM needs
+stays as it is, since a profile with a dead path or a `"REDACTED"` host does
+not work. Paths are normalised under `C:\rig\`, the profile `Id` is a GUID
+minted for the fixture, and the hosts are N.I.N.A.'s defaults (`localhost`,
+astrometry.net). Credentials are blank. `tests/redaction.py`'s
+`rig_value_kept` is the list. Read each file by eye before committing a
+change to it.
+
 ## Inventory
 
 ### Mid-session, dawn (a complete imaging night)
@@ -106,6 +122,7 @@ read rather than being left wrong.
 | `startup_sequence_not_initialized.json` | The ~7.5 s window at N.I.N.A. startup: `"Sequence is not initialized"`, `StatusCode 409` |
 | `weather_source_openmeteo.json` | A *second* weather source. Its usable channels are **disjoint** from the physical station's — OpenMeteo has `CloudCover` but not `SkyBrightness`/`SkyTemperature`; the station is the reverse |
 | `live_image_save_push.json` | A live `IMAGE-SAVE` socket payload. Field-for-field identical to the matching `/image-history` record, including `Date` and `Filename` |
+| `simulator_dome_*_push.json` | Live `DOME-SHUTTER-OPENED`, `DOME-SLEWED` (with `From`/`To` azimuths) and `DOME-PARKED` socket payloads from the simulator rig's OmniSim dome. In the same run a close, a home and a second open raised no event at all, socket or `/event-history`. Recorded off the socket by hand, so their `_meta` is written, not the capture script's: the versions are the simulator captures' |
 | `image_history_session.json` | Pre-existing fixture from an earlier session (89 frames) |
 
 ## Notes for anyone writing tests against these

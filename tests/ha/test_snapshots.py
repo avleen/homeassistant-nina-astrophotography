@@ -11,7 +11,7 @@ seen, and it has to be reconciled against `docs/2.0-renames.md`.
 
 The rig is walked to `imaging_guiding` first — the one state whose every
 endpoint is captured, with the guider up. What no capture can show is still
-missing: the dome's entities, which need hardware nobody has, and the switch
+missing: the dome's entities, which only the simulator rig has, and the switch
 device's `number` and `sensor` channels, which need a driver richer than this
 rig's two-outlet bridge.
 """
@@ -96,8 +96,8 @@ async def test_a_small_state_snapshot_pins_the_value_contracts(
 async def test_entity_id_inventory_is_current(hass: HomeAssistant, registered) -> None:
     """A committed, plain-text list of every 2.0 entity id.
 
-    Phase D's blueprint and card tests read this rather than scraping syrupy's
-    `.ambr` format, which would couple them to a snapshot serialization.
+    The card tests read this rather than scraping syrupy's `.ambr` format,
+    which would couple them to a snapshot serialization.
     Regenerating it is part of the snapshot commit.
     """
     registry = er.async_get(hass)

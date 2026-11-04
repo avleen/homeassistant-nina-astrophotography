@@ -11,31 +11,33 @@
  */
 
 import { DEFAULT_PREFIX, configForm } from "./nina-card-config.js";
+import { LinkView, RigEntities } from "./nina-entity-resolver.js";
+import { THEME, applyTheme } from "./nina-theme.js";
 import {
-  LinkGrace, hubEntityIds, linkLostSince, RigEntities,
-} from "./nina-entity-resolver.js";
-import { displayed, missing, quantity, quantityIn, shown } from "./nina-units.js";
+  displayed, flipRange, flipSoon, flipStatus, flipUnderway, flipWindow, missing,
+  quantity, shown,
+} from "./nina-units.js";
 
-const VERSION = "2.0.0";
+const VERSION = "2.3.0";
 
 // Home Assistant has no per-press confirmation for a custom card's own
-// buttons, and a mis-tap on any of these costs the rest of the night.
+// buttons, and a mis-tap on any of these costs the rest of the night — or, for
+// an open roof, the equipment.
 const CONFIRM = {
   sequence_stop: "Stop the running sequence?",
   mount_park: "Park the mount? Imaging stops.",
+  dome_open: "Open the dome?",
   dome_close: "Close the dome?",
 };
+// A closing roll-off roof can strike a telescope that is not parked, and a
+// mount that cannot be read may be anywhere.
+const CONFIRM_CLOSE_UNPARKED = "Close the dome? The mount is not confirmed parked.";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function state(hass, entity_id, fallback = "—") {
   const e = hass.states[entity_id];
   return e ? e.state : fallback;
-}
-
-function attr(hass, entity_id, attribute, fallback = "—") {
-  const e = hass.states[entity_id];
-  return e ? (e.attributes[attribute] ?? fallback) : fallback;
 }
 
 function isOn(hass, entity_id) {
@@ -78,17 +80,22 @@ function measured(hass, entity_id, decimals = 1) {
   return { value: displayed(q, decimals) ?? "—", unit: q?.unit ?? "" };
 }
 
-// No data is not a stopped rig.
-function unreachableBanner(since, dome) {
-  const time = since
-    ? ` since ${new Date(since).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+// No data is not a stopped rig. A close goes to N.I.N.A., not the roof, so with
+// no reply there is no telling whether it reached it.
+function linkBanner(link, dome) {
+  const time = link.since
+    ? ` since ${new Date(link.since).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
     : "";
+  const shown = link.stale ? " Showing its last readings." : "";
+  const still = dome
+    ? "Stop, park and close still send — check that the roof closed."
+    : "Stop and park still send.";
   return `
   <div class="session-banner unreachable">
     <span class="icon">📡</span>
     <div>
-      <div class="label">N.I.N.A. unreachable</div>
-      <div class="detail">No data from N.I.N.A.${time}; it may still be imaging. ${dome ? "Stop, park and close" : "Stop and park"} still send.</div>
+      <div class="label">N.I.N.A. ${link.lost ? "unreachable" : "not answering"}</div>
+      <div class="detail">No answer${time}; it may still be imaging.${shown} ${still}</div>
     </div>
   </div>`;
 }
@@ -100,16 +107,10 @@ function statusDot(on) {
 // ─── Template ────────────────────────────────────────────────────────────────
 
 const STYLE = `
+  ${THEME}
   :host {
     --card-bg: var(--ha-card-background, var(--card-background-color, #1c1c2e));
     --card-border: var(--divider-color, rgba(255,255,255,0.1));
-    --accent: #7b8de8;
-    --accent2: #5bcfcf;
-    --warn: #f4a261;
-    --danger: #e76f51;
-    --success: #57cc99;
-    --muted: rgba(255,255,255,0.45);
-    --text: rgba(255,255,255,0.92);
     font-family: var(--primary-font-family, Roboto, sans-serif);
   }
 
@@ -161,7 +162,7 @@ const STYLE = `
   .session-banner .progress-track {
     width: 130px;
     height: 6px;
-    background: rgba(255,255,255,0.1);
+    background: color-mix(in srgb, var(--ink) 10%, transparent);
     border-radius: 3px;
     overflow: hidden;
   }
@@ -184,6 +185,9 @@ const STYLE = `
   .session-banner .label { font-size: 1rem; font-weight: 700; color: var(--warn); }
   .session-banner .detail { font-size: 0.68rem; color: var(--muted); margin-top: 2px; }
 
+  /* Readings N.I.N.A. has not confirmed since it stopped answering */
+  .body.stale > :not(.unreachable):not(.controls) { opacity: 0.5; }
+
   /* ── Equipment status row ── */
   .equip-row {
     display: flex;
@@ -194,7 +198,7 @@ const STYLE = `
     display: flex;
     align-items: center;
     gap: 5px;
-    background: rgba(255,255,255,0.06);
+    background: color-mix(in srgb, var(--ink) 6%, transparent);
     border: 1px solid var(--card-border);
     border-radius: 20px;
     padding: 4px 10px;
@@ -203,6 +207,8 @@ const STYLE = `
   }
   .equip-chip.connected { border-color: rgba(87,204,153,0.4); }
   .equip-chip.disconnected { opacity: 0.5; }
+  .equip-chip.fault { border-color: var(--danger); color: var(--danger); }
+  .equip-chip.fault .dot { background: var(--danger); box-shadow: 0 0 5px var(--danger); }
 
   /* ── Section ── */
   .section { display: flex; flex-direction: column; gap: 6px; }
@@ -221,7 +227,7 @@ const STYLE = `
     gap: 7px;
   }
   .metric {
-    background: rgba(255,255,255,0.04);
+    background: color-mix(in srgb, var(--ink) 4%, transparent);
     border: 1px solid var(--card-border);
     border-radius: 8px;
     padding: 8px 10px;
@@ -237,7 +243,7 @@ const STYLE = `
   .guider-row { display: flex; gap: 8px; align-items: flex-start; }
   .guider-meter {
     flex: 1;
-    background: rgba(255,255,255,0.04);
+    background: color-mix(in srgb, var(--ink) 4%, transparent);
     border: 1px solid var(--card-border);
     border-radius: 8px;
     padding: 8px 10px;
@@ -246,7 +252,7 @@ const STYLE = `
   .rms-bar-wrap { display: flex; align-items: center; gap: 6px; }
   .rms-label { width: 28px; font-size: 0.65rem; color: var(--muted); }
   .rms-track {
-    flex: 1; height: 5px; background: rgba(255,255,255,0.1);
+    flex: 1; height: 5px; background: color-mix(in srgb, var(--ink) 10%, transparent);
     border-radius: 3px; overflow: hidden;
   }
   .rms-fill {
@@ -267,7 +273,7 @@ const STYLE = `
     padding: 8px 12px;
     border: 1px solid var(--card-border);
     border-radius: 8px;
-    background: rgba(255,255,255,0.06);
+    background: color-mix(in srgb, var(--ink) 6%, transparent);
     color: var(--text);
     font-size: 0.78rem;
     font-weight: 600;
@@ -276,7 +282,7 @@ const STYLE = `
     transition: background 0.15s, transform 0.1s;
     display: flex; align-items: center; justify-content: center; gap: 5px;
   }
-  .nina-btn:not(:disabled):hover { background: rgba(255,255,255,0.12); }
+  .nina-btn:not(:disabled):hover { background: color-mix(in srgb, var(--ink) 12%, transparent); }
   .nina-btn:not(:disabled):active { transform: scale(0.97); }
   .nina-btn.primary { background: rgba(123,141,232,0.18); border-color: var(--accent); color: var(--accent); }
   .nina-btn.danger  { background: rgba(231,111,81,0.15); border-color: var(--danger); color: var(--danger); }
@@ -295,7 +301,7 @@ const STYLE = `
   }
   .img-stat {
     flex: 1;
-    background: rgba(255,255,255,0.04);
+    background: color-mix(in srgb, var(--ink) 4%, transparent);
     border: 1px solid var(--card-border);
     border-radius: 8px;
     padding: 6px 8px;
@@ -320,25 +326,20 @@ class NinaObservatoryCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
-    this._grace = new LinkGrace(() => this._render());
+    this._view = new LinkView();
   }
 
   setConfig(config) {
     this._config = config || {};
     this._rig = new RigEntities(
       this._config.prefix || DEFAULT_PREFIX, this._config.device_id);
-    this._grace.reset();
+    this._view.reset();
   }
 
   set hass(hass) {
     this._hass = hass;
-    if (this._rig.refresh(hass)) {
-      this._linkRows = hubEntityIds(hass, this._config.device_id) ?? [
-        this._eid("binary_sensor", "sequencer_running"),
-        this._eid("binary_sensor", "imaging"),
-        this._eid("sensor", "session_image_count"),
-      ];
-    }
+    this._rig.refresh(hass);
+    applyTheme(this);
     this._render();
   }
 
@@ -358,8 +359,13 @@ class NinaObservatoryCard extends HTMLElement {
   }
 
   _render() {
-    const h = this._hass;
-    if (!h) return;
+    if (!this._hass) return;
+    const link = this._view.read(this._hass, this._rig);
+    // While N.I.N.A. is not answering, the readings are its last ones.
+    const h = link.hass;
+    // Nothing to show at all: the link was lost before this card saw it up.
+    const unreachable = link.lost && !link.stale;
+    const quiet = unreachable || link.stale;
 
     // The sequencer and the camera answer different questions: a rig waiting
     // out a target's start window is running and taking nothing.
@@ -368,21 +374,21 @@ class NinaObservatoryCard extends HTMLElement {
     const frameCountId = this._eid("sensor", "session_image_count");
     const seqRunning  = isOn(h, seqId);
     const imaging     = isOn(h, imagingId);
-    const lostSince = linkLostSince(h, this._linkRows);
-    if (this._grace.hold(lostSince)) return;
-    const unreachable = lostSince !== null;
     const camConnected = available(h, this._eid("sensor", "camera_state"));
     const mntConnected = available(h, this._eid("sensor", "mount_right_ascension"));
     const focConnected = available(h, this._eid("number", "focuser_position"));
     const fwConnected  = available(h, this._eid("select", "filter", "filter_wheel_filter"));
     const gdrStatusId  = this._eid("sensor", "guider_status");
     const gdrConnected = available(h, gdrStatusId);
-    // Every dome entity ships disabled, so the section stays hidden until a
-    // dome owner enables them (issue #93).
-    const domeParkId   = this._eid("binary_sensor", "dome_at_park");
-    const domeConnected = available(h, domeParkId);
-    // Any row, even `unavailable`: Close Dome must survive a lost link.
-    const domeEnabled  = !!h.states[domeParkId];
+    // Probed on the shutter status, which every dome has, roll-off roofs
+    // included. `unknown` is still a dome: a shutter not known closed keeps
+    // Close.
+    const shutterId    = this._eid("sensor", "dome_shutter_status");
+    const domeConnected = !!h.states[shutterId] && state(h, shutterId) !== "unavailable";
+    // Each button exists only on a driver that can do it. Any row, even
+    // `unavailable`: Close Dome must survive a lost link.
+    const canOpen      = !!h.states[this._eid("button", "dome_open")];
+    const canClose     = !!h.states[this._eid("button", "dome_close")];
 
     // The guider switch has no `translation_key` and stays on the prefix path,
     // so a prefix that does not match the instance loses it; the status sensor
@@ -394,9 +400,16 @@ class NinaObservatoryCard extends HTMLElement {
     // a parked mount sent it again does nothing.
     const parked       = isOn(h, parkedId);
     const tracking     = notStopped(h, this._eid("select", "mount_tracking_rate"));
-    // The shutter reports its own state; `Open` is the only one that is open.
-    // Disabled as well, so this reads false until enabled — see above.
-    const domeOpen     = state(h, this._eid("sensor", "dome_shutter_status")) === "Open";
+    // Anything but `closed` is a roof to close: opening, open, closing, or a
+    // shutter in error, which a retried close is the answer to.
+    const shutter      = state(h, shutterId);
+    const domeShut     = shutter === "closed";
+    // A monitor that is not reporting is not a safe reading; no monitor at all
+    // leaves Open to N.I.N.A.
+    const unsafeId     = this._eid("binary_sensor", "safety_unsafe", "safety_monitor_unsafe");
+    const notSafe      = !!h.states[unsafeId] && state(h, unsafeId) !== "off";
+    // A park remembered from before N.I.N.A. went quiet is not a current one.
+    this._mountUnparked = quiet || !parked;
 
     const target       = state(h, this._eid("sensor", "sequence_target"), "No target");
     // Ships disabled and reads `unknown` on a Target Scheduler rig; a bar at 0%
@@ -414,11 +427,10 @@ class NinaObservatoryCard extends HTMLElement {
     const mntDec       = numState(h, this._eid("sensor", "mount_declination"), 3);
     const mntAlt       = numState(h, this._eid("sensor", "mount_altitude"), 1);
     const mntAz        = numState(h, this._eid("sensor", "mount_azimuth"), 1);
-    // The flip fires at (Max − Min), not zero, so the warning window adds the
-    // sensor's own published offset rather than a bare number.
-    const flipId       = this._eid("sensor", "mount_time_to_meridian_flip");
-    const ttf          = quantityIn(h, flipId, "min") ?? NaN;
-    const flipFiresAt  = parseFloat(attr(h, flipId, "flip_fires_at_minutes", "")) || 0;
+    const flip         = flipWindow(h, this._eid("sensor", "mount_time_to_meridian_flip"));
+    // The countdown reads unknown while N.I.N.A. waits to flip, tracking off.
+    const flipId       = this._eid("binary_sensor", "mount_meridian_flip");
+    const flipping     = flipUnderway(h, flipId, tracking);
 
     const focPos       = shown(state(h, this._eid("number", "focuser_position")));
     const focTemp      = measured(h, this._eid("sensor", "focuser_temperature"));
@@ -440,7 +452,8 @@ class NinaObservatoryCard extends HTMLElement {
     const pct = (v) => Math.min((v / rmsMax) * 100, 100).toFixed(1);
     const rmsClass = (v) => v > 3 ? "danger" : v > 1.5 ? "warn" : "";
 
-    const [status, dot] = unreachable ? ["Unreachable", "dot-warn"]
+    const [status, dot] = link.lost ? ["Unreachable", "dot-warn"]
+      : link.stale ? ["Not answering", "dot-warn"]
       : seqRunning ? ["Session active", "dot-on"] : ["Standby", "dot-off"];
     // The park row, not the RA probe, which a user may disable.
     const mountStatus = !available(h, parkedId) ? ""
@@ -450,14 +463,14 @@ class NinaObservatoryCard extends HTMLElement {
     const btn = (id, label, cls = "", off = "") =>
       `<button class="nina-btn${cls && ` ${cls}`}" id="${id}"`
       + `${off ? ` disabled title="${off}"` : ""}>${label}</button>`;
-    const LOST = "N.I.N.A. unreachable";
-    // With no state to choose either of a pair, the set is fixed: commands
-    // that end activity stay live, the rest wait.
-    const controls = unreachable ? [
+    const LOST = link.lost ? "N.I.N.A. unreachable" : "N.I.N.A. is not answering";
+    // With no current state to choose either of a pair, the set is fixed:
+    // commands that end activity stay live, the rest wait.
+    const controls = quiet ? [
       [
         btn("btn-stop", "⏹ Stop Sequence", "danger"),
         btn("btn-park", "⏸ Park"),
-        domeEnabled ? btn("btn-dome-close", "🔒 Close Dome") : "",
+        canClose ? btn("btn-dome-close", "🔒 Close Dome") : "",
       ],
       [
         btn("btn-start", "▶ Start Sequence", "success", LOST),
@@ -473,9 +486,11 @@ class NinaObservatoryCard extends HTMLElement {
         parked ? btn("btn-unpark", "⬆ Unpark", "primary") : btn("btn-park", "⏸ Park"),
         btn("btn-af", "🔍 Auto Focus"),
         !domeConnected ? ""
-          : domeOpen
-            ? btn("btn-dome-close", "🔒 Close Dome")
-            : btn("btn-dome-open", "🔓 Open Dome", "primary"),
+          : !domeShut
+            ? (canClose ? btn("btn-dome-close", "🔒 Close Dome") : "")
+            : canOpen
+              ? btn("btn-dome-open", "🔓 Open Dome", "primary", notSafe ? "The safety monitor does not report safe" : "")
+              : "",
       ],
       // Neither cooling nor guiding is an emergency to end, so with no state
       // to pick one of the pair, these wait for one.
@@ -489,9 +504,8 @@ class NinaObservatoryCard extends HTMLElement {
       ],
     ];
 
-    // Meridian flip warning
     const showFlipWarning =
-      tracking && Number.isFinite(ttf) && ttf > 0 && ttf < 15 + flipFiresAt;
+      flipping === null && tracking && flipSoon(flip);
 
     const html = `
       <style>${STYLE}</style>
@@ -505,9 +519,10 @@ class NinaObservatoryCard extends HTMLElement {
           <span class="dot ${dot}"></span>
         </div>
 
-        <div class="body">
+        <div class="body${link.stale ? " stale" : ""}">
 
-          ${unreachable ? unreachableBanner(lostSince, domeEnabled) : `
+          ${link.stale ? linkBanner(link, canClose) : ""}
+          ${unreachable ? linkBanner(link, canClose) : `
           <div class="session-banner">
             <div>
               <div class="target">${seqRunning ? target : "—"}</div>
@@ -529,12 +544,18 @@ class NinaObservatoryCard extends HTMLElement {
             ${chip("Focuser", focConnected)}
             ${chip("Filter Wheel", fwConnected)}
             ${chip("Guider", gdrConnected)}
-            ${domeConnected ? chip("Dome", domeConnected) : ""}
+            ${!domeConnected ? ""
+              : shutter === "error" ? chip("Dome · shutter error", true, "fault")
+              : chip("Dome", true)}
           </div>`}
 
-          ${showFlipWarning ? `
+          ${flipping ? `
             <div class="flip-alert">
-              ⚠️ Meridian flip in <strong style="margin:0 4px;">${ttf.toFixed(0)} min</strong>
+              🔄 <strong style="margin:0 4px;">${flipStatus(flipping)}</strong>
+            </div>
+          ` : showFlipWarning ? `
+            <div class="flip-alert">
+              ⚠️ Meridian flip in <strong style="margin:0 4px;">${flipRange(flip)} min</strong>
             </div>
           ` : ""}
 
@@ -556,7 +577,8 @@ class NinaObservatoryCard extends HTMLElement {
               ${metric("Dec", mntDec, "°")}
               ${metric("Alt", mntAlt, "°")}
               ${metric("Az", mntAz, "°")}
-              ${ttf < 999 ? metric("Flip in", ttf.toFixed(0), "min") : ""}
+              ${flipping ? metric("Flip", flipping.waiting ? "Waiting" : "Flipping", "")
+                : flip !== null && flip.latest < 999 ? metric("Flip in", flipRange(flip), "min") : ""}
             </div>
           </div>
 
@@ -602,7 +624,7 @@ class NinaObservatoryCard extends HTMLElement {
             </div>
           </div>
 
-          <div class="section">
+          <div class="section controls">
             <div class="section-title">Controls</div>
             ${controls.map((row) => `<div class="btn-row">${row.join("")}</div>`).join("")}
           </div>
@@ -620,8 +642,8 @@ class NinaObservatoryCard extends HTMLElement {
       const el = this.shadowRoot.getElementById(id);
       if (el) el.addEventListener("click", fn);
     };
-    const svc = (s, d) => {
-      if (CONFIRM[s] && !window.confirm(CONFIRM[s])) return;
+    const svc = (s, d, ask = CONFIRM[s]) => {
+      if (ask && !window.confirm(ask)) return;
       this._callService("nina_astrophotography", s, d);
     };
 
@@ -631,7 +653,8 @@ class NinaObservatoryCard extends HTMLElement {
     bind("btn-unpark",     () => svc("mount_unpark"));
     bind("btn-af",         () => svc("focuser_auto_focus"));
     bind("btn-dome-open",  () => svc("dome_open"));
-    bind("btn-dome-close", () => svc("dome_close"));
+    bind("btn-dome-close", () => svc("dome_close", undefined,
+      this._mountUnparked ? CONFIRM_CLOSE_UNPARKED : CONFIRM.dome_close));
     bind("btn-cool",       () => svc("camera_cool", { temperature: -10, minutes: 15 }));
     bind("btn-warm",       () => svc("camera_warm", { minutes: 20 }));
     bind("btn-start-guide",() => svc("guider_start"));
@@ -647,8 +670,9 @@ class NinaObservatoryCard extends HTMLElement {
   }
 }
 
-function chip(label, connected) {
-  return `<div class="equip-chip ${connected ? "connected" : "disconnected"}">
+// `fault` marks a connected device reporting a failure of its own.
+function chip(label, connected, fault = "") {
+  return `<div class="equip-chip ${connected ? "connected" : "disconnected"}${fault && ` ${fault}`}">
     ${statusDot(connected)} ${label}
   </div>`;
 }

@@ -53,8 +53,7 @@ def bound(doc: dict) -> set[str]:
     """Names a template can resolve.
 
     `trigger_variables` is included because a template *trigger* sees only
-    that block, not `variables:` — no blueprint uses one yet, but the next
-    one to add a template trigger needs this to be right.
+    that block, not `variables:`.
     """
     return set(doc.get("variables") or {}) | set(doc.get("trigger_variables") or {})
 
@@ -135,8 +134,7 @@ ENTITY_ID = re.compile(
 @pytest.mark.parametrize("path", BLUEPRINTS, ids=lambda p: p.name)
 def test_no_blueprint_names_an_entity_id(path: Path) -> None:
     """Every 2.0 entity id carries the instance name, so a hardcoded one is
-    wrong on every install but the author's — and the five shipped blueprints
-    hardcoded ids that phases B and C renamed or deleted outright.
+    wrong on every install but the author's.
     """
     named = set(ENTITY_ID.findall(path.read_text()))
 
@@ -155,7 +153,8 @@ def test_the_abort_triggers_on_the_safety_signals_and_nothing_else() -> None:
     fires when the sky CLEARS. The monitor's own dropout is a second trigger,
     held 30 s so one missed poll is not an abort, and `from: "on"` because that
     sensor reads `off` all day: without it every restart in daylight would park
-    the mount. An unreachable rig only notifies. And no weather channel
+    the mount. An unreachable rig only notifies, through the Reachable sensor
+    or, without one, the monitor's row going unavailable. And no weather channel
     triggers any of it — a forecast source reads 0% cloud under cloud.
     """
     triggers = _blueprint("weather_abort.yaml")["triggers"]
@@ -166,6 +165,7 @@ def test_the_abort_triggers_on_the_safety_signals_and_nothing_else() -> None:
     ] == [
         ("unsafe", "safety_unsafe", None, "on", None),
         ("monitor_lost", "safety_connected", "on", "off", "00:00:30"),
+        ("rig_unreachable", "rig_reachable", None, ["off", "unavailable"], "00:02:00"),
         ("rig_unreachable", "safety_connected", None, "unavailable", "00:02:00"),
     ]
 
@@ -175,11 +175,10 @@ def test_the_meridian_warning_triggers_on_the_flip_event() -> None:
     reaching zero, and both bounds are per-profile — so N.I.N.A.'s own event is
     the only reliable signal that it is happening.
     """
-    ids = [t["id"] for t in _blueprint("meridian_flip_warning.yaml")["triggers"]]
-    events = [
-        t.get("event_type")
-        for t in _blueprint("meridian_flip_warning.yaml")["triggers"]
-    ]
+    triggers = _blueprint("meridian_flip_warning.yaml")["triggers"]
 
-    assert ids == ["approaching", "committed", "complete"]
-    assert events == [None, "nina_mount_before_flip", "nina_mount_after_flip"]
+    assert [(t["id"], t.get("event_type")) for t in triggers] == [
+        ("approaching", None),
+        ("committed", "nina_mount_before_flip"),
+        ("complete", "nina_mount_after_flip"),
+    ]

@@ -6,23 +6,20 @@ reimplementation would only prove itself right.
 
 The snapshot's entity half comes from core's own
 `config/entity_registry/list_for_display`, so the trimming and the `disabled_by`
-filter are core's rather than this file's — which is what lets these tests pin
-the claim that a disabled entity can never resolve.
+filter are core's rather than this file's, so a disabled entity is absent from
+what the resolver reads exactly as it is from a dashboard's.
 """
 
 from pathlib import Path
 
-from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from cards import INSTANCE, lookups, resolving_cards
-from custom_components.nina_astrophotography.const import CONF_HOST, CONF_PORT, DOMAIN
-from ha.registry import get_device
+from custom_components.nina_astrophotography.const import DOMAIN
 from helpers import needs_node, run_node
 
 DRIVER = Path(__file__).parent / "resolve_entities.mjs"
@@ -31,10 +28,9 @@ DRIVER = Path(__file__).parent / "resolve_entities.mjs"
 async def _snapshot(hass: HomeAssistant, hass_ws_client) -> dict:
     """The registries as the frontend holds them, in `hass.entities`/`.devices`.
 
-    Only the four entity fields the resolver reads are expanded from core's
+    Only the three entity fields the resolver reads are expanded from core's
     compact keys, with the long names `frontend`'s `connection-mixin.ts` gives
-    them: `ei` -> `entity_id`, `di` -> `device_id`, `pl` -> `platform`,
-    `tk` -> `translation_key`.
+    them: `ei` -> `entity_id`, `di` -> `device_id`, `tk` -> `translation_key`.
     Devices are sent whole and keyed by id, so they need no expansion.
     """
     assert await async_setup_component(hass, "config", {})
@@ -50,7 +46,6 @@ async def _snapshot(hass: HomeAssistant, hass_ws_client) -> dict:
             entity["ei"]: {
                 "entity_id": entity["ei"],
                 "device_id": entity.get("di"),
-                "platform": entity.get("pl"),
                 "translation_key": entity.get("tk"),
             }
             for entity in entities
@@ -68,13 +63,13 @@ async def _resolve(
     )
 
 
-async def _link_lost_since(
-    hass: HomeAssistant, hass_ws_client, fallback: list[str] | None = None
-) -> int | None:
-    """`linkLostSince` as a card computes it, in epoch ms.
+async def _link(
+    hass: HomeAssistant, hass_ws_client, *, identified: bool = True
+) -> dict:
+    """`linkState` as a card computes it: `since` in epoch ms, and `lost`.
 
-    With `fallback`, the registries are withheld and those ids read instead, as
-    by a card that cannot identify its rig.
+    Unless `identified`, the registries are withheld, as from a card that cannot
+    tell which rig it shows, so it reads the ids its prefix templates.
     """
     snapshot = await _snapshot(hass, hass_ws_client)
     snapshot["states"] = {
@@ -86,33 +81,22 @@ async def _link_lost_since(
         for state in hass.states.async_all()
         if state.entity_id in snapshot["entities"]
     }
-    if fallback is not None:
-        snapshot = {"states": snapshot["states"], "fallback": fallback}
+    snapshot["prefix"] = INSTANCE
+    if not identified:
+        del snapshot["entities"], snapshot["devices"]
     return await hass.async_add_executor_job(
-        run_node, DRIVER, snapshot, "", "linkLostSince"
+        run_node, DRIVER, snapshot, "", "linkState"
     )
 
 
-async def _lose_the_link(advance, freezer: FrozenDateTimeFactory) -> int:
-    """N.I.N.A. stops answering a minute on; returns that moment in ms."""
-    freezer.tick(60)
-    await advance("nina_unreachable")
+def _ms() -> int:
     return int(dt_util.utcnow().timestamp() * 1000)
 
 
-def _hub_row(hass: HomeAssistant, entry, platform: str) -> er.RegistryEntry:
-    """A registry row on the hub device, with no entity behind it."""
-    return er.async_get(hass).async_get_or_create(
-        "sensor",
-        platform,
-        f"{entry.entry_id}_retired",
-        device_id=get_device(hass, entry).id,
-    )
-
-
-def _orphan_a_hub_row(hass: HomeAssistant, entry) -> None:
-    """A hub registry row no entity claims, under core's placeholder."""
-    _hub_row(hass, entry, DOMAIN).write_unavailable_state(hass)
+async def _miss_a_poll(advance) -> int:
+    """N.I.N.A. stops answering; returns that moment, in ms."""
+    await advance("nina_unreachable")
+    return _ms()
 
 
 def _templated(domain: str, suffix: str, instance: str = INSTANCE) -> str:
@@ -127,11 +111,11 @@ CANNOT_RESOLVE: dict[str, dict[tuple[str, str], str]] = {
     "nina-observatory-card.js": {
         # Takes the guider device's own name (`name=None`), so it has no key.
         ("switch", "guider"): "no translation key",
-        # No dome on any captured rig, so the device is never observed and its
-        # entities never created. A real dome's would ship disabled, and disabled
-        # entities are absent from the payload — unresolvable either way (#93).
-        ("binary_sensor", "dome_at_park"): "no dome device (#93)",
-        ("sensor", "dome_shutter_status"): "no dome device (#93)",
+        # No dome on the reference rig, so the device is never observed and its
+        # entities never created; they resolve on the simulator's (below).
+        ("sensor", "dome_shutter_status"): "no dome on this rig",
+        ("button", "dome_open"): "no dome on this rig",
+        ("button", "dome_close"): "no dome on this rig",
         # Present and disabled, which is the case the test below pins.
         ("sensor", "sequence_progress"): "ships disabled",
     },
@@ -164,7 +148,7 @@ def test_every_resolving_card_is_accounted_for() -> None:
 
 @needs_node
 @pytest.mark.parametrize("card", RESOLVING, ids=lambda p: p.name)
-async def test_every_card_lookup_resolves_to_the_id_it_used_to_template(
+async def test_every_card_lookup_resolves_to_its_prefix_templated_id(
     hass: HomeAssistant,
     config_entry,
     rig,
@@ -222,45 +206,31 @@ async def test_only_the_entities_that_cannot_resolve_fall_back(
     assert fell_back == set(CANNOT_RESOLVE[card.name])
 
 
-async def test_a_disabled_entity_is_absent_from_what_the_frontend_sees(
-    hass: HomeAssistant, loaded_entry, hass_ws_client
+@needs_node
+async def test_every_dome_read_resolves_on_a_rig_with_a_dome(
+    hass: HomeAssistant, config_entry, rig, hass_ws_client, set_up_at
 ) -> None:
-    """A disabled entity has a registry row and is still left out of the payload
-    a dashboard receives, so no card can resolve one — which is why the dome
-    section needs a device probe (#93).
-
-    `sequence_progress` is the only read this card makes that is both disabled
-    and present; no captured rig creates the dome entities at all.
+    """Each dome entity the observatory card reads ships enabled, so none is
+    left out of what a dashboard receives.
     """
-    progress = f"sensor.{INSTANCE}_sequence_progress"
-    assert er.async_get(hass).async_get(progress) is not None, "row should exist"
+    await set_up_at(hass, config_entry, rig, "simulator_dome_parked")
 
-    snapshot = await _snapshot(hass, hass_ws_client)
+    resolved = await _resolve(hass, await _snapshot(hass, hass_ws_client))
 
-    assert progress not in snapshot["entities"]
+    card = next(card for card in RESOLVING if card.name == "nina-observatory-card.js")
+    dome = {f"{domain}.{key}" for domain, key, _ in lookups(card) if "dome" in key}
+    assert dome
+    assert dome <= resolved.keys()
 
 
 @needs_node
 async def test_two_rigs_resolve_nothing_until_one_is_named(
-    hass: HomeAssistant, config_entry, rig, hass_ws_client
+    hass: HomeAssistant, two_rigs, hass_ws_client
 ) -> None:
     """Discovery is only unambiguous for one rig. Guessing between two would
     give a dashboard the wrong rig's readings, so the map is empty instead and
     every lookup falls back to the configured prefix.
     """
-    config_entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(config_entry.entry_id)
-    second = MockConfigEntry(
-        domain=DOMAIN,
-        title="Second Rig",
-        data={CONF_HOST: "other.local", CONF_PORT: 1888},
-        unique_id="other.local:1888",
-        entry_id="01JTESTENTRY0000000000001",
-    )
-    second.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(second.entry_id)
-    await hass.async_block_till_done()
-
     resolved = await _resolve(hass, await _snapshot(hass, hass_ws_client))
 
     assert resolved == {}
@@ -268,25 +238,13 @@ async def test_two_rigs_resolve_nothing_until_one_is_named(
 
 @needs_node
 async def test_naming_a_child_device_resolves_its_whole_rig(
-    hass: HomeAssistant, config_entry, rig, hass_ws_client
+    hass: HomeAssistant, two_rigs, hass_ws_client
 ) -> None:
     """`device_id` may name any one of a rig's devices, not just its hub — a
     device selector makes a child the likelier pick. Resolution has to cover the
     whole rig from there, including entities hanging off the hub itself.
     """
-    config_entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(config_entry.entry_id)
-    second = MockConfigEntry(
-        domain=DOMAIN,
-        title="Second Rig",
-        data={CONF_HOST: "other.local", CONF_PORT: 1888},
-        unique_id="other.local:1888",
-        entry_id="01JTESTENTRY0000000000001",
-    )
-    second.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(second.entry_id)
-    await hass.async_block_till_done()
-
+    config_entry = two_rigs.entries[0]
     registry = dr.async_get(hass)
     camera = registry.async_get_device_by_identifier(
         (DOMAIN, f"{config_entry.entry_id}_camera"), config_entry.entry_id
@@ -300,7 +258,6 @@ async def test_naming_a_child_device_resolves_its_whole_rig(
         device.id
         for device in dr.async_entries_for_config_entry(registry, config_entry.entry_id)
     }
-    assert resolved, "naming one of its devices should identify the rig"
     assert {
         snapshot["entities"][entity_id]["device_id"] for entity_id in resolved.values()
     } <= rig
@@ -327,103 +284,66 @@ async def test_renaming_a_device_does_not_break_resolution(
 
 
 @needs_node
-@pytest.mark.parametrize("rig_state", ["site_configured", "equipment_disconnected"])
-async def test_a_rig_that_answers_has_not_lost_its_link(
+async def test_drivers_dropping_after_they_were_seen_is_not_a_lost_link(
+    hass: HomeAssistant, advance, hass_ws_client
+) -> None:
+    """Their rows go `unavailable`; the hub's do not."""
+    await advance("equipment_disconnected")
+
+    assert await _link(hass, hass_ws_client) == {"since": None, "lost": False}
+
+
+@needs_node
+@pytest.mark.usefixtures("freezer")
+async def test_a_missed_poll_is_quiet_but_not_lost(
+    hass: HomeAssistant, advance, hass_ws_client
+) -> None:
+    """Inside the grace the readings are held: not answering, not yet lost."""
+    quiet_at = await _miss_a_poll(advance)
+
+    assert await _link(hass, hass_ws_client) == {"since": quiet_at, "lost": False}
+
+
+@needs_node
+@pytest.mark.parametrize("rig_state", ["imaging", "equipment_disconnected"])
+async def test_past_the_grace_the_link_is_lost_since_the_first_missed_poll(
     hass: HomeAssistant,
     config_entry,
     rig,
     set_up_at,
+    outage,
     hass_ws_client,
     rig_state: str,
 ) -> None:
-    """Every driver down is not a lost link: the hub's rows stay available."""
+    """With no equipment ever seen too: the rows that tell it are the hub's."""
     await set_up_at(hass, config_entry, rig, rig_state)
+    quiet_at = _ms()
 
-    assert await _link_lost_since(hass, hass_ws_client) is None
+    await outage()
 
-
-@needs_node
-async def test_a_failed_poll_loses_the_link_from_that_moment(
-    hass: HomeAssistant, advance, hass_ws_client, freezer: FrozenDateTimeFactory
-) -> None:
-    """The cards' grace period runs from this, so it must be the failed poll."""
-    failed_at = await _lose_the_link(advance, freezer)
-
-    assert await _link_lost_since(hass, hass_ws_client) == failed_at
+    assert await _link(hass, hass_ws_client) == {"since": quiet_at, "lost": True}
 
 
 @needs_node
+@pytest.mark.usefixtures("freezer")
 async def test_an_entry_that_is_not_loaded_has_lost_its_link(
     hass: HomeAssistant, loaded_entry, hass_ws_client
 ) -> None:
-    """Every hub row restored, as an entry that failed to load leaves them."""
+    """Its rows restored, `reachable` among them, since the unload."""
+    unloaded_at = _ms()
     assert await hass.config_entries.async_unload(loaded_entry.entry_id)
     await hass.async_block_till_done()
 
-    assert await _link_lost_since(hass, hass_ws_client) is not None
-
-
-@needs_node
-async def test_an_orphaned_hub_row_does_not_lose_the_link(
-    hass: HomeAssistant, loaded_entry, hass_ws_client
-) -> None:
-    """It reads `unavailable` for ever beside rows that answer."""
-    _orphan_a_hub_row(hass, loaded_entry)
-
-    assert await _link_lost_since(hass, hass_ws_client) is None
-
-
-@needs_node
-async def test_an_orphaned_hub_row_does_not_date_a_lost_link(
-    hass: HomeAssistant,
-    loaded_entry,
-    advance,
-    hass_ws_client,
-    freezer: FrozenDateTimeFactory,
-) -> None:
-    """It changed when core restored it: dating the loss from that would skip
-    the cards' grace period.
-    """
-    _orphan_a_hub_row(hass, loaded_entry)
-
-    failed_at = await _lose_the_link(advance, freezer)
-
-    assert await _link_lost_since(hass, hass_ws_client) == failed_at
-
-
-@needs_node
-async def test_another_integration_s_row_on_the_hub_does_not_lose_the_link(
-    hass: HomeAssistant, loaded_entry, hass_ws_client
-) -> None:
-    """A helper linked to the hub, such as a template sensor, can be
-    `unavailable` on its own.
-    """
-    helper = _hub_row(hass, loaded_entry, "template")
-    hass.states.async_set(helper.entity_id, "unavailable")
-
-    assert await _link_lost_since(hass, hass_ws_client) is None
+    assert await _link(hass, hass_ws_client) == {"since": unloaded_at, "lost": True}
 
 
 @needs_node
 @pytest.mark.parametrize("lost", [False, True], ids=["answering", "lost"])
 async def test_an_unidentified_rig_is_read_through_the_card_s_own_ids(
-    hass: HomeAssistant,
-    advance,
-    hass_ws_client,
-    freezer: FrozenDateTimeFactory,
-    lost: bool,
+    hass: HomeAssistant, loaded_entry, outage, hass_ws_client, lost: bool
 ) -> None:
-    """Two rigs and no `device_id:` leave no hub to walk."""
-    failed_at = await _lose_the_link(advance, freezer) if lost else None
+    """Two rigs and no `device_id:` leave nothing to resolve."""
+    if lost:
+        await outage()
 
-    assert (
-        await _link_lost_since(
-            hass,
-            hass_ws_client,
-            fallback=[
-                _templated("binary_sensor", "sequencer_running"),
-                _templated("sensor", "session_image_count"),
-            ],
-        )
-        == failed_at
-    )
+    assert (await _link(hass, hass_ws_client, identified=False))["lost"] is lost

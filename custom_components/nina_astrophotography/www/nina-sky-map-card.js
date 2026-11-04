@@ -22,9 +22,12 @@
 
 import { DEFAULT_PREFIX, configForm } from "./nina-card-config.js";
 import { RigEntities } from "./nina-entity-resolver.js";
-import { missing, quantityIn } from "./nina-units.js";
+import {
+  flipRange, flipSoon, flipStatus, flipUnderway, flipWindow, missing,
+} from "./nina-units.js";
+import { THEME, applyTheme } from "./nina-theme.js";
 
-const VERSION = "2.0.0";
+const VERSION = "2.3.0";
 
 const DEFAULT_TRAIL_LENGTH = 60;
 const DEFAULT_MAP_SIZE = 320;
@@ -99,27 +102,22 @@ function equToHoriz(ra_h, dec_deg, lat_deg, lst_h) {
 }
 
 /** Stereographic projection: alt/az → unit circle (x,y), [-1,1].
-    Zenith is centre, horizon the edge; az 0° (north) is up. */
+    Zenith is centre, horizon the edge. Drawn as a sky chart held overhead:
+    north up and east on the left (canvas y increases down). */
 function project(alt_deg, az_deg) {
   const r = Math.cos(alt_deg * DEG) / (1 + Math.sin(alt_deg * DEG));
-  const a = (az_deg - 180) * DEG;   // rotate so N is up (canvas y increases down)
+  const a = az_deg * DEG;
   return {
-    x:  r * Math.sin(a),
+    x: -r * Math.sin(a),
     y: -r * Math.cos(a),
   };
 }
 
 const STYLE = `
+  ${THEME}
   :host {
     --bg: var(--ha-card-background, var(--card-background-color, #12121e));
     --border: var(--divider-color, rgba(255,255,255,0.1));
-    --accent: #7b8de8;
-    --accent2: #5bcfcf;
-    --warn: #f4a261;
-    --danger: #e76f51;
-    --success: #57cc99;
-    --muted: rgba(255,255,255,0.4);
-    --text: rgba(255,255,255,0.92);
     font-family: var(--primary-font-family, Roboto, sans-serif);
   }
   ha-card {
@@ -145,6 +143,7 @@ const STYLE = `
     padding: 12px 12px 4px;
     display: flex; justify-content: center;
   }
+  /* The sky is painted, and dark whatever the theme. */
   canvas#sky { display: block; border-radius: 50%; cursor: crosshair; }
 
   /* Compass labels positioned around the canvas via JS */
@@ -152,7 +151,7 @@ const STYLE = `
     position: absolute;
     font-size: 0.65rem;
     font-weight: 700;
-    color: rgba(255,255,255,0.45);
+    color: var(--muted);
     letter-spacing: .5px;
     pointer-events: none;
     transform: translate(-50%, -50%);
@@ -223,6 +222,7 @@ class NinaSkyMapCard extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     this._rig.refresh(hass);
+    applyTheme(this);
     this._updateTrail();
     if (!this._rendered) {
       this._buildDOM();
@@ -247,9 +247,8 @@ class NinaSkyMapCard extends HTMLElement {
     return Number.isFinite(value) ? value : null;
   }
   _on(id) { return this._s(id) === "on"; }
-  // Time to the flip in minutes, whatever unit the sensor is shown in.
-  _flipMinutes(id) {
-    return quantityIn(this._hass, id, "min");
+  _flip() {
+    return flipWindow(this._hass, this._eid("sensor", "mount_time_to_meridian_flip"));
   }
 
   // A disconnected device makes its entities unavailable, so availability is
@@ -260,6 +259,13 @@ class NinaSkyMapCard extends HTMLElement {
   // Tracking is one of the mount's own rates, and `Stopped` is one of them.
   _tracking(id) {
     return this._available(id) && this._s(id) !== "Stopped";
+  }
+  // The countdown reads unknown while N.I.N.A. waits to flip, tracking off.
+  _flipping() {
+    const rateId = this._eid("select", "mount_tracking_rate");
+    const tracking = this._available(rateId) ? this._tracking(rateId) : null;
+    const flipId = this._eid("binary_sensor", "mount_meridian_flip");
+    return flipUnderway(this._hass, flipId, tracking);
   }
 
   // The star field's latitude: an explicit `latitude:`, else N.I.N.A.'s
@@ -303,8 +309,8 @@ class NinaSkyMapCard extends HTMLElement {
             style="width:${size}px;height:${size}px;"></canvas>
           <span class="compass-label" id="cl-n"  style="top:8px;   left:50%">N</span>
           <span class="compass-label" id="cl-s"  style="bottom:8px;left:50%">S</span>
-          <span class="compass-label" id="cl-e"  style="top:50%;   right:6px">E</span>
-          <span class="compass-label" id="cl-w"  style="top:50%;   left:6px">W</span>
+          <span class="compass-label" id="cl-e"  style="top:50%;   left:6px">E</span>
+          <span class="compass-label" id="cl-w"  style="top:50%;   right:6px">W</span>
         </div>
         <div class="info-row">
           <div class="info-cell"><div class="lbl">Altitude</div><div class="val" id="inf-alt">—</div></div>
@@ -347,13 +353,14 @@ class NinaSkyMapCard extends HTMLElement {
     // driver dropping out.
     const targetId = this._eid("sensor", "sequence_target");
     const target = this._available(targetId) ? this._s(targetId, "") : "";
-    const ttf = this._flipMinutes(this._eid("sensor", "mount_time_to_meridian_flip"));
+    const flip = this._flip();
+    const flipping = this._flipping();
 
     const sub = this.shadowRoot?.getElementById("hdr-sub");
     if (sub) {
-      sub.textContent = target
-        ? `${target} · flip in ${ttf !== null ? ttf.toFixed(0) + " min" : "—"}`
-        : "Telescope pointing";
+      const flipText = flipping ? flipStatus(flipping).toLowerCase()
+        : `flip in ${flip !== null ? flipRange(flip) + " min" : "—"}`;
+      sub.textContent = target ? `${target} · ${flipText}` : "Telescope pointing";
     }
   }
 
@@ -472,13 +479,10 @@ class NinaSkyMapCard extends HTMLElement {
       ctx.setLineDash([]);
     }
 
-    // The flip fires at the sensor's own published offset, not zero.
-    const flipId = this._eid("sensor", "mount_time_to_meridian_flip");
-    const ttf = this._flipMinutes(flipId);
-    const firesAt = parseFloat(
-      this._hass?.states?.[flipId]?.attributes?.flip_fires_at_minutes) || 0;
-    const flipSoon = ttf !== null && ttf > 0 && ttf < 15 + firesAt;
-    const meridianColor = flipSoon
+    const flip = this._flip();
+    const flipping = this._flipping();
+    const warnFlip = flipping !== null || flipSoon(flip);
+    const meridianColor = warnFlip
       ? `rgba(244, 162, 97, ${0.5 + 0.4 * Math.sin(Date.now() / 400)})`
       : "rgba(123,141,232,0.25)";
     ctx.beginPath();
@@ -592,12 +596,22 @@ class NinaSkyMapCard extends HTMLElement {
 
     ctx.restore();
 
-    if (flipSoon) {
+    if (warnFlip) {
+      // Inside the horizon: the canvas ends at it, and is clipped to a circle.
+      // On the meridian's other half from the scope, which is near it, and
+      // backed so the meridian does not strike it through.
+      const label = flipping ? `⚠ ${flipStatus(flipping)}` : `⚠ Flip in ${flipRange(flip)} min`;
+      const y = cy + (proj(alt, az).y > cy ? -0.7 : 0.7) * R;
       ctx.font      = `bold ${10 * dpr}px sans-serif`;
-      ctx.fillStyle = "rgba(244,162,97,0.9)";
       ctx.textAlign = "center";
-      ctx.fillText(`⚠ Flip in ${ttf.toFixed(0)} min`, cx, cy + R + 18 * dpr);
+      ctx.textBaseline = "middle";
+      const w = ctx.measureText(label).width + 12 * dpr;
+      ctx.fillStyle = "rgba(10,14,28,0.85)";
+      ctx.fillRect(cx - w / 2, y - 8 * dpr, w, 16 * dpr);
+      ctx.fillStyle = "rgba(244,162,97,0.9)";
+      ctx.fillText(label, cx, y);
       ctx.textAlign = "start";
+      ctx.textBaseline = "alphabetic";
     }
   }
 

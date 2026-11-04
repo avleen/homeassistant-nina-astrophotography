@@ -48,10 +48,30 @@ coverage:
 
 # The fixture redaction guard.
 fixtures-check:
-    uv run python scripts/check_fixtures.py tests/fixtures/*.json
+    uv run python scripts/check_fixtures.py tests/fixtures/*.json tests/fixtures/rig/*
 
 # Everything CI checks, run locally.
 ci: lint typecheck test-all coverage fixtures-check
+
+# The test VM (docs/test-vm.md, tools/windows-rig/README.md). The build reads
+# RIG_WINDOWS_ISO and RIG_VIRTIO_ISO unless given --iso and --virtio.
+rig := "uv run python tools/windows-rig/rig.py"
+
+rig-build *args:
+    {{ rig }} build {{ args }}
+
+rig-install channel="stable":
+    {{ rig }} install {{ channel }}
+
+# Starts a session, installing the channel first if its layer is missing or stale.
+rig-up channel="stable" *args:
+    {{ rig }} up {{ channel }} {{ args }}
+
+rig-wait:
+    {{ rig }} wait
+
+rig-down:
+    {{ rig }} down
 
 # Remove caches and coverage output.
 clean:
@@ -71,7 +91,7 @@ deploy:
 
 # Sync the automation blueprints.
 deploy-blueprints:
-    # HA filed these under the importing GitHub user's folder, not the repo name.
+    # HA files an imported blueprint under the GitHub user's folder, not the repo's.
     rsync -v blueprints/automation/nina_astrophotography/*.yaml \
         {{ ha_host }}:{{ ha_config }}/blueprints/automation/dgivens/
 

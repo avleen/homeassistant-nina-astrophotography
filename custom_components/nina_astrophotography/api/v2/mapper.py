@@ -9,8 +9,8 @@
     diagnostic. `Stars -1` is a sentinel everywhere, never a calibration
     signal.
   - `TimeToMeridianFlip` is `None` while tracking is off, and at the literal
-    24 (the sentinel) regardless of `TrackingEnabled` — every computed value
-    is in [0, 24), so 12 h is a legitimate reading and only 24 is the sentinel.
+    24 whatever `TrackingEnabled` says: every computed value is in [0, 24), so
+    12 h is a legitimate reading and only 24 is the sentinel.
   - A `Connected: false` block maps with every reading `None`; `connected`,
     `meta` and capability flags survive, since a disconnected driver answers
     template defaults for readings, not for capabilities.
@@ -55,6 +55,7 @@ from ..models import (
     RotatorModel,
     SafetyMonitorModel,
     SequenceNode,
+    ShutterState,
     SwitchChannelModel,
     SwitchDeviceModel,
     WeatherModel,
@@ -64,6 +65,10 @@ _MERIDIAN_IDLE_SENTINEL = 24.0
 _IDLE_ITERATIONS_SENTINEL = -1
 _NO_STARS_SENTINEL = -1
 _CALIBRATION_TYPES = frozenset({"FLAT", "DARK", "BIAS", "DARKFLAT"})
+# Every PHD2 app state but `Guiding`.
+_PHD2_NOT_GUIDING = frozenset(
+    {"Stopped", "Selected", "Calibrating", "LostLock", "Paused", "Looping"}
+)
 # Far above any plausible ASCOM switch id, so a synthesized read-only index
 # can never collide with a real one from either list.
 _READONLY_INDEX_BASE = 10_000
@@ -109,9 +114,8 @@ _TIMESPAN = re.compile(
     r"(?P<minutes>\d{2}):(?P<seconds>\d{2}(?:\.\d+)?)$"
 )
 
-# The only method whose focus points are HFR in pixels. An allowlist, not a
-# denylist: CONTRASTDETECTION is the one non-HFR method shipped today, and a
-# method nobody here has seen must not have its numbers published as pixels.
+# The only method whose focus points are HFR in pixels. An allowlist, so an
+# unknown method's numbers are never published as pixels.
 _HFR_METHODS = frozenset({"STARHFR"})
 
 
@@ -325,15 +329,26 @@ def map_filter_wheel(wire: dict) -> FilterWheelModel:
 def map_guider(wire: dict) -> GuiderModel:
     """RMSError is reported in both pixels and arcseconds; arcseconds is the
     figure that means the same thing on every rig.
+
+    **In PHD2's other states it is the last run's figure, not a reading.**
+    N.I.N.A. computes it over its last `HistorySize` guide steps (100 by
+    default), which PHD2 sends only while guiding, so it is held through a stop,
+    a lost lock, looping and calibration, and reads 0 on a guider that has not
+    guided since it connected. A start does not clear it: a run's first
+    `HistorySize` steps still average in the run before, a meridian flip's
+    included. Other drivers name their states differently — MetaGuide guides as
+    `Locked and Guiding` — so their RMS passes through.
     """
     readings = _readings(wire)
+    state = _text(readings, "State")
+    rms = None if state in _PHD2_NOT_GUIDING else readings.get("RMSError")
     return GuiderModel(
         connected=_connected(wire),
         meta=_meta(wire),
-        state=_text(readings, "State"),
-        rms_total=_number(readings, "RMSError", "Total", "Arcseconds"),
-        rms_ra=_number(readings, "RMSError", "RA", "Arcseconds"),
-        rms_dec=_number(readings, "RMSError", "Dec", "Arcseconds"),
+        state=state,
+        rms_total=_number(rms, "Total", "Arcseconds"),
+        rms_ra=_number(rms, "RA", "Arcseconds"),
+        rms_dec=_number(rms, "Dec", "Arcseconds"),
         # A plate scale of 0 is never a reading, connected or not.
         pixel_scale=_number(readings, "PixelScale") or None,
     )
@@ -352,18 +367,35 @@ def map_rotator(wire: dict) -> RotatorModel:
     )
 
 
+_SHUTTER_STATES: Mapping[str, ShutterState] = MappingProxyType(
+    {
+        "ShutterOpen": "open",
+        "ShutterClosed": "closed",
+        "ShutterOpening": "opening",
+        "ShutterClosing": "closing",
+        "ShutterError": "error",
+    }
+)
+
+
 def map_dome(wire: dict) -> DomeModel:
     readings = _readings(wire)
+    following = _flag(readings, "IsFollowing")
     return DomeModel(
         connected=_connected(wire),
         meta=_meta(wire),
         azimuth=_number(readings, "Azimuth"),
-        shutter_status=_text(readings, "ShutterStatus"),
+        shutter_status=_SHUTTER_STATES.get(_text(readings, "ShutterStatus") or ""),
         at_park=_flag(readings, "AtPark"),
         at_home=_flag(readings, "AtHome"),
         driver_following=_flag(readings, "DriverFollowing"),
-        following=_flag(readings, "IsFollowing"),
+        following=following,
+        synchronized=_flag(readings, "IsSynchronized") if following else None,
         slewing=_flag(readings, "Slewing"),
+        can_set_shutter=_flag(wire, "CanSetShutter"),
+        can_set_azimuth=_flag(wire, "CanSetAzimuth"),
+        can_park=_flag(wire, "CanPark"),
+        can_find_home=_flag(wire, "CanFindHome"),
     )
 
 
@@ -421,8 +453,6 @@ def map_switch(wire: dict) -> SwitchDeviceModel:
             index = _integer(entry, "Id")
             channels.append(
                 SwitchChannelModel(
-                    # Namespaced per list: `position` restarts at 0 for the
-                    # second list, so both lists' fallbacks would collide.
                     index=index
                     if index is not None
                     else _fallback_index(key, position),
@@ -613,6 +643,11 @@ def _sequence_node(wire: dict, fallback: str) -> SequenceNode:
         status=_text(wire, "Status"),
         iterations=None if iterations is None else str(iterations),
         target_name=_text(wire, "TargetName"),
+        # Recognised by the trigger's own pair of fields rather than its Name,
+        # which is display text.
+        refocus_temperature=_number(wire, "TargetTemperature")
+        if "DeltaTemperature" in wire
+        else None,
         children=tuple(
             _sequence_node(child, key)
             for key in _SEQUENCE_CHILDREN
@@ -633,6 +668,7 @@ def map_sequence(wire: list[dict] | None) -> SequenceNode | None:
         status=None,
         iterations=None,
         target_name=None,
+        refocus_temperature=None,
         children=tuple(
             _sequence_node(node, "GlobalTriggers")
             for node in wire
@@ -772,14 +808,9 @@ def _fit_minima(wire: dict) -> tuple[FitMinimum, ...]:
 def map_last_autofocus(wire: dict) -> AutoFocusReport | None:
     """The newest autofocus report, or `None` where the rig has never run one.
 
-    `r_squared` is the minimum of `RSquares`, which sends `"NaN"` for fittings
-    this run did not use — the worst fit actually computed.
-
-    A CONTRASTDETECTION run's focus points are a contrast score, not pixels,
-    so `hfr`/`fitted_hfr` are dropped; positions stay. `hfr` is the sweep's
-    lowest measured point, unlike `fitted_hfr` (`CalculatedFocusPoint.Value`),
-    which under a `TREND*` fitting averages in the trendline intersection and
-    reads far below anything measured.
+    `r_squared` is the minimum of `RSquares` over the fittings this run used;
+    the rest send `"NaN"`. A CONTRASTDETECTION run's focus points are a
+    contrast score, not pixels, so the HFR fields are dropped; positions stay.
     """
     if not wire:
         return None
@@ -821,7 +852,7 @@ def map_last_autofocus(wire: dict) -> AutoFocusReport | None:
 
 def map_livestack_status(wire: dict | str) -> LivestackStatus:
     """The Response is the bare status string (`"Running"`), not the spec's
-    `{"Status": "Running"}`, which is still read as a fallback.
+    `{"Status": "Running"}`, which is read as a fallback.
     """
     raw = wire if isinstance(wire, str) else _text(wire, "Status") or ""
     return LivestackStatus(running=raw.lower() == "running", raw_state=raw)
@@ -846,4 +877,21 @@ def map_profile(wire: dict) -> ProfileSettings:
         site_latitude=_number(wire, "AstrometrySettings", "Latitude"),
         site_longitude=_number(wire, "AstrometrySettings", "Longitude"),
         site_elevation=_number(wire, "AstrometrySettings", "Elevation"),
+        dome_close_on_unsafe=_flag(wire, "DomeSettings", "CloseOnUnsafe"),
+        dome_refuse_unsafe_shutter_move=_flag(
+            wire, "DomeSettings", "RefuseUnsafeShutterMove"
+        ),
+        dome_refuse_open_without_safety_monitor=_flag(
+            wire, "DomeSettings", "RefuseUnsafeShutterOpenSansSafetyDevice"
+        ),
+        dome_refuse_unpark_while_shut=_flag(
+            wire, "DomeSettings", "RefuseUnparkWithoutShutterOpen"
+        ),
+        dome_park_mount_before_shutter_move=_flag(
+            wire, "DomeSettings", "ParkMountBeforeShutterMove"
+        ),
+        dome_park_before_shutter_move=_flag(
+            wire, "DomeSettings", "ParkDomeBeforeShutterMove"
+        ),
+        dome_find_home_before_park=_flag(wire, "DomeSettings", "FindHomeBeforePark"),
     )

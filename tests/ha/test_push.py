@@ -1,7 +1,7 @@
 """Push, poll and `/event-history` replay are one idempotent fold.
 
-Asserted through `coordinator.data` and the light: phase B has no session
-sensors yet, and `data` is the published snapshot every phase-C entity reads.
+Asserted through `coordinator.data`, the published snapshot every entity reads,
+and the light.
 """
 
 from datetime import datetime
@@ -25,26 +25,17 @@ def _count(entry: MockConfigEntry) -> int:
     return entry.runtime_data.coordinator.data.session.image_count
 
 
-async def test_a_pushed_frame_is_published_without_waiting_for_the_poll(
-    hass: HomeAssistant, loaded_entry, push, rig
+@pytest.mark.parametrize("deliveries", [1, 2], ids=["once", "redelivered"])
+async def test_a_pushed_frame_is_published_at_once_and_folded_once(
+    hass: HomeAssistant, loaded_entry, push, rig, deliveries: int
 ) -> None:
     """`async_set_updated_data`, not `async_request_refresh` — that single line
-    is what makes the design push-first rather than socket-as-a-hint.
+    is what makes the design push-first rather than socket-as-a-hint. Frame
+    identity is `(Date, Filename)`, identical on the push and poll paths, so a
+    redelivery must not move the count.
     """
     before = _count(loaded_entry)
-    push(load_fixture("live_image_save_push.json"))
-    await hass.async_block_till_done()
-    assert _count(loaded_entry) == before + 1
-
-
-async def test_the_same_frame_pushed_twice_is_folded_once(
-    hass: HomeAssistant, loaded_entry, push, rig
-) -> None:
-    """Frame identity is `(Date, Filename)`, identical on the push and poll
-    paths, so a redelivery must not move the count.
-    """
-    before = _count(loaded_entry)
-    for _ in range(2):
+    for _ in range(deliveries):
         push(load_fixture("live_image_save_push.json"))
         await hass.async_block_till_done()
     assert _count(loaded_entry) == before + 1
@@ -68,14 +59,14 @@ async def test_a_disconnect_event_refetches_the_snapshot_before_the_next_tick(
 
 
 async def test_a_push_cannot_resurrect_a_failed_poll(
-    hass: HomeAssistant, loaded_entry, push, advance, rig
+    hass: HomeAssistant, outage, loaded_entry, push, advance
 ) -> None:
     """`async_set_updated_data` sets `last_update_success`, so an ungated push
     would report eleven devices available on a rig that is still unreachable.
     The fold still takes the frame — it appears once the rig answers again.
     """
     before = _count(loaded_entry)
-    await advance("nina_unreachable")
+    await outage()
     push(load_fixture("live_image_save_push.json"))
     await hass.async_block_till_done()
     assert state_of(hass, LIGHT).state == "unavailable"

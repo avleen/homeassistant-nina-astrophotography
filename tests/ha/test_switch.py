@@ -171,8 +171,9 @@ async def test_the_livestack_switch_exists_and_reads_off_without_the_plugin(
 async def test_a_commands_own_response_never_sets_the_state(
     hass: HomeAssistant, loaded_entry, rig
 ) -> None:
-    """Measured: set-light?on=true answered success while an immediate re-read
-    still showed LightOn false; it changed seconds later.
+    """A command answers success before the equipment moves — after
+    set-light?on=true an immediate re-read still shows LightOn false — so the
+    state waits for the poll.
     """
     await _call(hass, SERVICE_TURN_ON, LIVESTACK)
     assert rig.sent == [("/livestack/start", None)]
@@ -237,18 +238,52 @@ async def test_on_and_off_are_the_channels_own_range_ends(
     assert rig.sent == [("/equipment/switch/set", {"index": 0, "value": 2.0})]
 
 
-async def test_the_cooler_sends_the_setpoint_the_camera_reports(
-    hass: HomeAssistant, advance, rig
+@pytest.mark.parametrize(
+    ("state", "entity", "service", "sent"),
+    [
+        # /cool has no "resume at the existing target" form, so starting the
+        # cooler has to name a temperature: the camera's own captured -5 °C,
+        # never a hardcoded default.
+        (
+            "imaging_guiding",
+            COOLER,
+            SERVICE_TURN_ON,
+            ("/equipment/camera/cool", {"temperature": -5.0, "minutes": -1}),
+        ),
+        # There is no cooler toggle: the two directions are different endpoints.
+        (None, COOLER, SERVICE_TURN_OFF, ("/equipment/camera/warm", {"minutes": -1})),
+        # The parameter is `power`, not `on`; an unbound one is ignored and the
+        # call still answers Success: true.
+        (
+            None,
+            DEW_HEATER,
+            SERVICE_TURN_ON,
+            ("/equipment/camera/dew-heater", {"power": "true"}),
+        ),
+        # set-cover's parameter is `closed`, so opening sends false.
+        (
+            None,
+            COVER,
+            SERVICE_TURN_ON,
+            ("/equipment/flatdevice/set-cover", {"closed": "false"}),
+        ),
+    ],
+    ids=["cooler on", "cooler off", "dew heater", "cover open"],
+)
+async def test_a_switch_sends_the_endpoint_and_parameter_the_api_binds(
+    hass: HomeAssistant,
+    loaded_entry,
+    advance,
+    rig,
+    state: str | None,
+    entity: str,
+    service: str,
+    sent: tuple,
 ) -> None:
-    """/cool has no "resume at the existing target" form, so starting the
-    cooler has to name a temperature: the captured -5 °C, not the -10 °C 1.4.5
-    hardcoded whatever the camera was set to.
-    """
-    await advance("imaging_guiding")
-    await _call(hass, SERVICE_TURN_ON, COOLER)
-    assert rig.sent == [
-        ("/equipment/camera/cool", {"temperature": -5.0, "minutes": -1})
-    ]
+    if state:
+        await advance(state)
+    await _call(hass, service, entity)
+    assert rig.sent == [sent]
 
 
 @pytest.mark.synthetic
@@ -263,24 +298,6 @@ async def test_the_cooler_refuses_to_start_without_a_setpoint(
     with pytest.raises(ServiceValidationError):
         await _call(hass, SERVICE_TURN_ON, COOLER)
     assert rig.sent == []
-
-
-async def test_turning_the_cooler_off_warms_rather_than_cooling(
-    hass: HomeAssistant, loaded_entry, rig
-) -> None:
-    """There is no cooler toggle: the two directions are different endpoints."""
-    await _call(hass, SERVICE_TURN_OFF, COOLER)
-    assert rig.sent == [("/equipment/camera/warm", {"minutes": -1})]
-
-
-async def test_the_dew_heater_sends_the_parameter_the_api_binds(
-    hass: HomeAssistant, loaded_entry, rig
-) -> None:
-    """The parameter is `power`, not `on`; an unbound one is ignored and the
-    call still answers Success: true.
-    """
-    await _call(hass, SERVICE_TURN_ON, DEW_HEATER)
-    assert rig.sent == [("/equipment/camera/dew-heater", {"power": "true"})]
 
 
 async def test_the_cover_switch_needs_a_panel_that_can_open_and_close(
@@ -305,14 +322,6 @@ async def test_a_cover_between_positions_reads_unknown(
     """
     await set_up_with_flat_device(cover_state="NeitherOpenNorClosed")
     assert state_of(hass, COVER).state == "unknown"
-
-
-async def test_opening_the_cover_inverts_the_parameter_the_api_takes(
-    hass: HomeAssistant, loaded_entry, rig
-) -> None:
-    """set-cover's parameter is `closed`, so opening sends false."""
-    await _call(hass, SERVICE_TURN_ON, COVER)
-    assert rig.sent == [("/equipment/flatdevice/set-cover", {"closed": "false"})]
 
 
 @pytest.mark.parametrize(
@@ -352,16 +361,16 @@ async def test_the_cut_switches_are_not_registered(
     assert registered(SWITCH_DOMAIN, entity_registry, loaded_entry, key) is None
 
 
-async def test_the_long_tail_ships_diagnostic_and_disabled(
+async def test_the_long_tail_ships_config_and_disabled(
     loaded_entry: MockConfigEntry, entity_registry
 ) -> None:
-    """`dome_following` is absent from this assertion: no capture observes a
-    dome, so §5.2.2 gates it out entirely.
+    """`dome_following` is in `test_dome.py`: the reference rig has none, so
+    §5.2.2 gates it out here.
     """
     entry = entity_registry.async_get(
         registered(SWITCH_DOMAIN, entity_registry, loaded_entry, "rotator_reverse")
     )
     assert (entry.entity_category, entry.disabled_by is not None) == (
-        EntityCategory.DIAGNOSTIC,
+        EntityCategory.CONFIG,
         True,
     )

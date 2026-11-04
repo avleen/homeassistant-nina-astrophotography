@@ -10,17 +10,13 @@ Every state carries the same endpoints, so advancing never changes which routes
 exist — an endpoint one state serves and another does not reads to the client
 as a build that dropped a route.
 
-The three tier-polled endpoints — `/livestack/status`,
-`/profile/show?active=true` and `/equipment/focuser/last-af` — are served by
-the whole captures alone (`imaging_guiding` and the three `_captured` states).
-The dawn family deliberately leaves them unregistered: an unregistered path
-answers 404, which is what a build without the livestack plugin sends, and that
-keeps the coordinator's not-served latch exercised.
-
-Which makes those two groups the exception to the paragraph above, and the
-reason a test enters a whole capture with the `set_up_at` fixture rather than
-`advance`: advancing from a dawn state has the latch already fired, and one
-refresh does not retry.
+The exception is the three tier-polled endpoints — `/livestack/status`,
+`/profile/show?active=true` and `/equipment/focuser/last-af` — which only the
+whole captures (`_captured`) serve. The dawn family leaves them unregistered:
+they answer 404, as a build without the livestack plugin does, which keeps the
+coordinator's not-served latch exercised. Advancing from a dawn state arrives
+with that latch fired and one refresh does not retry, so a test enters a whole
+capture with the `set_up_at` fixture, not `advance`.
 
 Adding a state: build it from captured envelopes, never from a hand-written
 document. A state the corpus cannot show belongs in `AWAITING_CAPTURE`.
@@ -71,9 +67,8 @@ def _captured(slug: str) -> State:
 
     A capture is whole when `capture_fixtures.py --state <slug>` wrote all
     fourteen files, which needs none of the assembly a partial corpus does.
-    `/version` and `/version/nina` come from `_meta` rather than their own
-    files, for the reason `_versions` gives — the captured `{slug}_version.json`
-    is unreadable by anything but the drift guard, its `Response` redacted.
+    `/version` and `/version/nina` come from `_meta`, for the reason `_versions`
+    gives; the captured `{slug}_version.json` serves only the drift guard.
 
     `/image/0` defaults to the bare path's envelope: a capture never calls it —
     it answers bytes — and this is only ever read where the history is empty
@@ -120,12 +115,11 @@ def _truncated_after_the_last_autofocus_start(name: str) -> dict:
 def _newest_frame(name: str) -> dict:
     """Bare `/image-history`: the newest frame of a captured `?all=true` list.
 
-    The bytes are captured; only the envelope around them is assembled, for a
-    rig state whose own bare path was never captured. The frame is the wire's
-    own newest by `Date`, wrapped in a ONE-ELEMENT LIST — which is what the
-    captured `imaging_guiding_image_history_latest.json` holds, so that is the
-    shape. One frame is one frame either way: reseeding the session from this
-    path is what leaves `Session Image Count` reading 1.
+    The frame is captured; only the envelope is assembled, for the dawn family
+    whose bare path has no capture. It is the wire's own newest by `Date`,
+    wrapped in a ONE-ELEMENT LIST — the shape
+    `imaging_guiding_image_history_latest.json` captures. Reseeding the session
+    from this path leaves `Session Image Count` reading 1.
     """
     frames = load_envelope(name)["Response"]
     return ok([max(frames, key=lambda frame: frame["Date"])])
@@ -227,8 +221,8 @@ def _rangeless(channel: dict) -> dict:
 def _degenerate(channel: dict) -> dict:
     """A channel reporting `Min 0 / Max 0 / Step 0`.
 
-    What a DISCONNECTED device sends for a range, which `number.py` already
-    documents for the flat panel. `Max - Min == Step` holds, so without a
+    What a DISCONNECTED device sends for a range, as `number.py` documents for
+    the flat panel. `Max - Min == Step` holds, so without a
     zero-step guard it reads as binary and mints a switch whose on and off
     values are both 0.
     """
@@ -293,8 +287,7 @@ _IMAGING: State = {
 }
 
 # 01:45 rig-local, 4.2 h into a session that began with a restart at 17:27: the
-# camera exposing, the guider locked, 27 frames down, livestack running. The
-# only state whose every endpoint is captured.
+# camera exposing, the guider locked, 27 frames down, livestack running.
 _IMAGING_GUIDING: State = {
     **_captured("imaging_guiding"),
     # This state HAS frames, so both image routes answer bytes.
@@ -372,6 +365,17 @@ _LOST_LOCK_AFTER_STOP: State = {
     "/livestack/image/Rotten%20Fish/R": _JPEG,
 }
 
+_DOME_PARKED: State = _captured("simulator_dome_parked")
+
+
+def _dome_from(slug: str) -> State:
+    """The parked simulator capture with the dome block of a later
+    `simulator_dome_<slug>` /equipment/info; every other block stays parked's.
+    """
+    block = load_envelope(f"simulator_dome_{slug}_equipment_info.json")["Response"]
+    return _replace_device(_DOME_PARKED, "Dome", block["Dome"])
+
+
 # Each name gets its own dict even where two are content-equal, so an in-place
 # edit in one test cannot leak into a state of another name.
 STATES: dict[str, State] = {
@@ -380,6 +384,12 @@ STATES: dict[str, State] = {
     # Mid-session with everything captured: guider Guiding, camera exposing,
     # livestack Running, the profile and the last autofocus run served.
     "imaging_guiding": dict(_IMAGING_GUIDING),
+    # The same rig waiting out a meridian flip: N.I.N.A. turns tracking off
+    # until meridian + Min, and the countdown reads its 24 h sentinel.
+    # Synthetic in those two readings alone; no capture caught a flip.
+    "waiting_to_flip": _with_readings(
+        _IMAGING_GUIDING, "Mount", TrackingEnabled=False, TimeToMeridianFlip=24
+    ),
     # CONTENT-IDENTICAL to `imaging`, deliberately: the 67 flats are in the
     # same history, because dawn flats are a phase of the night rather than a
     # different snapshot. The name exists so a test can say what it is
@@ -411,6 +421,12 @@ STATES: dict[str, State] = {
     "guider_restarting_after_stop": _with_readings(
         _LOST_LOCK_AFTER_STOP, "Guider", State="Looping"
     ),
+    # Captured from the simulator rig (`docs/test-vm.md`): real wire data from
+    # simulated devices, with no frame taken. PHD2 calibrating at a guider
+    # start, N.I.N.A. still reporting the RMS of the run before it; and a
+    # guider just reconnected, which reports an RMS of 0 until it guides.
+    "simulator_guider_calibrating": _captured("simulator_guider_calibrating"),
+    "simulator_guider_connected": _captured("simulator_guider_connected"),
     # 20:49, ten seconds after SEQUENCE-STARTING: every container still CREATED
     # on a sequence that IS running. The tree lags the start, so it cannot be
     # the only running signal either.
@@ -424,17 +440,44 @@ STATES: dict[str, State] = {
     # has not passed: a waiting entity keyed on the newest alone would read
     # "waiting until 21:05" on a stopped rig.
     "sequence_stopped": _captured("sequence_stopped"),
+    # Captured from the simulator rig (`docs/test-vm.md`): real wire data from
+    # an OmniSim dome. Parked with the shutter closed, and open following the
+    # mount. The next two swap in the dome block of a later /equipment/info:
+    # mid-slew, and dropped after having connected.
+    "simulator_dome_parked": dict(_DOME_PARKED),
+    "simulator_dome_following": _captured("simulator_dome_following"),
+    "simulator_dome_slewing": _dome_from("slewing"),
+    "simulator_dome_disconnected": _dome_from("disconnected"),
+    # Synthetic in `ShutterStatus` alone: the simulator cannot fail.
+    "simulator_dome_shutter_error": _with_readings(
+        _DOME_PARKED, "Dome", ShutterStatus="ShutterError"
+    ),
+    # Synthetic in `IsSafe` alone: the simulator's monitor reads safe.
+    "simulator_dome_unsafe": _with_readings(
+        _DOME_PARKED, "SafetyMonitor", IsSafe=False
+    ),
+    # The monitor's driver down, derived as `disconnect` derives one.
+    "simulator_dome_monitor_down": disconnect(_DOME_PARKED, "SafetyMonitor"),
+    # A dome whose driver cannot move its shutter. Synthetic in `CanSetShutter`.
+    "dome_without_shutter_control": _with_readings(
+        _DOME_PARKED, "Dome", CanSetShutter=False
+    ),
+    # A roll-off roof: a shutter and nothing else. Synthetic in the capability
+    # flags and the azimuth, which such a driver cannot report.
+    "roll_off_roof": _with_readings(
+        _DOME_PARKED,
+        "Dome",
+        CanSetAzimuth=False,
+        CanSyncAzimuth=False,
+        CanPark=False,
+        CanSetPark=False,
+        CanFindHome=False,
+        Azimuth="NaN",
+        AzimuthDMS="",
+    ),
     # Four of eleven devices connected, mid-reconnect.
     "partial_equipment_connection": dict(_RESTARTED),
     "nina_restarted": dict(_RESTARTED),
-    "sequencer_not_initialized": {
-        **_IMAGING,
-        "/sequence/json": load_envelope("startup_sequence_not_initialized.json"),
-    },
-    # Also content-identical to `imaging`: the dawn capture IS the physical
-    # station — SkyBrightness 5692 with CloudCover "NaN", on device-09 — and
-    # `weather_openmeteo` below is the contrast it exists for.
-    "weather_physical_station": dict(_IMAGING),
     # The same rig reporting weather from OpenMeteo on device-12: CloudCover 14
     # with SkyBrightness "NaN". The two sources' fields are disjoint.
     "weather_openmeteo": {
@@ -489,10 +532,6 @@ STATES: dict[str, State] = {
         **_IMAGING,
         "/application-start": {**ok(), "Response": None},
     },
-    # The guider connected but no longer locked on, and the guider stopped.
-    # `GuiderInfo.State` is Looping | LostLock | Guiding | Stopped | Calibrating
-    # and the corpus holds only `Guiding` — a guider that is down carries no
-    # `State` at all — so both are synthetic in that one string.
     # An autofocus that FINISHED and was rejected on its curve fit: the profile
     # threshold is 0.7 and this run fitted 0.42. Invisible in the event stream
     # — the only evidence is the report's own R².
@@ -507,6 +546,9 @@ STATES: dict[str, State] = {
     "site_configured": _with_site(
         _IMAGING_GUIDING, Latitude=31.5478, Longitude=-110.2977, Elevation=1509
     ),
+    # `imaging_guiding` with the guider's lock lost, and with the guider
+    # stopped. Synthetic in `State` alone; a guider that is down carries no
+    # `State` at all.
     "guider_lost_lock": _with_readings(_IMAGING_GUIDING, "Guider", State="LostLock"),
     "guider_stopped": _with_readings(_IMAGING_GUIDING, "Guider", State="Stopped"),
     # A camera with no cooling, which reports the setpoint as "NaN" and so
@@ -610,7 +652,6 @@ STATES: dict[str, State] = {
             _DAWN_CHANNELS[1],
         ],
     ),
-    "camera_disconnected": disconnect(_IMAGING, "Camera"),
     "safety_monitor_disconnected": disconnect(_IMAGING, "SafetyMonitor"),
     # All eleven down: the seven the restart capture holds down, plus the four
     # that are connected in every capture.
@@ -639,5 +680,5 @@ SEQUENCES: dict[str, list[str]] = {
 # - camera_warm_at_setup: CoolerPower "NaN" with the camera connected, proving
 #   a transiently-NaN field does not become a dynamic channel.
 #
-# No ENDPOINT awaits capture any more — `imaging_guiding` serves all of them.
+# No ENDPOINT awaits capture: `imaging_guiding` serves all of them.
 AWAITING_CAPTURE = frozenset({"camera_warm_at_setup"})

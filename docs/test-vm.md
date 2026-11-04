@@ -1,6 +1,6 @@
 # Test VM — design
 
-**Status:** accepted, not yet implemented · 2026-09-27
+**Status:** accepted; stages 1, 0 and 2 done, stage 3 next · 2026-10-21
 
 The simulated rig is a disposable Windows VM running N.I.N.A., the Advanced API
 and PHD2 against simulated equipment. It lets the integration be tested end to end,
@@ -520,3 +520,812 @@ This is input to a future design. Nothing here is decided.
 [phd-supp]: https://openphdguiding.org/man-dev/Supplemental_Info.htm
 [ninaapi-rel]: https://github.com/christian-photo/ninaAPI/releases
 [ninaapi-b1]: https://github.com/christian-photo/ninaAPI/releases/tag/3.0.0.0-b.1
+
+---
+
+## 2026-10-19 — Windows media, and profiles made in the rig
+
+This revision replaces:
+- W-03 and W-12;
+- the glossary's *Evaluation ISO* and *the operator*;
+- §3.1's finding on the Evaluation ISO;
+- where §4.4 takes the profiles from;
+- the order of stages 0 and 1 in §6, and both of their texts;
+- §7, where one question is answered, one moves to stage 0, and two are added.
+
+It also adds an entry to §10.
+
+### Windows media
+
+| # | Decision | Choice |
+|---|---|---|
+| W-03 | Windows media | **Windows 11 IoT Enterprise LTSC 2024 Evaluation, ARM64** (build 26100), downloaded by each user |
+
+The glossary's *Evaluation ISO* now means this image. It is still free, needs no
+product key and lasts 90 days, so W-14 is unchanged.
+
+These findings replace §3.1's bullet on the Evaluation ISO:
+
+- **The Windows 11 Enterprise evaluation offers no ARM64 download.** Its landing
+  page lists "version 26H2 | x64 ISO and Arm64 ISO", but the download page
+  reached after registering offers x64 only ([Q&A][q-arm64]). The same page says
+  the 26H2 evaluation has to be signed into with a Microsoft account.
+- **The IoT Enterprise LTSC 2024 evaluation publishes an ISO for each of x64 and
+  ARM64** ([download][iot-eval]), behind the same registration form. It lasts 90
+  days, needs no product key, and expires the same way: a black desktop and an
+  hourly shutdown.
+- **Its ARM64 ISO:**
+
+  | | |
+  |---|---|
+  | File | `26100.1742.240906-0331.ge_release_svc_refresh_CLIENT_IOT_LTSC_EVAL_A64FRE_en-us.iso` |
+  | SHA256 | `3dcdba9c9c0aa0430d4332b60c9afcb3cd613d648a49cbba2d4ef7b5978f32e8` |
+  | Images in `install.wim` | one, index 1 |
+  | `/IMAGE/NAME` | `Windows 11 IoT Enterprise LTSC 2024 Evaluation` |
+  | EditionID, channel | `IoTEnterpriseSEval`, `eval` (`sources\EI.CFG`) |
+  | Architecture, build | ARM64, 26100.1742 |
+
+- **Microsoft publishes no hash for it that resolves.** The download page's
+  `Windows11IOTEnterpriseLTSCHashValues.pdf` link redirects to the Evaluation
+  Center's home page ([Q&A][q-hash]). The SHA256 above was computed from a
+  download of the ISO. It matches the hash a user posted for this file in that
+  thread, and it is the default for the ISO's SHA256 Packer variable (§4.2).
+- **Prism's AVX and AVX2 translation is not in this build.** It reached every
+  x64 app on 24H2 and later with a Prism update in December 2025
+  ([Microsoft][prism]). Build 26100.1742 dates from September 2024. The guest
+  has to take cumulative updates past that point before it emulates AVX.
+- **LTSC has no Microsoft Store, and so no inbox `winget`.** `provision/*.ps1`
+  installs from direct downloads, which W-08's "any clean Windows 11" already
+  requires.
+- **virtio-win 0.1.302** carries ARM64 builds of `viostor`, `vioscsi` and
+  `NetKVM` under `w11\ARM64`.
+
+> *Rationale.* LTSC keeps the evaluation licence: no key, no cost, no
+> redistribution. With it the rest of the design stands, W-14 included. The
+> Store and the inbox apps LTSC leaves out are not things the rig uses.
+
+**The answer file (W-05)** selects image index 1 through W-05's index
+variable; the name in the table above is what that index holds on this ISO. It
+has no `<ProductKey>` block. mac-vms's file selects `Windows 11 Pro` by name and
+supplies a generic key. Both of those change in stage 1, which is otherwise
+still built from mac-vms unmodified.
+
+**§10 gains an alternative:**
+
+- **Microsoft's consumer ARM64 ISO with a generic key**, which is how mac-vms
+  installs Windows 11 Pro. It never expires, which would remove W-14. But it
+  means running unactivated retail Windows, which the rig should not ask of a
+  contributor. It is the fallback if the IoT LTSC evaluation loses its ARM64
+  download too, as the Enterprise evaluation already has (§8, *Evaluation
+  access*).
+
+### Profiles made in the rig
+
+There is no existing simulator machine to export the profiles from, so they are
+made in the rig.
+
+| # | Decision | Choice |
+|---|---|---|
+| W-12 | Profiles | The simulator N.I.N.A. profile and PHD2 settings are **created in the stage 1 VM** and committed as fixtures in `tests/fixtures/rig/` |
+
+- **§4.4:** `nina-simulator.profile` comes from the stage 1 VM's
+  `%LOCALAPPDATA%\NINA\Profiles\`, and `phd2-simulator.phdcfg` is `phd2.exe -s`
+  run there. Every device slot is set to its OmniSim COM driver when the profile
+  is made (W-10).
+- **Stage 1 uses the `C:\rig\` layout** for every path a profile records: image
+  output, PHD2's executable, the plate solver. The exported profiles then
+  already point where stage 2's provisioning installs things, so normalising
+  paths changes almost nothing. The other redaction rules in §4.4 are
+  unchanged: the `Id` is replaced, credentials are blanked, and both files are
+  read by eye.
+- **Glossary:** *the operator* is whoever runs the live rig. The operator no
+  longer supplies the simulator profile.
+
+The stages now run in the order 1, 0, 2, 3, 4, 5. Stages 2 to 5 are unchanged.
+
+- **Stage 1, feasibility spike.** Build mac-vms' image with the Evaluation ISO
+  and the answer-file changes above, and bring the guest up to date through
+  Windows Update. Install everything by hand under the `C:\rig\` layout, then
+  create the simulator profile in N.I.N.A. and PHD2's settings, and export both.
+  - *Gate:* under emulation, all eleven devices connect, PHD2 guides on its
+    simulator, and the host reaches `/v2/api/*` and `/v2/socket`.
+- **Stage 0, profile fixtures.** The exported files are redacted per §4.4, the
+  guard learns their formats, and they are committed.
+  - *Gate:* `just ci` is green, and both files read clean by eye. Loaded back
+    into the stage 1 VM (the N.I.N.A. profile imported, then `phd2.exe -l`), the
+    redacted files still connect all eleven devices.
+
+> *Rationale.* A profile made in the rig names the drivers and paths the rig
+> actually has, so nothing about another machine has to be stripped out of it.
+> Loading the redacted files in stage 0, while the stage 1 VM still exists,
+> finds a redaction that breaks loading before stage 2 automates anything.
+
+### Open questions
+
+- **Answered:** the image index is 1, and the SKU label is the `/IMAGE/NAME`
+  above.
+- **Moved to stage 0:** whether the N.I.N.A. profile loads with normalised paths
+  and a new `Id`. Stage 0's gate answers it.
+- **Added for stage 1:**
+  - Whether LTSC's setup accepts a local account without mac-vms's
+    `BYPASSNRO` registry writes.
+  - Whether N.I.N.A., OmniSim and PHD2 run on this edition under Prism once it
+    is updated, and whether any of them needs AVX. Stage 1 records the build the
+    gate passed on.
+
+[iot-eval]: https://www.microsoft.com/en-us/evalcenter/download-windows-11-iot-enterprise-ltsc-eval
+[q-arm64]: https://learn.microsoft.com/en-us/answers/questions/5996955/need-windows-11-enterprise-version-25h2-arm64-iso
+[q-hash]: https://learn.microsoft.com/en-us/answers/questions/2181328/issue-broken-windows-11-iot-hashes-pdf-link
+
+---
+
+## 2026-10-20 — Stage 1 findings
+
+Stage 1's gate passed. This revision records what stage 2 has to build to
+reproduce it.
+
+It replaces:
+- W-07's account, W-09's PHD2 architecture and W-10's ProgIDs;
+- §3.2's bullets on OmniSim's COM registration and on PHD2's x64 installer;
+- the stage 1 open questions in §7 and in the 2026-10-19 revision, which it
+  answers or carries forward.
+
+It adds findings on the host, on servicing Windows from a remote session, and
+on installing the equipment software, and two terms to the glossary.
+
+### Glossary additions
+
+| Term | Meaning |
+|---|---|
+| console session | The desktop session autologon starts. N.I.N.A., OmniSim and PHD2 run in it |
+| remote session | A logon over SSH or WinRM. It has no desktop, and Windows refuses some servicing from it |
+
+### The gate
+
+| Condition | Result |
+|---|---|
+| All eleven devices connect under emulation | Yes. Each reports its `ASCOM.OmniSim.<Type>` ProgID as `DeviceId`; PHD2 reports `PHD2_Single` |
+| PHD2 guides on its simulator | Yes, at 1.5–2.2″ RMS after a calibration of about five minutes |
+| The host reaches `/v2/api/*` | Yes: `/version`, `/equipment/info`, `/equipment/guider/info` |
+| The host reaches `/v2/socket` | Yes: the upgrade succeeds, and a commanded filter change arrives as `FILTERWHEEL-CHANGED` |
+
+It passed with this setup:
+
+| | |
+|---|---|
+| Host | MacBook Pro, M4 Max, macOS 26.6.2 |
+| Tools | QEMU 11.1.2, Packer 1.16.1 with its QEMU plugin 1.1.7, swtpm from Homebrew |
+| Guest | 8 vCPUs, 16 GB, a 100 GB disk |
+| Windows | IoT Enterprise LTSC 2024 Evaluation, build **26100.9457** |
+| Software | ASCOM Platform 7.1.3.4851, N.I.N.A. 3.2.0.9001, Advanced API 2.2.15.2, Livestack 1.1.5.1, PHD2 2.6.14 |
+
+### The host
+
+mac-vms' template, adapted, built the base in about eight minutes. Stage 2's
+Packer source and `rig.py`'s backend carry these differences from it, besides
+the answer file's (2026-10-19 revision):
+
+- **The TPM device sets `ppi=off`.** QEMU 11.1's `tpm-tis-device` defaults
+  to `ppi=on`, which adds a RAM region smaller than a 16 KiB host page.
+  Hypervisor.framework refuses to map it, and QEMU exits at start-up with
+  `HV_BAD_ARGUMENT` from `accel/hvf/hvf-all.c`. Neither Windows on ARM nor
+  the `virt` machine's firmware uses PPI.
+- **The swtpm socket lives in a short temporary directory.** macOS limits a
+  Unix socket path to 104 bytes, and a path under the repository exceeds it.
+- **No seed, no sysprep** (W-07). On a client edition, `sysprep /generalize
+  /oobe` disables the built-in Administrator, which leaves only the seeded
+  account to log in with. Packer shuts the guest down with a
+  `shutdown_command` instead.
+- **The rig runs with `virtio-gpu-pci`, and the build with `ramfb`.**
+  `ramfb` has no resolution properties and shows the firmware's 800×600.
+  Windows Setup has no driver for a virtio GPU, so the build keeps `ramfb`.
+  Provisioning installs virtio-win's `viogpudo` (`viogpudo\w11\ARM64`) while
+  the guest still has `ramfb`. Display settings then offer any resolution.
+- **The forwards are SSH (22), RDP (3389) and the Advanced API (1888)**,
+  each on the host's loopback interface.
+
+### The guest
+
+**The rig runs as the built-in Administrator**, which replaces W-07's
+unnamed autologon user. The VM is reachable only through forwards on the
+host's loopback interface, so a separate user protects nothing.
+
+Provisioning applies these settings, none of which mac-vms makes:
+
+- Administrator's autologon, made permanent. The answer file's `LogonCount`
+  of 1 is spent during the build.
+- The host's SSH key, in `administrators_authorized_keys`.
+- PowerShell as OpenSSH's default shell
+  (`HKLM:\SOFTWARE\OpenSSH\DefaultShell`).
+- No display sleep, standby or lock screen.
+- The `RemoteSigned` execution policy for the machine.
+- Windows Firewall off on every profile. PHD2 and OmniSim each raise a
+  firewall prompt when they first listen.
+
+### Windows updates
+
+**Stage 2 installs one pinned cumulative update** with `DISM /Add-Package`,
+its URL and SHA256 Packer variables. Build 26100.1742 is 24H2's checkpoint,
+so the current update applies directly to it.
+
+The gate passed after Windows Update installed:
+
+| Update | What it is |
+|---|---|
+| KB5129195 | 2026-09 cumulative security update, build 26100.9457 |
+| KB5050575 | 2025-01 update for 24H2 ARM64 |
+| KB5127690 | .NET Framework security update |
+
+Whether KB5129195 needs KB5050575 is for stage 2 to find out.
+
+> *Rationale.* A pinned update makes every 80-day rebuild the same, and
+> costs one download and one restart. Running Windows Update until nothing is
+> left (the `rgl/windows-update` Packer plugin) needs no pin, but each
+> rebuild would differ, and the build gets much slower.
+
+### Servicing from a remote session
+
+**Downloading a Windows feature from Windows Update fails from a remote
+session.** `DISM /Online /Enable-Feature /FeatureName:NetFx3` over SSH ends
+with `E_ACCESSDENIED` ("Failed to get uup features from WU"). A scheduled
+task that runs as Administrator without a stored password fails the same
+way. The same command succeeds when typed into an elevated console in the
+console session.
+
+mac-vms installs OpenSSH, which comes from Windows Update too, through
+Packer's `elevated_user`, whose scheduled task stores the password. Stage 2
+uses `elevated_user` for every step that enables a feature or runs an
+installer.
+
+### The equipment software
+
+| Software | Installer | Silent install | Notes |
+|---|---|---|---|
+| ASCOM Platform 7.1.3.4851 | InstallAware | `/s` | Needs .NET 3.5 enabled first. Afterwards, check that `OmniSim.Camera` has a class registered (below) |
+| PHD2 2.6.14 | Inno Setup | `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR=C:\rig\PHD2` | x86 |
+| N.I.N.A. 3.2.0.9001 | WiX bundle, `NINASetupBundle.exe` inside the published zip | `/quiet /norestart` | x64, with its own .NET runtime |
+| Advanced API 2.2.15.2, Livestack 1.1.5.1 | zip | unzip into `%LOCALAPPDATA%\NINA\Plugins\3.0.0\<plugin name>\` | Both match the SHA256s in N.I.N.A.'s plugin manifest |
+
+- **ASCOM's installer enables .NET 3.5 itself, through a script that ends in
+  `pause`.** From a remote session DISM fails, and the script then waits for
+  a key that never comes. With .NET 3.5 already on, the installer skips the
+  script.
+- **ASCOM's own registration of the simulators can be missing after an
+  install.** Here `OmniSim.<Type>` named CLSIDs that were not registered, and
+  every device failed in N.I.N.A. with `MissingMethodException: .ctor`.
+  Running the installer's Repair in the console session registered them. The
+  install had been interrupted once and then run from a remote session, and
+  it is not known which of the two left the registration out.
+- **PHD2's Windows download is x86 only.** openphdguiding.org publishes one
+  Windows installer, and it and `phd2.exe` are both x86. Prism runs x86 as
+  it runs x64. This replaces W-09's "PHD2 x64" and the last bullet of §3.2's
+  PHD2 findings.
+
+### OmniSim's ProgIDs
+
+COM reaches OmniSim through three families of ProgID:
+
+| ProgID | In ASCOM's chooser | Served by |
+|---|---|---|
+| `ASCOM.OmniSim.<Type>` | yes, as "ASCOM OmniSim <Type>" | `OmniSim.COMProxy.exe`, an x86 .NET Framework local server |
+| `ASCOM.Simulator.<Type>` | yes, under the Platform 6 simulators' names | the same proxy, when `SetSimulators` selects the OmniSims |
+| `OmniSim.<Type>` | no | `ascom.alpaca.simulators.exe`, x64, OmniSim itself |
+
+The proxy serves each device by opening `OmniSim.<Type>`, so OmniSim starts
+when N.I.N.A. connects its first device.
+
+- **W-10's ProgIDs are `ASCOM.OmniSim.<Type>`.** N.I.N.A. offers only drivers
+  listed in ASCOM's chooser, and `OmniSim.<Type>` is not listed. This replaces
+  §3.2's first bullet, whose ProgIDs are the unlisted family.
+- **OmniSim needs the console session.** Started from a remote session, it
+  exits at once: it cannot create its tray icon. It is started by COM on
+  N.I.N.A.'s behalf, in the console session, so this never arises on the rig.
+- **N.I.N.A. shows each device by OmniSim's name**, such as "Alpaca Camera
+  Simulator". `tests/rig/`'s check that the rig is simulated (§5) keys on
+  `DeviceId`, the ProgID.
+
+### PHD2
+
+- **Its first-light wizard asked for a camera and a mount.** The profile
+  uses camera **Simulator** and mount **On Camera**. PHD2 also connected its
+  AO simulator, which guides with the mount behind it, and the OmniSim
+  rotator.
+- **"Scope pointing information not available"** follows calibration. The On
+  Camera mount cannot report declination or pier side. It needs nothing.
+- **`phd2.exe -s` works from a remote session.** It needs no desktop and
+  exits at once. The export includes the calibration, so a rig that loads it
+  can start guiding without calibrating.
+
+### The profiles
+
+Both were exported from the stage 1 VM for stage 0:
+
+- **`nina-simulator.profile`** is named `Simulator`. Its devices are the ten
+  `ASCOM.OmniSim.<Type>` and PHD2 at `C:\rig\PHD2\phd2.exe`, and it saves
+  images to `C:\rig\images\`. The sequence folders stay at their default,
+  under Administrator's `Documents\N.I.N.A`. Stage 0's redaction treats
+  them like any other `*Folder` path.
+- **`phd2-simulator.phdcfg`** holds one profile, plus the global keys `-s`
+  writes. It records no paths and no credentials.
+
+### Open questions
+
+- **Answered.** LTSC's Setup accepted the build's local Administrator
+  without mac-vms's `BYPASSNRO` registry writes.
+- **Answered.** N.I.N.A., OmniSim and PHD2 run on build 26100.9457 under
+  Prism. Whether any of them needs AVX was not tested, since nothing ran on
+  the ISO's build.
+- **Answered.** The silent-install switches are in the table above.
+- **Answered.** N.I.N.A. loads both plugins 5–8 s after it starts, and shows
+  no first-run dialog. The device connections, not N.I.N.A., set `wait`'s
+  timeout.
+- **Answered.** PHD2 needs nothing outside `-s` and `-l` except the
+  firewall, which is off. Its first-light wizard is what loading the settings
+  before its first start avoids (§3.2). Stage 0's reload confirms it.
+- **Carried to stage 3:** which plugin folder nightly N.I.N.A. reads, and
+  whether the 3.0 plugin starts with authentication and SSL off. Stage 1 ran
+  the stable channel only.
+
+---
+
+## 2026-10-20 — Stage 0: profile fixtures, and a simulated night
+
+Stage 0's gate passed. This revision:
+- replaces §4.4's list of what the guard allows, and its list of fixtures;
+- adds a start-up sequence that N.I.N.A. runs at logon, which refines W-11,
+  and a second sequence that simulates a night;
+- replaces W-10 for the camera slot, which takes N.I.N.A.'s own simulator
+  camera so that frames carry real star fields;
+- adds the Connector plugin and ASTAP to W-09;
+- adds requirements on provisioning;
+- records the events and sentinels the simulated night shows.
+
+### The gate
+
+| Condition | Result |
+|---|---|
+| `just ci` is green | Yes, with the guard reading every file in `tests/fixtures/rig/` |
+| Both files read clean by eye | Yes. Neither held a credential, an address or a personal path before redaction |
+| Loaded back into the stage 1 VM, the redacted files connect all eleven devices | Yes. PHD2 started without its first-light wizard and guided on the loaded calibration, without recalibrating |
+
+The profile's site, 51.07861° N, 0.29444° W, 708 m, is the ASCOM telescope
+simulator's. N.I.N.A. copies the mount's site into the profile when it
+connects.
+
+### The fixtures
+
+`tests/fixtures/rig/` holds four files:
+
+| File | What it is | Where provisioning puts it |
+|---|---|---|
+| `nina-simulator.profile` | The N.I.N.A. profile `Simulator`, `Id` `660fe38b-4d3a-458e-b25a-beadb6f9c83c` | `%LOCALAPPDATA%\NINA\Profiles\<Id>.profile` |
+| `phd2-simulator.phdcfg` | `phd2.exe -s`, with the calibration | loaded with `phd2.exe -l` |
+| `test-sequence.json` | The start-up sequence (below) | `C:\rig\sequences\Test Sequence.json` |
+| `simulated-night.json` | The simulated night (below) | `C:\rig\sequences\Simulated Night.json` |
+
+`.gitattributes` marks them `-text`, so they keep the bytes the guest
+wrote. PHD2's export has CRLF line endings.
+
+### What the guard allows
+
+`scripts/check_fixtures.py` reads JSON, N.I.N.A.'s XML and PHD2's
+`key<TAB>type<TAB>value` lines. Pre-commit and CI run it over
+`tests/fixtures/rig/*` as well as the JSON corpus.
+
+A file in `rig/` may hold these values as they are (`rig_value_kept` in
+`tests/redaction.py`):
+- a path under `C:\rig\`;
+- the profile's `Id`;
+- the simulator camera's device id, `4C0BBF74-0D95-41F6-AAD8-D6D58668CF2C`,
+  which is fixed in N.I.N.A.'s source;
+- `localhost`, `nova.astrometry.net` and `http://nova.astrometry.net`,
+  N.I.N.A.'s defaults for its PHD2, planetarium and plate-solving hosts.
+
+The profile stores a plugin's settings, the simulator camera's among them,
+as a serialized dictionary: a run of `KeyValueOf…` elements, each a `Key`
+and a `Value`. The guard reads it back as a dictionary, so its key rules see
+each setting's name (`Type`, `RAError`) and not the literal element `Key`.
+
+The hosts are an addition to §4.4: a `PHD2ServerUrl` of `"REDACTED"` stops
+N.I.N.A. reaching PHD2.
+
+**An empty string is never redacted**, in any fixture. It holds nothing, and
+a blanked credential is how a profile the rig loads carries one.
+
+> *Rationale.* The profiles were made in the rig, so before redaction they
+> held nothing to remove: their keys were empty and their paths were the VM's.
+> The guard is for the next export, which may carry a key someone set to test
+> a feature.
+
+### N.I.N.A. resets a folder that does not exist
+
+When N.I.N.A. loads a profile, it replaces each folder that does not exist
+with its default under the user's profile. It does not report doing so, and
+saves the default the next time it saves the profile. Provisioning creates
+these folders before N.I.N.A. first starts:
+
+- `C:\rig\images\`
+- `C:\rig\sequences\`, with `Targets\` and `Templates\` inside it
+- `C:\rig\FramingAssistantCache\`
+
+### The start-up sequence
+
+At logon, `C:\rig\start-nina.cmd`, in Administrator's Startup folder, runs:
+
+```
+NINA.exe --profileid 660fe38b-4d3a-458e-b25a-beadb6f9c83c --sequencefile "C:\rig\sequences\Test Sequence.json" --runsequence
+```
+
+The sequence:
+1. connects all equipment;
+2. unparks the scope, finds home on the scope and the dome, and opens the
+   dome;
+3. starts guiding, and waits five minutes;
+4. stops guiding, parks the scope and the dome, closes the dome;
+5. disconnects all equipment.
+
+Connecting and disconnecting all equipment are the Connector plugin's
+instructions.
+
+This is how W-11's logon task starts N.I.N.A. The rig's tests build on this
+sequence. How `wait` (§4.5) and `tests/rig/` (§5) relate to it is settled in
+stages 3 and 5.
+
+From a restart, the Advanced API answered in 45 s. N.I.N.A. started 34 s
+after the restart, then OmniSim 17 s later, then PHD2 13 s after that, and
+by then the sequence had connected all eleven devices. It ran to the end
+unattended, and `/event-history` recorded each step: 44 events from the
+devices connecting to `SEQUENCE-FINISHED`.
+
+### W-09 adds the Connector plugin and ASTAP
+
+| Software | Version | Archive | SHA256 |
+|---|---|---|---|
+| Connector plugin | 2.1.1.0 (needs N.I.N.A. 3.2.0.9001) | `https://github.com/isbeorn/nina.plugin.connector/releases/download/2.1.1.0/NINA.Plugins.Connector.2.1.1.0.zip` | `10CC54238C9F0E345C4414969583E54FFE7A85A07488A16F2FB4612EB02D3196` |
+| ASTAP, command line, ARM64 | CLI-2026.09.01 | `https://downloads.sourceforge.net/project/astap-program/windows_installer/astap_command-line_version_win11_aarch64.zip` | `C2E1B21B23B85B9A903A930D7273425829F044873EB682AAAB4FD5D0BDD3EC59` |
+| ASTAP's D05 star database | — | `https://downloads.sourceforge.net/project/astap-program/star_databases/d05_star_database.zip` | `39D59B73CB960FA0956C35162E70B09A8AF10EF20A1E8F5CAE7B77D48BE5CE31` |
+
+- The plugin installs like the others, into
+  `%LOCALAPPDATA%\NINA\Plugins\3.0.0\Connector\`.
+- Both ASTAP archives unzip into `C:\rig\ASTAP\`, and the profile points
+  N.I.N.A. at `C:\rig\ASTAP\astap_cli.exe`. That build is native ARM64 and
+  needs no installer. D05 suits fields of about 0.6° and wider; the simulated
+  camera's is 1°.
+- SourceForge publishes no checksum that resolves. The SHA256s above were
+  computed from the downloads.
+
+### The camera slot: N.I.N.A.'s simulator camera
+
+OmniSim's camera produces synthetic frames that do not follow the mount, so
+star counts and HFR say nothing about pointing. The camera slot instead
+takes **N.I.N.A. Simulator Camera** in its `SKYSURVEY` mode, which replaces
+W-10 for that slot.
+
+- **What it does.** On each exposure it takes the mount's coordinates, adds
+  a configured pointing error, and downloads that patch of sky from ESO's
+  online survey, 2500 × 2500 pixels across a 1° field. It writes a pixel size
+  of 3.8 µm and the matching focal length (783 mm) into the profile.
+  N.I.N.A. then measures HFR and star counts on real stars, and ASTAP solves
+  real fields.
+- **Its settings** live in the profile's plugin storage: `Type` `SKYSURVEY`,
+  `RAError` 300″, `DecError` 120″. The error gives centring one correction
+  to make.
+- **It needs the internet**, as the guest has through QEMU's NAT. It
+  downloads an image when the mount's coordinates change, and reuses it
+  while they do not.
+- **Its device id** is `4C0BBF74-0D95-41F6-AAD8-D6D58668CF2C`. §5's check
+  that a rig is simulated accepts it alongside OmniSim's ProgIDs.
+
+### Settings that keep the simulators apart
+
+The simulators do not see one another. Three settings stop that from
+producing behaviour no real rig shows:
+
+| Interaction | Without the setting | Setting |
+|---|---|---|
+| Centring with a pointing error | The camera renders the mount's *reported* position plus the error. A sync moves the reported position, so the error returns after every sync and centring never converges | **Do not sync** (`TelescopeSettings.NoSync`). N.I.N.A. corrects with an offset, and centring converges |
+| Rotating to a position angle | The survey image never turns, so a solve measures the same angle (4.38°) after every move, and "Slew, center and rotate" fails after ten attempts | The sequence uses **Slew and Center**. The rotator is still driven by its own instructions |
+| PHD2 and the rotator | PHD2 turns its calibration as the rotator moves, but its simulated camera does not turn. After a 56° move, guiding wandered and every dither failed to settle | PHD2's rotator is **None** |
+
+PHD2 guides with camera **Simulator** and mount **On Camera**, without its AO
+simulator. Its simulated guide camera is set to 3.75 µm pixels behind a 135 mm
+guide scope, 5.73″ a pixel, which is a real guide camera on a short guide scope.
+PHD2's own defaults, 24 µm pixels behind 160 mm, give 30.9″ a pixel, so a
+five-pixel dither moved the frame far more than on a real rig. A change of
+either value needs a new calibration.
+
+### The dome
+
+The profile describes a 2.2 m dome around a German equatorial mount at its
+centre: radius 1100 mm, the mount's axes at the dome's centre and equator
+(offsets 0 mm), GEM axis 250 mm, lateral offset 0 mm, azimuth tolerance 2°.
+
+- It finds home before parking, and synchronises during mount slews.
+- It closes on unsafe. It refuses an unsafe shutter move, and an open
+  shutter with no safety device.
+- OmniSim's dome cannot slave itself (`CanSlave` false), so N.I.N.A. turns
+  it. The sequence enables dome synchronisation after opening the shutter.
+
+### The simulated night
+
+`simulated-night.json`, loaded and started through the Advanced API:
+
+1. connects all equipment, opens the flat panel's cover, unparks and homes
+   the scope, homes the dome, opens it and starts following;
+2. slews to M81, centres, and runs an autofocus;
+3. starts Livestack and guiding, then takes four rounds of one 30 s LIGHT
+   frame through each of Red, Green and Blue, dithering every two frames;
+4. stops both, closes the dome, then takes ten 2 s FLAT frames through each
+   filter with the panel's cover closed and its light at 50 of its 100;
+5. parks the scope and the dome, and disconnects.
+
+M81 never sets at the simulated site (51° N), so the sequence runs at any
+hour.
+
+### What a simulated night produces
+
+A run in a fresh N.I.N.A. took 14 minutes and produced:
+
+| Source | Result |
+|---|---|
+| `/image-history` | 42 frames: 12 LIGHT at HFR 3.40, 873 stars; 30 FLAT at `HFR "NaN"`, `Stars -1` |
+| `/event-history` | 127 events: one `MOUNT-CENTER`, `AUTOFOCUS-STARTING` with 5 `AUTOFOCUS-POINT-ADDED` and no finish, `GUIDER-START`, 5 `GUIDER-DITHER`, `GUIDER-STOP`, 42 `IMAGE-SAVE`, 14 `FILTERWHEEL-CHANGED`, 11 `STACK-UPDATED`, the dome's and the flat panel's events, then `SEQUENCE-FINISHED` |
+| `/equipment/focuser/last-af` | `No AF available`, status 500 |
+| `/livestack/status` | `Stopped` |
+| `/flats/status` | `Finished`, `-1` / `-1`: flats taken by a sequence leave it idle, as on the live rig |
+
+`capture_fixtures.py --out tools/windows-rig/.run/captures/stable --state
+sim_night` records all fourteen read-only endpoints after a run. Those
+captures stay outside `tests/fixtures/`; they are the input to the channel
+comparison (§4.6), and never stand in for a live-rig capture.
+
+### Starting a sequence unattended
+
+| Path | With devices disconnected | Notes |
+|---|---|---|
+| `NINA.exe --profileid … --sequencefile … --runsequence` | Runs | Emits no `SEQUENCE-STARTING`. Only at N.I.N.A.'s start |
+| `/sequence/load`, then `/sequence/start` | **Waits on a confirmation dialog** | Answers `"Sequence started"`, `Success: true`, all the same |
+
+- **Before an API start, `tests/rig/` connects every device through the
+  API**, which is what `wait` does (§4.5). N.I.N.A. validates a sequence
+  before running it and asks before running one whose devices are
+  disconnected, even when its first instruction connects them.
+- **A start is confirmed from `SEQUENCE-STARTING` or `/sequence/state`, never
+  from the response** (CLAUDE.md: an action must not confirm from a
+  command's own response).
+- **A sequence file carries its progress.** N.I.N.A. saves each loop's
+  `CompletedIterations` and each exposure's `ExposureCount` into the file. A
+  sequence saved after a run loads with its loops complete and skips them,
+  by either path. The fixtures are saved with progress reset, and
+  `tests/unit/test_rig_sequences.py` checks it.
+
+### What the simulators cannot produce
+
+- **A successful autofocus.** The camera ignores the focuser, so the curve is
+  flat and every autofocus fails. `/equipment/focuser/last-af` answers
+  `No AF available`, and the event history shows `AUTOFOCUS-STARTING` with
+  no `AUTOFOCUS-FINISHED`: the failure case.
+- **Auto-brightness flats.** "Auto Brightness Flat" fails ("light source is
+  too bright"): the frame's histogram never responds to the panel. The
+  sequence sets the brightness and takes fixed-exposure flats.
+- **Different frames.** A dither moves PHD2's lock position on its own
+  simulated mount, not OmniSim's mount, so the camera renders the same field
+  after it. Every LIGHT frame of a run, through every filter, is the same
+  image: the same HFR and star count. Only centring changes the field.
+
+Captures from the live rig cover these, and stay the record of what a real
+night sends (stage 1 findings).
+
+### Events and sentinels the integration must tolerate
+
+The simulated runs show N.I.N.A. behaviour that a real rig shows too:
+
+- **Connector's "connect all" emits `<DEVICE>-DISCONNECTED` before each
+  `<DEVICE>-CONNECTED`**, a second or two apart.
+- **`GUIDER-STOP` can arrive twice** for one stop.
+- **Disconnecting the safety monitor emits `SAFETY-CHANGED` with
+  `IsSafe: false`** before `SAFETY-DISCONNECTED`. Anything keyed on that
+  event alone treats every shutdown as unsafe.
+- **A FLAT frame can carry `HFR: "NaN"`** with `Stars: -1`. The live rig's
+  flats carry `HFR 0`. The mapper discards both: it drops HFR, stars and
+  guide RMS from every calibration frame.
+- **Flat panels' ranges differ.** OmniSim's runs 0–100, alongside the
+  operator's panels at 0–256 and 0–4096.
+
+---
+
+## 2026-10-21 — Stage 2: provisioning and the Packer template
+
+Stage 2's gate passed. This revision:
+- records the layout stage 2 built, which replaces §4.2's;
+- replaces the stage 0 revision's start-up sequence: the logon starts
+  N.I.N.A. on the simulator profile and runs no sequence;
+- moves the cumulative update's pin from Packer variables (stage 1
+  revision) into `provision/downloads.json`;
+- adds a fifth fixture, OmniSim's telescope settings;
+- brings `rig.py`'s stable path into stage 2, which §6 placed in stage 3;
+- replaces the stage 1 revision's autologon of one logon during the build;
+- answers what the pinned update brings with it.
+
+### The gate
+
+| Condition | Result |
+|---|---|
+| `rig-build`, from the ISO, with no manual step | Yes, in 33 minutes |
+| `rig-install stable`, with no manual step | Yes. `rig-up` ran it, the layer being missing, and was up 69 s after it started |
+| `rig-up stable` reaches a green `wait` | Yes: `wait` had the Advanced API after 23 s and all eleven devices connected after 154 s. After `down`, a second `up` took 2 s, installed nothing, and went green again, on a build that differed only in leaving out the discard settings below |
+
+It passed on stage 1's host and tools, with the API on 1889 because the
+stage 1 VM held 1888. The base image is 16.3 GB, at build 26100.9457, with
+PHD2 open on its simulator profile and no dialog on the desktop.
+
+### What stage 2 builds
+
+The gate runs `rig-install`, `rig-up` and `wait`, so stage 2 built
+`rig.py`'s stable path as well as the image: `build`, `install stable`,
+`up stable`, `wait` and `down`, the expiry check (W-14), and channel layers
+that are reused while their base, their pins and `install-nina.ps1` are
+unchanged. That last one is stage 3's second gate condition, met on stable.
+
+- **A channel layer is kept only after a clean shutdown.** If the guest has
+  to be killed, its disk may lack writes, and `install` fails instead.
+- **An installer that asks for a restart gets one** before the layer is
+  sealed, so its pending work does not run again in every session.
+- **`up` warns when `packer/`, `provision/` or `tests/fixtures/rig/` changed**
+  after the base image was built: `built.json` records a hash of them.
+- **A record outlives its processes.** `rig.py` writes what it starts as
+  soon as it starts it, and signals a recorded process only when its command
+  line names the layer or TPM state it was started on. Stage 3 keeps the nightly
+channel and `nightly-urls`; `rig-test` waits for `tests/rig/` in stage 5.
+
+```
+tools/windows-rig/
+  packer/rig.pkr.hcl         the QEMU source and the build
+  packer/variables.pkr.hcl   packer/autounattend.xml.pkrtpl
+  provision/provision.ps1    runs the numbered steps in order (W-08)
+  provision/NN-*.ps1         common.ps1, which every step dot-sources
+  provision/downloads.json   URL and SHA256 of everything provisioning downloads
+  provision/windows-update.ps1  the pinned cumulative update
+  install-nina.ps1           installs a channel file that rig.py writes from channels.toml
+  channels.toml  scripts/qemu-with-tpm.sh  rig.py  README.md  NOTICE
+  .run/                      git-ignored: base/, channels/, session/, downloads/, ssh/
+```
+
+| Step | Does |
+|---|---|
+| `windows-update.ps1` | Installs KB5129195. Packer restarts the guest after it |
+| `10-windows` | No sleep, lock screen or screen saver; no automatic updates; telemetry off; RemoteSigned; RDP; firewall off |
+| `20-openssh` | OpenSSH Server, PowerShell as its shell, the host's key for administrators |
+| `30-ascom` | .NET 3.5, ASCOM Platform, OmniSim's COM registration, OmniSim's telescope settings |
+| `40-phd2` | PHD2 under `C:\rig\PHD2\`, then `phd2.exe -l` with the fixture |
+| `50-astap` | ASTAP's command-line solver and D05 under `C:\rig\ASTAP\` |
+| `60-nina-profile` | The folders N.I.N.A. would otherwise reset, the profile, the two sequences |
+| `70-logon` | Permanent autologon, and `start-nina.cmd` in the Startup folder |
+
+`rig.py` forwards SSH, RDP and the Advanced API from the host's loopback
+interface: 2022, 3390 and 1888 by default, each changeable on `up`. The key
+SSH authorises is generated into `.run/ssh/` on the first build.
+
+### Pins, and a mirror of them
+
+`provision/downloads.json` pins every download provisioning makes. An entry
+with an `arch` applies to that guest architecture only.
+
+| Entry | File | SHA256 |
+|---|---|---|
+| `windows-update` (ARM64) | `windows11.0-kb5129195-arm64_e6b0a7f8c8cacdf87e8da1a01fe073934a0002b4.msu`, 4.4 GB | `A48F1300108ED2F264D23576781F01607B8B5206128BAB4552B1CEFF2350F302` |
+| `ascom` | `ASCOMPlatform713.4851.exe` | `307B8E32699BC75F12BCAA52F79EA2EDCD245EE40066F0271AE47ACE8411FEA0` |
+| `phd2` | `phd2-2.6.14-installer.exe` | `D7A21F67DE32B901C6D173DA9A27D765A0D98874798F898DF6CA51CD5453B5FF` |
+| `astap` (ARM64), `astap-d05` | as in the stage 0 revision | |
+| `astap` (AMD64) | `astap_command-line_version_win64.zip`, for an x64 guest | `E9B94A44BD0F7B60E6E1BEEB75951D955815445B965D04C4A61FC6F4C398A3CA` |
+
+- **The update's URL and SHA256 come from the Microsoft Update Catalog**,
+  whose download dialog lists them for 24H2 ARM64 along with KB5043080, the
+  24H2 checkpoint. The ISO's build, 26100.1742, is that checkpoint, so
+  KB5129195 is installed alone. **Its package brings KB5050575 and
+  KB5042098 with it**: the stage 1 revision's question is moot. The .NET
+  Framework update KB5127690 is not on the rig, which runs without it.
+- **`rig.py build` mirrors every entry into `.run/downloads/`** and checks
+  each SHA256. Packer serves that folder over HTTP on the host's loopback
+  interface. Provisioning fetches each file from the mirror when `RIG_MIRROR`
+  is set, from its own URL otherwise, and checks its SHA256 either way. A
+  rebuild downloads nothing.
+- **The guest reaches the mirror at `10.0.2.2`**, QEMU's user-mode gateway
+  to the host's loopback interface. Packer's `PackerHTTPAddr` names the bind
+  address, `127.0.0.1`, which in the guest is the guest.
+- **N.I.N.A. and its plugins are pinned in `channels.toml`**: N.I.N.A.
+  3.2.0.9001 and the Advanced API, Livestack and Connector at the versions
+  and SHA256s of the stage 1 and stage 0 revisions.
+
+### The logon starts N.I.N.A. without a sequence
+
+This replaces the stage 0 revision's start-up sequence. At logon,
+`start-nina.cmd` runs
+
+```
+NINA.exe --profileid 660fe38b-4d3a-458e-b25a-beadb6f9c83c
+```
+
+and `wait` connects the equipment through the API (§4.5). Test Sequence
+stays a fixture, for a test to load and run.
+
+> *Rationale.* The start-up sequence disconnects every device at its end,
+> minutes after `wait` has connected them, and it made every `up` about
+> seven minutes long.
+
+**`wait` sends each connect again every ten seconds until the device's info
+reads connected.** A connect sent while N.I.N.A. is still listing drivers,
+in its first minute, answers `Invalid Id` and does nothing.
+
+### OmniSim registers only from the desktop session
+
+OmniSim creates its tray icon before it reads its arguments, `/regserver`
+included. Outside a desktop session that fails (`InvalidOperationException:
+TryCreate failed`, in `H.NotifyIcon.Core.TrayIcon.Create`), and OmniSim
+exits. ASCOM's installer runs OmniSim to register both of its ProgID
+families, so an install from a remote session or from Packer's scheduled
+task leaves all twenty classes unregistered. This is what the stage 1
+revision found after its install from SSH.
+
+- **`30-ascom` checks both families for each of the ten device types**, and
+  when any class is missing runs `ascom.alpaca.simulators.exe /regserver` in
+  the console session, through a scheduled task whose principal logs on
+  interactively. It waits until every class is registered.
+- **The build keeps Administrator logged on at the console.** The answer
+  file's autologon has a `LogonCount` of 999, so every restart of the build
+  logs on; `70-logon` makes it permanent. This replaces the stage 1
+  revision's single logon, spent during the build.
+
+### OmniSim's telescope settings are a fixture
+
+OmniSim's telescope writes 21 of its settings on its first start, none of
+them its capabilities, and then reports no site (`CanLatLongElev` false).
+N.I.N.A. connecting the mount sees a site of −1°, −1°, 0 m against the
+profile's, opens *Synchronize site settings*, and waits for an answer.
+
+`tests/fixtures/rig/omnisim-telescope.xml` is the stage 1 VM's telescope
+settings: all of them, with the site the profile records (51.07861° N,
+0.29444° W, 708 m). Its `UniqueID`, a GUID OmniSim generates, is removed;
+OmniSim makes another. `30-ascom` copies it to
+`%USERPROFILE%\.ascom\Alpaca\ASCOM-Alpaca-Simulator\Telescope\v1\Instance-0.xml`.
+
+The guard reads OmniSim's settings, a run of `SettingsPair` entries, as the
+dictionary they are, like N.I.N.A.'s `KeyValueOf…` runs.
+
+### What a build has to get right
+
+- **Setup's install page focuses Cancel.** The firmware boots the ISO only
+  on a key press, so Packer presses Enter as the VM starts. Enter pressed
+  after Setup's window opens cancels the install, and the guest restarts
+  into an empty EFI partition and the UEFI shell. Packer presses Enter six
+  times in the first six seconds.
+- **virtio-win's drivers are hard links** into the ISO's other folders, and
+  extract read-only. `rig.py` extracts the whole ISO and makes it writable.
+- **`Set-ExecutionPolicy -Scope LocalMachine` throws** under Packer's
+  process-scope Bypass, though it has written the setting. `10-windows`
+  writes the registry value itself.
+- **`New-Item -Force` on a registry key that exists empties it.** Two
+  policies written to one key that way leave only the second.
+- **Packer's QEMU port forwards bind every interface**, and the build's
+  WinRM takes Basic authentication with a published password. The QEMU
+  wrapper rewrites them to bind the loopback interface.
+- **Windows' discards keep the image small.** With `disk_discard` and
+  `disk_detect_zeroes` set to `unmap`, what Windows deletes is left out when
+  Packer compacts the image: 16.3 GB with them, 27 GB without. An explicit
+  `Optimize-Volume -ReTrim` fails with code 40004 and frees nothing, so the
+  build does not run one.
+- **`rig.py` downloads with curl.** Python's `urllib` tries a host's
+  addresses one at a time with no timeout, and hung on an IPv6 route that
+  connected nowhere.
+
+### How long it takes
+
+| Stage | Time |
+|---|---|
+| Windows Setup, to WinRM | 4–10 min |
+| KB5129195, from the mirror, and its restart | about 11 min |
+| `provision.ps1` | about 9 min, of which OpenSSH 3.5 and ASCOM 5 |
+| The whole build, with compaction | 30–33 min |
+| `up stable`, installing the channel | 53–69 s |
+| `up stable` on an installed channel | 2 s |
+| `wait`, from the guest's start | 154–158 s |

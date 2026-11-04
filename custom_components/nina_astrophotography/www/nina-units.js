@@ -1,5 +1,7 @@
 /**
- * Readings in the unit Home Assistant shows them in.
+ * Readings in the unit Home Assistant shows them in, the meridian flip window
+ * read from them and the flip under way, and text off the rig made safe to
+ * print.
  *
  * Not a card, so not in `frontend.py`'s `CARD_FILENAMES`.
  *
@@ -24,6 +26,16 @@ export function missing(value) {
 /** A reading to print, dashed when there is none. */
 export function shown(value) {
   return missing(value) ? "—" : value;
+}
+
+const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
+
+/**
+ * Text off the rig — a filter, target or fit name — made safe for
+ * `innerHTML`. A name typed with a tag would otherwise run as markup.
+ */
+export function safe(value) {
+  return String(value).replace(/[&<>"]/g, (character) => ESCAPES[character]);
 }
 
 // Every unit Home Assistant can show these quantities in, as maps into and out
@@ -128,6 +140,59 @@ export function inUnit(q, unit) {
 /** An entity's state in `unit`, or `null` if it has none or cannot be. */
 export function quantityIn(hass, id, unit) {
   return inUnit(quantity(hass, id), unit);
+}
+
+/**
+ * The meridian flip as `{earliest, latest}` minutes from now, or `null` with no
+ * countdown. The sensor counts down to the latest flip, meridian + the
+ * profile's Max. N.I.N.A. slews no earlier than meridian + Min,
+ * `flip_fires_at_minutes` (Max − Min) sooner, and otherwise at the first item
+ * that ends after it.
+ */
+export function flipWindow(hass, id) {
+  const latest = quantityIn(hass, id, "min");
+  if (latest === null) return null;
+  const firesAt = parseFloat(hass.states[id].attributes?.flip_fires_at_minutes) || 0;
+  return { earliest: Math.max(0, latest - Math.max(0, firesAt)), latest };
+}
+
+/**
+ * A flip window in whole minutes: "12–22", one number where both ends round
+ * alike, or "≤ 6" once the window is open and the flip waits only on the item
+ * running.
+ */
+export function flipRange({ earliest, latest }) {
+  const [from, to] = [earliest.toFixed(0), latest.toFixed(0)];
+  if (from === to) return to;
+  return from === "0" ? `≤ ${to}` : `${from}–${to}`;
+}
+
+/** Whether a flip window is due inside `lead` minutes, and not already past. */
+export function flipSoon(window, lead = 15) {
+  return window !== null && window.latest > 0 && window.earliest < lead;
+}
+
+/**
+ * The meridian flip N.I.N.A. is in, from the flip sensor `id`, or `null`.
+ * Before the slew it waits with tracking off, and the countdown reads
+ * `unknown`: then `waiting` is true and `slewsIn` the minutes left, `null`
+ * once due or where nothing placed it. `tracking` is the mount's, `null` when
+ * unread, and decides only when no slew is still to come.
+ */
+export function flipUnderway(hass, id, tracking, now = Date.now()) {
+  const row = hass.states[id];
+  if (row?.state !== "on") return null;
+  const left = (Date.parse(row.attributes?.slews_at ?? "") - now) / 60000;
+  const slewsIn = left > 0 ? left : null;
+  return { waiting: slewsIn !== null || tracking === false, slewsIn };
+}
+
+/** A flip under way as words: "Waiting to flip · slews in 4 min", or "Flipping". */
+export function flipStatus({ waiting, slewsIn }) {
+  if (!waiting) return "Flipping";
+  return slewsIn === null
+    ? "Waiting to flip"
+    : `Waiting to flip · slews in ${Math.ceil(slewsIn)} min`;
 }
 
 /**

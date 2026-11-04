@@ -38,7 +38,7 @@ async def _set(hass: HomeAssistant, entity_id: str, value: float) -> None:
 
 @pytest.fixture
 async def usb_limit_enabled(hass, entity_registry, loaded_entry):
-    """The USB limit ships DIAGNOSTIC and disabled, so a test that reads or
+    """The USB limit ships disabled, so a test that reads or
     sets it has to enable the registry row and reload first.
     """
     entity_registry.async_update_entity(USB_LIMIT, disabled_by=None)
@@ -159,27 +159,18 @@ async def test_the_cut_numbers_are_not_registered(
     assert registered(NUMBER_DOMAIN, entity_registry, loaded_entry, key) is None
 
 
-async def test_the_focuser_position_number_exists(
-    hass: HomeAssistant, loaded_entry
-) -> None:
-    """The sensor half of §5.2.3's reinstatement — disabled by default, with
-    `state_class: measurement` for long-term statistics — is C6's.
-    """
-    assert hass.states.get(FOCUSER_POSITION) is not None
-
-
 @pytest.mark.parametrize("key", ["camera_usb_limit", "rotator_mechanical_position"])
-async def test_the_long_tail_ships_diagnostic_and_disabled(
+async def test_the_long_tail_ships_config_and_disabled(
     loaded_entry: MockConfigEntry, entity_registry, key: str
 ) -> None:
-    """The dome's is absent from this table: no capture observes a dome, so
-    §5.2.2 gates `dome_azimuth` out entirely.
+    """The dome's is in `test_dome.py`: the reference rig has none, so §5.2.2
+    gates `dome_azimuth` out here.
     """
     entry = entity_registry.async_get(
         registered(NUMBER_DOMAIN, entity_registry, loaded_entry, key)
     )
     assert (entry.entity_category, entry.disabled_by is not None) == (
-        EntityCategory.DIAGNOSTIC,
+        EntityCategory.CONFIG,
         True,
     )
 

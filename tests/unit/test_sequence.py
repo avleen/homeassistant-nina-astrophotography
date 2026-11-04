@@ -6,7 +6,12 @@ on the status of a node below them (§6.2).
 
 from nina_astrophotography.api.models import SequenceNode
 from nina_astrophotography.api.v2.mapper import map_event, map_sequence
-from nina_astrophotography.sequence import progress_percent, running, target_name
+from nina_astrophotography.sequence import (
+    progress_percent,
+    refocus_temperature,
+    running,
+    target_name,
+)
 import pytest
 
 from helpers import load_fixture
@@ -17,12 +22,14 @@ def _node(
     *children: SequenceNode,
     iterations: str | None = None,
     target: str | None = None,
+    refocus: float | None = None,
 ) -> SequenceNode:
     return SequenceNode(
         name=name,
         status="RUNNING",
         iterations=iterations,
         target_name=target,
+        refocus_temperature=refocus,
         children=children,
     )
 
@@ -74,22 +81,28 @@ def test_the_tree_seeds_the_running_signal_and_the_events_correct_it(
     assert running(tree, events, "g1") is expected
 
 
-def test_the_last_named_target_in_pre_order_wins() -> None:
-    """Last, not deepest — depth does not order sibling targets. Pinned so the
-    ordering is a decision rather than an accident of the walk.
+@pytest.mark.parametrize(
+    ("tree", "expected"),
+    [
+        (_node("Sequence", _node("Targets", target="M31"), target="Tonight"), "M31"),
+        (
+            _node(
+                "Sequence",
+                _node("A", _node("B", target="deep")),
+                _node("C", target="shallow"),
+            ),
+            "shallow",
+        ),
+    ],
+    ids=["a child after its parent", "a shallow target after a deep one"],
+)
+def test_the_last_named_target_in_pre_order_wins(
+    tree: SequenceNode, expected: str
+) -> None:
+    """Last in walk order, not deepest: depth does not order sibling targets.
+    Pinned so the ordering is a decision rather than an accident of the walk.
     """
-    tree = _node("Sequence", _node("Targets", target="M31"), target="Tonight")
-    assert target_name(tree) == "M31"
-
-
-def test_a_deeper_target_does_not_outrank_a_later_shallow_one() -> None:
-    """The behaviour the docstring used to claim the opposite of."""
-    tree = _node(
-        "Sequence",
-        _node("A", _node("B", target="deep")),
-        _node("C", target="shallow"),
-    )
-    assert target_name(tree) == "shallow"
+    assert target_name(tree) == expected
 
 
 def test_progress_is_the_innermost_counting_nodes_own_fraction() -> None:
@@ -135,3 +148,42 @@ def test_no_sequence_at_all_is_no_reading() -> None:
     """`/sequence/json` answers 409 until a sequence is loaded."""
     assert target_name(None) is None
     assert progress_percent(None) is None
+    assert refocus_temperature(None) is None
+
+
+@pytest.mark.parametrize(
+    ("fixture", "expected"),
+    [
+        ("imaging_guiding_sequence_json.json", 2.0),
+        ("sequence_stopped_sequence_json.json", 2.0),
+        ("simulator_guider_connected_sequence_json.json", None),
+    ],
+    ids=["imaging", "stopped", "no trigger"],
+)
+def test_the_refocus_threshold_is_read_off_the_captured_trigger(
+    fixture: str, expected: float | None
+) -> None:
+    """The threshold is a setting, so it holds while the trigger's container is
+    idle; a sequence without the trigger leaves the card its own default.
+    """
+    assert refocus_temperature(map_sequence(load_fixture(fixture))) == expected
+
+
+@pytest.mark.parametrize(
+    ("thresholds", "expected"),
+    [((2.0, 1.0), 1.0), ((None, 1.5), 1.5), ((None, None), None)],
+    ids=["smallest wins", "one trigger of two nodes", "none at all"],
+)
+def test_of_several_refocus_triggers_the_smallest_decides(
+    thresholds: tuple[float | None, float | None], expected: float | None
+) -> None:
+    """Each trigger in scope fires on its own, and which are in scope cannot be
+    told below the root, so the earliest refocus is the one to flag by.
+    """
+    first, second = thresholds
+    tree = _node(
+        "Sequence",
+        _node("Target A", _node("Trigger", refocus=first)),
+        _node("Target B", _node("Trigger", refocus=second)),
+    )
+    assert refocus_temperature(tree) == expected

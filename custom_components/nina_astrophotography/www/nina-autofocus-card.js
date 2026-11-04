@@ -9,29 +9,30 @@
  * all: the card finds its own focuser in the registry.
  *   type: custom:nina-autofocus-card
  *   device_id: abc123      # which rig, for two or more; any one of its devices
- *   temperature_delta: 2   # °C of drift since the run worth flagging
+ *   temperature_delta: 2   # °C of drift worth flagging; default: the sequence's trigger
  *   prefix: n_i_n_a        # fallback only, for the entities that cannot resolve
  */
 
 import { DEFAULT_PREFIX, configForm } from "./nina-card-config.js";
 import { RigEntities } from "./nina-entity-resolver.js";
-import { interval, inUnit, quantity, quantityIn, shown } from "./nina-units.js";
+import { interval, inUnit, quantity, quantityIn, safe, shown } from "./nina-units.js";
+import { THEME, applyTheme, palette } from "./nina-theme.js";
 
-const VERSION = "2.0.0";
+const VERSION = "2.3.0";
 
 // How far the focuser temperature may drift from the run's before the card
-// says so. There is no right answer to publish here — it belongs to the
-// sequence's own refocus trigger — so this is only a default to override, and
-// the card names the number it used rather than claiming it is yours. Set
-// above 1 °C deliberately: a site that swings ten degrees overnight would
-// spend most of the night flagged, which teaches the operator to ignore it.
+// flags it, when neither `temperature_delta` nor the sequence's "AF After
+// Temperature Change" trigger says. Above 1 °C so a site that swings ten
+// degrees overnight is not flagged most of the night.
 const DEFAULT_TEMPERATURE_DELTA = 2.0;
 
-const CURVE = "#5bcfcf";      // the measured sweep
-const FIT = "#7b8de8";        // the fitted curve, and the minimum it found
-const TREND = "#f4a261";      // the trend lines, and where they cross
-const FINAL = "#57cc99";      // where the focuser was left
-const DANGER = "#e76f51";
+// Each series' accent, named as in `nina-theme.js`: the legend reads it as
+// `var(--name)`, the canvas off `palette()`.
+const CURVE = "accent2";      // the measured sweep
+const FIT = "accent";         // the fitted curve, and the minimum it found
+const TREND = "warn";         // the trend lines, and where they cross
+const FINAL = "success";      // where the focuser was left
+const DANGER = "danger";
 
 function fixed(value, places) {
   return Number.isFinite(value) ? value.toFixed(places) : "—";
@@ -44,14 +45,6 @@ function reading(value) {
   return value !== 0 && Math.abs(value) < 0.1 ? value.toFixed(4) : value.toFixed(2);
 }
 
-// Filter, fitting, autofocuser, star detector and fit names all come off the
-// rig, and all of them land in `innerHTML`. A filter named with a tag would
-// otherwise run as markup in the dashboard.
-const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
-function safe(value) {
-  return String(value).replace(/[&<>"]/g, (character) => ESCAPES[character]);
-}
-
 // The wire names a fit and its minimum in .NET's own casing: `LeftTrend`,
 // `TrendLineIntersection`, `QuadraticMinimum`. Split it for a human.
 function pretty(name) {
@@ -59,15 +52,10 @@ function pretty(name) {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-// The chart's y axis: the MEASURED points and nothing else, error bars
-// included, with a little padding. Two trend lines extrapolate the V's wings
-// until they cross, and that crossing sits well below any star the optics can
-// produce — letting it set the floor spends most of the chart on empty sky and
-// squashes the vertex, which is the part worth reading.
-//
-// One function because the legend and the chart have to agree on it: the
-// legend is what says a minimum is below the axis, and the chart is what puts
-// it there.
+// The chart's y axis: the measured points and their error bars, padded. The
+// trend lines' crossing sits well below any star the optics can produce, so
+// letting it set the floor would squash the vertex, the part worth reading.
+// The legend reads it too, to say which minima fall below the axis.
 function axisRange(curve) {
   const measured = curve.filter((point) => Number.isFinite(point.value));
   const low = Math.min(...measured.map((point) => point.value - (point.error || 0)));
@@ -109,6 +97,7 @@ function duration(seconds) {
 }
 
 const STYLE = `
+  ${THEME}
   :host {
     /* A custom element is inline by default, and a ResizeObserver watching an
        inline box does not report the card getting wider — which is what
@@ -116,8 +105,6 @@ const STYLE = `
     display: block;
     --card-bg: var(--ha-card-background, var(--card-background-color, #1c1c2e));
     --card-border: var(--divider-color, rgba(255,255,255,0.1));
-    --muted: rgba(255,255,255,0.45);
-    --text: rgba(255,255,255,0.92);
     font-family: var(--primary-font-family, Roboto, sans-serif);
   }
   ha-card {
@@ -151,7 +138,7 @@ const STYLE = `
   .stat-row { display: flex; flex-wrap: wrap; gap: 8px; }
   .stat-box {
     flex: 1; min-width: 92px; box-sizing: border-box;
-    background: rgba(255,255,255,0.04);
+    background: color-mix(in srgb, var(--ink) 4%, transparent);
     border: 1px solid var(--card-border);
     border-radius: 10px;
     padding: 10px 12px;
@@ -183,7 +170,7 @@ const STYLE = `
     display: flex; align-items: center; gap: 5px;
     border-radius: 20px; padding: 4px 10px;
     font-size: 0.68rem;
-    background: rgba(255,255,255,0.05);
+    background: color-mix(in srgb, var(--ink) 5%, transparent);
     border: 1px solid var(--card-border);
   }
   .chip .k { color: var(--muted); }
@@ -207,8 +194,7 @@ class NinaAutofocusCard extends HTMLElement {
     // Coerced, because YAML hands back a string as readily as a number, and a
     // silent fallback to the default would look like the setting was ignored.
     const delta = Math.abs(Number(this._config.temperature_delta));
-    this._temperatureDelta = Number.isFinite(delta) && delta > 0
-      ? delta : DEFAULT_TEMPERATURE_DELTA;
+    this._temperatureDelta = Number.isFinite(delta) && delta > 0 ? delta : null;
     this._signature = null;
     this._rig = new RigEntities(
       this._config.prefix || DEFAULT_PREFIX, this._config.device_id);
@@ -230,6 +216,8 @@ class NinaAutofocusCard extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     this._rig.refresh(hass);
+    // The card draws only on a new run, so a theme change has to ask.
+    if (applyTheme(this)) this._signature = null;
     this._render();
   }
 
@@ -299,6 +287,10 @@ class NinaAutofocusCard extends HTMLElement {
     const verdict = this._eid("binary_sensor", "autofocus_failed", "focuser_autofocus_failed");
     const judged = this._attr(verdict, "r_squared");
     const threshold = this._attr(verdict, "r_squared_threshold");
+    // A trigger at 0 refocuses before every frame: no drift worth flagging.
+    const trigger = this._attr(verdict, "refocus_temperature_delta");
+    const triggered = this._temperatureDelta === null
+      && Number.isFinite(trigger) && trigger > 0;
 
     return {
       timestamp: this._state(run),
@@ -338,6 +330,10 @@ class NinaAutofocusCard extends HTMLElement {
       drift: Number.isFinite(at) && Number.isFinite(temperature)
         ? temperature - at : null,
       driftC: now && then ? inUnit(now, "°C") - inUnit(then, "°C") : null,
+      // The option wins, then the sequence's trigger: the threshold N.I.N.A.
+      // itself refocuses at.
+      limit: triggered ? trigger : (this._temperatureDelta ?? DEFAULT_TEMPERATURE_DELTA),
+      triggered,
     };
   }
 
@@ -345,9 +341,9 @@ class NinaAutofocusCard extends HTMLElement {
     if (!this._hass) return;
     const run = this._read();
 
-    // The signature is everything the card renders, not a few stand-in
-    // fields: a `hass` batch can carry the new run's timestamp beside the
-    // previous run's HFR, and a narrower signature could then never update.
+    // The signature is everything the card renders: a `hass` batch can carry
+    // the new run's timestamp beside the previous run's HFR, and the HFR's
+    // later update must still re-render.
     const signature = JSON.stringify(run);
     if (signature === this._signature) return;
     this._run = run;
@@ -400,7 +396,7 @@ class NinaAutofocusCard extends HTMLElement {
     const away = Number.isFinite(run.nowPosition) && Number.isFinite(run.position)
       ? run.nowPosition - run.position : null;
     const drifted = Number.isFinite(run.driftC)
-      && Math.abs(run.driftC) >= this._temperatureDelta;
+      && Math.abs(run.driftC) >= run.limit;
     const blind = run.curve.filter((point) => !Number.isFinite(point.value)).length;
     // Positive means the sweep improved focus. Both readings are measured
     // exposures, so they are comparable; the fitted value is not.
@@ -474,7 +470,8 @@ class NinaAutofocusCard extends HTMLElement {
               <div class="value">${run.drift === null ? "—"
                 : `${run.drift >= 0 ? "+" : "−"}${fixed(Math.abs(run.drift), 1)}`} <span class="unit">${run.degrees}</span></div>
               <div class="sub">${fixed(run.temperature, 1)} → ${fixed(run.nowTemperature, 1)} ${run.degrees}${
-                drifted ? ` · past ${fixed(interval(this._temperatureDelta, "°C", run.degrees), 1)} ${run.degrees}` : ""}</div>
+                drifted ? ` · past ${run.triggered ? "the trigger's " : ""}${
+                  fixed(interval(run.limit, "°C", run.degrees), 1)} ${run.degrees}` : ""}</div>
             </div>` : ""}
           ${away !== null ? `
             <div class="stat-box">
@@ -520,7 +517,7 @@ class NinaAutofocusCard extends HTMLElement {
 
   _legend(run) {
     const items = [
-      `<div class="item"><span class="dot" style="background:${CURVE}"></span>
+      `<div class="item"><span class="dot" style="background:var(--${CURVE})"></span>
         <span>Measured</span><span class="reading">${
           run.isHfr ? "± spread across stars" : "contrast score"}</span></div>`,
     ];
@@ -530,7 +527,7 @@ class NinaAutofocusCard extends HTMLElement {
       const colour = isTrend(fit.name) ? TREND : FIT;
       const dash = isTrend(fit.name) ? "dashed" : "solid";
       items.push(`<div class="item">
-        <span class="swatch" style="border-top-color:${drawn ? colour : "var(--muted)"};border-top-style:${drawn ? dash : "dotted"}"></span>
+        <span class="swatch" style="border-top-color:var(--${drawn ? colour : "muted"});border-top-style:${drawn ? dash : "dotted"}"></span>
         <span${drawn ? "" : ` style="color:var(--muted)"`}>${pretty(fit.name)}</span>
         <span class="reading">R² ${fixed(fit.r_squared, 3)}${drawn ? "" : " · not plotted"}</span></div>`);
     }
@@ -544,7 +541,7 @@ class NinaAutofocusCard extends HTMLElement {
       const plotted = Number.isFinite(minimum.value);
       const under = plotted && minimum.value < floor;
       items.push(`<div class="item">
-        <span class="diamond" style="background:${plotted ? colour : "var(--muted)"}"></span>
+        <span class="diamond" style="background:var(--${plotted ? colour : "muted"})"></span>
         <span${plotted ? "" : ` style="color:var(--muted)"`}>${pretty(minimum.name)}</span>
         <span class="reading">${shown(minimum.position)} · ${
           plotted ? `${reading(minimum.value)} ${run.unit}` : "negative · not plotted"}${
@@ -552,7 +549,7 @@ class NinaAutofocusCard extends HTMLElement {
     }
     if (Number.isFinite(run.position)) {
       items.push(`<div class="item">
-        <span class="swatch" style="border-top-color:${FINAL};border-top-style:dotted"></span>
+        <span class="swatch" style="border-top-color:var(--${FINAL});border-top-style:dotted"></span>
         <span>Focus position</span><span class="reading">${run.position}</span></div>`);
     }
     return `<div class="legend">${items.join("")}</div>`;
@@ -570,6 +567,7 @@ class NinaAutofocusCard extends HTMLElement {
     canvas.height = H * dpr;
     const ctx = canvas.getContext("2d");
     ctx.scale(dpr, dpr);
+    const theme = palette(this);
 
     const pad = { l: 34, r: 12, t: 12, b: 20 };
     const plotW = W - pad.l - pad.r;
@@ -602,8 +600,8 @@ class NinaAutofocusCard extends HTMLElement {
     // Precision follows the range, not pixels: a contrast score spans
     // thousandths, and five gridlines reading "0.0" carry nothing.
     const places = Math.min(4, Math.max(1, 1 - Math.floor(Math.log10((yMax - yMin) / 4))));
-    ctx.strokeStyle = "rgba(255,255,255,0.06)";
-    ctx.fillStyle = "rgba(255,255,255,0.4)";
+    ctx.strokeStyle = theme.ink(0.06);
+    ctx.fillStyle = theme.ink(0.4);
     ctx.lineWidth = 0.5;
     for (let line = 0; line <= 4; line++) {
       const value = yMin + ((yMax - yMin) * line) / 4;
@@ -630,14 +628,14 @@ class NinaAutofocusCard extends HTMLElement {
       if (Number.isFinite(point.value)) continue;
       const x = xOf(point.position);
       ctx.setLineDash([3, 3]);
-      ctx.strokeStyle = `${DANGER}55`;
+      ctx.strokeStyle = `${theme[DANGER]}55`;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(x, pad.t);
       ctx.lineTo(x, H - pad.b);
       ctx.stroke();
       ctx.setLineDash([]);
-      ctx.fillStyle = DANGER;
+      ctx.fillStyle = theme[DANGER];
       ctx.textAlign = "center";
       ctx.fillText("✕", x, pad.t + plotH / 2);
     }
@@ -646,7 +644,7 @@ class NinaAutofocusCard extends HTMLElement {
     // a trend line stays a line rather than a spike out of the frame.
     for (const fit of run.fits) {
       if (!Array.isArray(fit.coefficients) || !fit.coefficients.length) continue;
-      ctx.strokeStyle = isTrend(fit.name) ? TREND : FIT;
+      ctx.strokeStyle = theme[isTrend(fit.name) ? TREND : FIT];
       ctx.lineWidth = 1.4;
       ctx.setLineDash(isTrend(fit.name) ? [5, 4] : []);
       ctx.beginPath();
@@ -663,7 +661,7 @@ class NinaAutofocusCard extends HTMLElement {
     }
 
     // The spread of HFR across the frame's stars, not the uncertainty on the V.
-    ctx.strokeStyle = `${CURVE}77`;
+    ctx.strokeStyle = `${theme[CURVE]}77`;
     ctx.lineWidth = 1;
     for (const point of measured) {
       if (!Number.isFinite(point.error) || point.error === 0) continue;
@@ -682,7 +680,7 @@ class NinaAutofocusCard extends HTMLElement {
 
     // The pen lifts at a position that measured nothing, rather than drawing
     // a chord through the region focus lives in.
-    ctx.strokeStyle = CURVE;
+    ctx.strokeStyle = theme[CURVE];
     ctx.lineWidth = 1.8;
     ctx.beginPath();
     let pen = false;
@@ -702,10 +700,10 @@ class NinaAutofocusCard extends HTMLElement {
     for (const point of measured) {
       ctx.beginPath();
       ctx.arc(xOf(point.position), yOf(point.value), point === best ? 3.5 : 2.4, 0, Math.PI * 2);
-      ctx.fillStyle = point === best ? CURVE : `${CURVE}bb`;
+      ctx.fillStyle = point === best ? theme[CURVE] : `${theme[CURVE]}bb`;
       ctx.fill();
       if (point === best) {
-        ctx.strokeStyle = "rgba(255,255,255,0.65)";
+        ctx.strokeStyle = theme.ink(0.65);
         ctx.lineWidth = 1;
         ctx.stroke();
       }
@@ -714,7 +712,7 @@ class NinaAutofocusCard extends HTMLElement {
     // Where the focuser was left: the minima's mean, rounded to a step.
     if (Number.isFinite(run.position)) {
       const x = xOf(run.position);
-      ctx.strokeStyle = FINAL;
+      ctx.strokeStyle = theme[FINAL];
       ctx.lineWidth = 1.2;
       ctx.setLineDash([2, 3]);
       ctx.beginPath();
@@ -732,8 +730,8 @@ class NinaAutofocusCard extends HTMLElement {
       const x = xOf(minimum.position);
       const below = minimum.value < yMin;
       const y = yOf(Math.min(Math.max(minimum.value, yMin), yMax));
-      ctx.fillStyle = isTrend(minimum.name) ? TREND : FIT;
-      ctx.strokeStyle = "rgba(255,255,255,0.5)";
+      ctx.fillStyle = theme[isTrend(minimum.name) ? TREND : FIT];
+      ctx.strokeStyle = theme.ink(0.5);
       ctx.lineWidth = 0.8;
       const off = below || minimum.value > yMax;
       ctx.beginPath();
@@ -769,10 +767,9 @@ class NinaAutofocusCard extends HTMLElement {
       {
         name: "temperature_delta",
         label: "Refocus temperature change",
-        helper: "Flag the focuser temperature once it moves this far from the last run's. "
-          + "In °C, whatever unit it is shown in, as N.I.N.A.'s own refocus trigger is: "
-          + "match your sequence's.",
-        default: DEFAULT_TEMPERATURE_DELTA,
+        helper: "Flag the focuser temperature once it moves this far from the last run's, "
+          + "in °C whatever unit it is shown in. Leave empty to use your sequence's "
+          + "\"AF After Temperature Change\" trigger, or 2 °C without one.",
         selector: { number: { min: 0.1, max: 10, step: "any", mode: "box", unit_of_measurement: "°C" } },
       },
     ]);
