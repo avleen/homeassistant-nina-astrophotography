@@ -724,11 +724,32 @@ def _polynomial(equation: str) -> tuple[float, ...] | None:
     return tuple(powers.get(power, 0.0) for power in range(max(powers), -1, -1))
 
 
+# The curves each `Fitting` places focus with, which are the ones a threshold
+# judges. N.I.N.A. can compute others beside them: a HYPERBOLIC run also reports
+# trend lines, and one scoring 0.000 does not stop it being applied.
+_TREND_LINES = frozenset({"LeftTrend", "RightTrend"})
+_JUDGED_FITS = {
+    "TRENDLINES": _TREND_LINES,
+    "PARABOLIC": frozenset({"Quadratic"}),
+    "TRENDPARABOLIC": _TREND_LINES | {"Quadratic"},
+    "HYPERBOLIC": frozenset({"Hyperbolic"}),
+    "TRENDHYPERBOLIC": _TREND_LINES | {"Hyperbolic"},
+}
+
+
+def _is_judged(wire: dict, name: str) -> bool:
+    """Whether this run's fitting uses the named curve. A fitting this table
+    does not know judges every curve, the cautious reading of a new one.
+    """
+    judged = _JUDGED_FITS.get((_text(wire, "Fitting") or "").upper())
+    return judged is None or name in judged
+
+
 def _curve_fits(wire: dict) -> tuple[CurveFit, ...]:
-    """The fits this run used, each with its own R².
+    """The fits this run computed, each with its own R².
 
     N.I.N.A. sends every fitting it knows, with an empty equation for the
-    ones unused; a non-empty equation is the filter. `RSquares` has no
+    ones not computed; a non-empty equation is the filter. `RSquares` has no
     Gaussian entry, hence a lookup rather than a zip.
     """
     fittings = wire.get("Fittings")
@@ -742,6 +763,7 @@ def _curve_fits(wire: dict) -> tuple[CurveFit, ...]:
             equation=equation,
             coefficients=_polynomial(equation),
             r_squared=_numeric(squares.get(name)),
+            judged=_is_judged(wire, name),
         )
         for name, equation in fittings.items()
         if isinstance(equation, str) and equation.strip()
@@ -772,8 +794,8 @@ def _fit_minima(wire: dict) -> tuple[FitMinimum, ...]:
 def map_last_autofocus(wire: dict) -> AutoFocusReport | None:
     """The newest autofocus report, or `None` where the rig has never run one.
 
-    `r_squared` is the minimum of `RSquares`, which sends `"NaN"` for fittings
-    this run did not use — the worst fit actually computed.
+    `r_squared` is the worst R² among the curves the run's fitting uses, and
+    `None` where all of those read `"NaN"`.
 
     A CONTRASTDETECTION run's focus points are a contrast score, not pixels,
     so `hfr`/`fitted_hfr` are dropped; positions stay. `hfr` is the sweep's
@@ -789,7 +811,11 @@ def map_last_autofocus(wire: dict) -> AutoFocusReport | None:
     computed = (
         [
             value
-            for value in (_numeric(v) for v in (squares or {}).values())
+            for value in (
+                _numeric(square)
+                for name, square in (squares or {}).items()
+                if _is_judged(wire, name)
+            )
             if value is not None
         ]
         if isinstance(squares, dict)

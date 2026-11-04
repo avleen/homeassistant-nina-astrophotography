@@ -359,7 +359,7 @@ class FitMinimum:
 
 @dataclass(frozen=True, slots=True)
 class CurveFit:
-    """One curve the run fitted through the sweep; unused fits are omitted."""
+    """One curve the run computed through the sweep; others are omitted."""
 
     name: str
     """`Quadratic`, `LeftTrend`, `RightTrend`, `Hyperbolic` or `Gaussian`."""
@@ -371,7 +371,11 @@ class CurveFit:
     re-fitting the curve will not reproduce them.
     """
     r_squared: float | None
-    """This fit's own R², unlike the run's worst in `AutoFocusReport`."""
+    """This fit's own R², unlike the worst judged one in `AutoFocusReport`."""
+    judged: bool
+    """Whether the run's fitting uses this curve, so its R² counts against the
+    profile's threshold. A hyperbolic run also computes trend lines that do not.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -430,8 +434,8 @@ class AutoFocusReport:
     duration_seconds: float | None
     """The attempt's duration; retries cost more."""
     r_squared: float | None
-    """The worst fit's R², which is what a threshold judges. Unused fits send
-    `"NaN"` and drop out.
+    """The worst R² among the curves the run's fitting uses, which is what a
+    threshold judges. `None` if none of them reports one.
     """
 
 

@@ -279,7 +279,9 @@ class NinaAutofocusCard extends HTMLElement {
     // report the quadratic minimum alone.
     const fitted = minima.map((minimum) => minimum.value).filter(Number.isFinite);
     const whole = minima.length > 0 && fitted.length === minima.length;
-    const scored = fits.filter((fit) => Number.isFinite(fit.r_squared));
+    // Only the curves the run's fitting uses: a hyperbolic run also reports trend
+    // lines, and a poor one of those does not stop N.I.N.A. applying the result.
+    const scored = fits.filter((fit) => fit.judged !== false && Number.isFinite(fit.r_squared));
     const worst = scored.reduce(
       (lowest, fit) => (lowest === null || fit.r_squared < lowest.r_squared ? fit : lowest),
       null,
@@ -532,7 +534,8 @@ class NinaAutofocusCard extends HTMLElement {
       items.push(`<div class="item">
         <span class="swatch" style="border-top-color:${drawn ? colour : "var(--muted)"};border-top-style:${drawn ? dash : "dotted"}"></span>
         <span${drawn ? "" : ` style="color:var(--muted)"`}>${pretty(fit.name)}</span>
-        <span class="reading">R² ${fixed(fit.r_squared, 3)}${drawn ? "" : " · not plotted"}</span></div>`);
+        <span class="reading">R² ${fixed(fit.r_squared, 3)}${
+          fit.judged === false ? " · not judged" : ""}${drawn ? "" : " · not plotted"}</span></div>`);
     }
     // Against the axis the chart actually uses, padding included — otherwise a
     // minimum landing inside that padding is called below the axis here and

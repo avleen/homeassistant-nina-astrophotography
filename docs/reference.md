@@ -292,7 +292,7 @@ Things to know when reading them:
 | Attribute | Meaning |
 |---|---|
 | `reason` | `hung`, `rejected`, or absent. A hung run usually means a sequence problem; a rejected one means the focus range or star detection needs adjusting. Only for `hung` do the other autofocus sensors show a different run from the one that failed. |
-| `r_squared` | the R² used for the decision: the worst value in the run's `RSquares` |
+| `r_squared` | the R² used for the decision: the worst among the curves the run's curve fitting uses |
 | `r_squared_threshold` | your profile's `RSquaredThreshold` |
 
 If you check R² yourself, compare against this `r_squared` attribute, not
@@ -347,9 +347,11 @@ fits:
     equation: "y = 0.0003058854621319121 * x^2 + -1.4293365331583652 * x + 1671.5984427459177"
     coefficients: [0.0003058854621319121, -1.4293365331583652, 1671.5984427459177]
     r_squared: 0.9710548595560263
+    judged: true
   - name: LeftTrend
     coefficients: [-0.04727009756935714, 111.1161540435258]
     r_squared: 0.9902518159347956
+    judged: true
   # …RightTrend
 
 minima:
@@ -363,11 +365,14 @@ minima:
 
 - `coefficients` are highest power first: `[a, b, c]` is `a·x² + b·x + c`.
   For fits other than polynomials (hyperbolic, gaussian) `coefficients` is
-  `null` and `equation` is the only record. Fits the run didn't use are left
-  out.
+  `null` and `equation` is the only record. Fits the run didn't compute are
+  left out.
 - Each fit's `r_squared` is for that fit alone, which is what a chart legend
-  wants. The `autofocus_r2` sensor is the worst fit, which is what a
-  pass/fail threshold wants.
+  wants. The `autofocus_r2` sensor is the worst fit with `judged: true`, which
+  is what a pass/fail threshold wants.
+- `judged` says whether the run's curve fitting uses that curve. A `HYPERBOLIC`
+  run can also report trend lines. They have `judged: false`, and a low R² on
+  them doesn't reject the run.
 - `minima` lists the minima N.I.N.A. computed. Pick the second by position in
   the list, not by name; its name depends on the curve fitting in your profile.
   The final focuser position is the average of the two.

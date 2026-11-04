@@ -630,8 +630,8 @@ EQUIPMENT: tuple[NinaSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         kind="focuser",
-        # The run's worst fit. `autofocus_failed` judges it against the
-        # profile's threshold.
+        # The worst of the curves the run's fitting uses. `autofocus_failed`
+        # judges it against the profile's threshold.
         value=_autofocus("r_squared"),
     ),
     NinaSensorDescription(

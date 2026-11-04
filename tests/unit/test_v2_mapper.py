@@ -580,10 +580,8 @@ def test_an_absent_profile_section_is_no_reading() -> None:
 
 
 def test_the_autofocus_reports_worst_fit_is_what_a_threshold_judges() -> None:
-    """N.I.N.A. computes an R² only for the fittings a run actually used and
-    sends `"NaN"` for the rest — this TRENDPARABOLIC run carries a `"NaN"`
-    Hyperbolic — so the minimum of what survives the `"NaN"` rule is the worst
-    fit computed, and no fitting-to-R² table has to be guessed at.
+    """This TRENDPARABOLIC run judges its quadratic and both trend lines, and
+    its `"NaN"` Hyperbolic is no reading. The quadratic is the worst of them.
     """
     report = _autofocus(load("imaging_guiding_last_af.json"))
     assert report.r_squared == pytest.approx(0.9710548595560263)
@@ -791,8 +789,8 @@ def test_a_fitted_curve_is_published_as_coefficients() -> None:
 
 
 def test_each_fit_keeps_its_own_r_squared() -> None:
-    """`AutoFocusReport.r_squared` is the worst fit of the run, which is right
-    for a threshold and cannot label an individual line in a chart legend.
+    """`AutoFocusReport.r_squared` is the worst judged fit, which is right for
+    a threshold and cannot label an individual line in a chart legend.
     """
     fits = {
         f.name: f.r_squared
@@ -805,6 +803,59 @@ def test_each_fit_keeps_its_own_r_squared() -> None:
             "RightTrend": 0.9998991212499581,
         }
     )
+
+
+JUDGED_CASES = {
+    "TRENDLINES": ({"LeftTrend", "RightTrend"}, 0.2),
+    "PARABOLIC": ({"Quadratic"}, 0.6),
+    "TRENDPARABOLIC": ({"Quadratic", "LeftTrend", "RightTrend"}, 0.2),
+    "HYPERBOLIC": ({"Hyperbolic"}, 0.988),
+    "TRENDHYPERBOLIC": ({"Hyperbolic", "LeftTrend", "RightTrend"}, 0.2),
+    "A FUTURE FITTING": ({"Hyperbolic", "Quadratic", "LeftTrend", "RightTrend"}, 0.2),
+}
+
+
+@pytest.mark.synthetic
+@pytest.mark.parametrize(("fitting", "case"), JUDGED_CASES.items())
+def test_only_the_curves_a_fitting_uses_are_judged(fitting: str, case: tuple) -> None:
+    """N.I.N.A. computes every curve and judges only the ones the profile's
+    fitting uses: a hyperbolic run with a 0.000 trend line completes and is
+    applied. The R² values and the equations are fabricated; no capture holds
+    any fitting but TRENDPARABOLIC, or a fit this poor.
+    """
+    judged, worst = case
+    report = _autofocus(
+        dict(
+            load("imaging_guiding_last_af.json"),
+            Fitting=fitting,
+            Fittings=dict.fromkeys(
+                ("Hyperbolic", "Quadratic", "LeftTrend", "RightTrend"), "y = 1 * x"
+            ),
+            RSquares={
+                "Hyperbolic": 0.988,
+                "Quadratic": 0.6,
+                "LeftTrend": 0.9,
+                "RightTrend": 0.2,
+            },
+        )
+    )
+    assert report.r_squared == pytest.approx(worst)
+    assert {fit.name for fit in report.fits if fit.judged} == judged
+
+
+@pytest.mark.synthetic
+def test_a_judged_fit_with_no_r_squared_leaves_nothing_to_judge() -> None:
+    """A computed trend line must not stand in for the curve the run used. The
+    `"NaN"` beside a hyperbolic fitting is fabricated.
+    """
+    report = _autofocus(
+        dict(
+            load("imaging_guiding_last_af.json"),
+            Fitting="HYPERBOLIC",
+            RSquares={"Hyperbolic": "NaN", "LeftTrend": 0.9, "RightTrend": 0.0},
+        )
+    )
+    assert report.r_squared is None
 
 
 def test_a_fitting_this_run_did_not_use_is_not_published() -> None:
