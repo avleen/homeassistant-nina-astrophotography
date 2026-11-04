@@ -19,8 +19,7 @@
  * Reads HA sensors for the overlay and the strip/histogram:
  *   The newest LIGHT frame's HFR, star count, mean ADU, filter, exposure,
  *   guide RMS and target; the session frame count and integration time;
- *   whether the camera is exposing and when that exposure ends, which the
- *   header counts down to; and the mean-ADU sensor's `recent_frames`
+ *   whether the camera is exposing; and the mean-ADU sensor's `recent_frames`
  *   attribute — the newest frames of any type, already bounded and ordered —
  *   for the strip's labels and the histogram's range.
  *
@@ -57,19 +56,6 @@ const DEFAULT_STRIP_COUNT = 6;
 // naturally busts the browser's cache across reloads of the same index.
 const SIGNED_URL_TTL_SECONDS = 30;
 
-const COUNTDOWN_TICK_MS = 1000;
-
-// `4:07`, or `1:04:07` from an hour up.
-function clock(seconds) {
-  const whole = Math.ceil(seconds);
-  const pad = (value) => String(value).padStart(2, "0");
-  const hours = Math.floor(whole / 3600);
-  const minutes = Math.floor(whole / 60) % 60;
-  return hours > 0
-    ? `${hours}:${pad(minutes)}:${pad(whole % 60)}`
-    : `${minutes}:${pad(whole % 60)}`;
-}
-
 // Home Assistant slugifies an instance name the same way for the entity ids
 // and the event payload: `N.I.N.A.` becomes `n_i_n_a`.
 function slug(name) {
@@ -81,6 +67,19 @@ function slug(name) {
 // has nothing to say is not drawn at all.
 function known(value) {
   return missing(value) ? null : value;
+}
+
+const COUNTDOWN_TICK_MS = 1000;
+
+// `4:07`, or `1:04:07` from an hour up.
+function clock(seconds) {
+  const whole = Math.ceil(seconds);
+  const pad = (value) => String(value).padStart(2, "0");
+  const hours = Math.floor(whole / 3600);
+  const minutes = Math.floor(whole / 60) % 60;
+  return hours > 0
+    ? `${hours}:${pad(minutes)}:${pad(whole % 60)}`
+    : `${minutes}:${pad(whole % 60)}`;
 }
 
 // An absent field is undefined; the integration publishes no reading as null.
@@ -884,8 +883,9 @@ class NinaImagePanelCard extends HTMLElement {
     }
   }
 
-  // The running exposure's seconds left, and how far through it is. The rig's
-  // clock against the browser's, so a slow browser clock reads a little long.
+  // The running exposure's seconds left, which the header counts down, and how
+  // far through it is. The rig's clock against the browser's, so a slow browser
+  // clock reads a little long.
   // `null` once the end has passed: the frame is downloading, or the poll saying
   // so has not arrived. The sensor changes when an exposure starts, so its
   // `last_changed` stands in for a start the rig does not report; `fraction` is
