@@ -16,17 +16,15 @@
  * websocket command, so it can be set directly as `<img src>` — including
  * the thumbnail strip, which cannot carry an Authorization header.
  *
- * Reads HA sensors for the overlay and the strip/histogram:
- *   The newest LIGHT frame's HFR, star count, mean ADU, filter, exposure,
- *   guide RMS and target; the session frame count and integration time;
- *   whether the camera is exposing; and the mean-ADU sensor's `recent_frames`
- *   attribute — the newest frames of any type, already bounded and ordered —
- *   for the strip's labels and the histogram's range.
+ * The mean-ADU sensor's `recent_frames` attribute — the newest frames of any
+ * type, already bounded and ordered — describes the frame on screen: the
+ * overlay, the stats row, the full-screen caption, the header, the strip's labels
+ * and the histogram's range. So a flat shows a flat's readings, and picking a
+ * frame from the strip changes all of them. Its values are the integration's
+ * own units, since Home Assistant converts a state but not an attribute.
  *
- * The overlay and the stats row describe the newest light, not the frame on
- * screen, which at dawn is a flat. When the two differ — matched by date
- * against the HFR sensor's `recent_lights` — the pills and target are dimmed
- * behind a "Last light" tag, and the stats row dimmed with them.
+ * Reads HA sensors for the session frame count and integration time, and
+ * whether the camera is exposing.
  *
  * A tap opens the frame full screen. There the wheel, a pinch, a double tap or
  * the on-screen buttons zoom it, and dragging pans it.
@@ -103,6 +101,39 @@ function finite(value) {
 function tagFor(frame) {
   const type = frame?.image_type;
   return type && type !== "LIGHT" ? type : null;
+}
+
+// Thousands separated, so a star count reads at a glance.
+function grouped(value) {
+  return value === null ? null : value.toLocaleString("en-US");
+}
+
+// The readings of one frame as printed, `null` where it has none: a calibration
+// frame has no HFR or stars, and an unguided one no RMS. Drawn in one place so
+// that the overlay, the stats row and the caption cannot disagree.
+function frameStats(frame) {
+  const hfr = finite(frame.hfr);
+  const mean = finite(frame.mean);
+  const exposure = finite(frame.exposure);
+  const rms = finite(frame.rms);
+  const temperature = finite(frame.temperature);
+  const gain = finite(frame.gain);
+  const offset = finite(frame.offset);
+  const saved = Date.parse(frame.date);
+  return {
+    hfr,
+    target: known(frame.target),
+    filter: known(frame.filter),
+    hfrText: hfr === null ? null : `${hfr.toFixed(2)} px`,
+    stars: grouped(finite(frame.stars)),
+    mean: mean === null ? null : grouped(Math.round(mean)),
+    exposure: exposure === null ? null : `${exposure.toFixed(exposure < 10 ? 1 : 0)} s`,
+    rms: rms === null ? null : `${rms.toFixed(2)}″`,
+    temperature: temperature === null ? null : `${temperature.toFixed(1)} °C`,
+    gain: gain === null ? null : `${gain}${offset === null ? "" : ` / ${offset}`}`,
+    saved: Number.isNaN(saved) ? null
+      : new Date(saved).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+  };
 }
 
 // A browser draws an image with no src, or a failed one, as its alt text and a
@@ -196,8 +227,6 @@ const STYLE = `
   }
   .stat-pill .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent2); }
   .stat-pill.warn .dot { background: var(--warn); }
-  .overlay.stale .stat-pill:not(.tag), .overlay.stale .target { opacity: 0.5; }
-  .stat-pill.tag { color: var(--muted); letter-spacing: .4px; text-transform: uppercase; }
 
   .exposing-bar {
     position: absolute; top: 0; left: 0; right: 0;
@@ -249,7 +278,6 @@ const STYLE = `
   .stat-cell .val { font-size: 0.8rem; font-weight: 600; }
   .stat-cell .val.good { color: var(--success); }
   .stat-cell .val.warn { color: var(--warn); }
-  .stats-row.stale .stat-cell .val { opacity: 0.5; }
 
   .strip-wrap {
     padding: 8px 10px 10px;
@@ -331,6 +359,14 @@ const STYLE = `
     min-width: 44px; text-align: center;
     font-size: 0.75rem; color: rgba(255,255,255,0.7);
   }
+  .modal-stats {
+    display: none;
+    position: fixed; top: 16px; left: 16px; right: 64px; z-index: 10000;
+    font-size: 0.75rem; line-height: 1.5; color: rgba(255,255,255,0.8);
+    text-shadow: 0 1px 3px #000;
+    pointer-events: none;
+  }
+  .modal-bg.open + .modal-stats { display: block; }
   .modal-close {
     position: absolute; top: 16px; right: 16px;
     color: rgba(255,255,255,0.7); font-size: 1.5rem;
@@ -467,7 +503,6 @@ class NinaImagePanelCard extends HTMLElement {
     const e = this._hass?.states?.[id];
     return e ? e.state : fallback;
   }
-  _f(id, fallback = 0) { return parseFloat(this._s(id)) || fallback; }
   // A duration in `unit`, whichever unit the sensor is shown in; 0 for none.
   _duration(id, unit) { return quantityIn(this._hass, id, unit) || 0; }
 
@@ -500,15 +535,6 @@ class NinaImagePanelCard extends HTMLElement {
   // the strip or the histogram is shown.
   _frame() { return this._recentFrames()[this._currentIndex] || {}; }
 
-  // Whether the frame on screen is the light the `last_image_*` sensors
-  // describe. A frame the attribute does not list is given the benefit, and
-  // with no light this session there are no readings to mislabel.
-  _showsLastLight() {
-    const date = this._frame().date;
-    const lights = this._attr(this._eid("sensor", "last_image_hfr"), "recent_lights", []);
-    if (!date || lights.length === 0) return true;
-    return date === lights[lights.length - 1].date;
-  }
   _attr(id, attr, fallback = null) {
     const e = this._hass?.states?.[id];
     return e?.attributes?.[attr] ?? fallback;
@@ -590,6 +616,10 @@ class NinaImagePanelCard extends HTMLElement {
           <div class="stat-cell"><div class="lbl">Stars</div><div class="val" id="st-stars">—</div></div>
           <div class="stat-cell"><div class="lbl">Mean ADU</div><div class="val" id="st-adu">—</div></div>
           <div class="stat-cell"><div class="lbl">Exposure</div><div class="val" id="st-exp">—</div></div>
+          <div class="stat-cell"><div class="lbl">Guide RMS</div><div class="val" id="st-rms">—</div></div>
+          <div class="stat-cell"><div class="lbl">Sensor</div><div class="val" id="st-temp">—</div></div>
+          <div class="stat-cell"><div class="lbl">Gain / offset</div><div class="val" id="st-gain">—</div></div>
+          <div class="stat-cell"><div class="lbl">Saved</div><div class="val" id="st-saved">—</div></div>
         </div>
 
         ${cfg.show_strip ? `
@@ -609,6 +639,7 @@ class NinaImagePanelCard extends HTMLElement {
             <button id="zoom-fit">Fit</button>
           </div>
         </div>
+        <div class="modal-stats" id="modal-stats"></div>
       </ha-card>
     `;
 
@@ -966,66 +997,57 @@ class NinaImagePanelCard extends HTMLElement {
     const overlay = this.shadowRoot?.getElementById("overlay");
     if (!overlay) return;
 
-    const hfr    = this._f(this._eid("sensor", "last_image_hfr"));
-    // `_s`'s fallback covers a missing entity only; `known` covers one that
-    // exists and reads `unknown` or `unavailable`, which would otherwise be
-    // drawn as a pill spelling the word.
-    const stars  = known(this._s(this._eid("sensor", "last_image_star_count")));
-    const filter = known(this._s(this._eid("sensor", "last_image_filter")));
-    const rms    = known(this._s(this._eid("sensor", "last_image_rms")));
-    const target = known(this._s(this._eid("sensor", "last_image_target")));
-
+    const stats = frameStats(this._frame());
+    const pill = (text, cls = "") =>
+      `<span class="stat-pill ${cls}"><span class="dot"></span>${text}</span>`;
     const pills = [];
-    if (filter && filter !== "null") {
-      pills.push(`<span class="stat-pill"><span class="dot"></span>${filter}</span>`);
-    }
-    if (hfr > 0) {
-      const cls = hfr > 3 ? "warn" : "";
-      pills.push(`<span class="stat-pill ${cls}"><span class="dot"></span>HFR ${hfr.toFixed(2)} px</span>`);
-    }
-    if (stars && stars !== "null" && parseInt(stars) > 0) {
-      pills.push(`<span class="stat-pill"><span class="dot"></span>${stars} ★</span>`);
-    }
-    if (rms && rms !== "null" && rms !== "") {
-      pills.push(`<span class="stat-pill"><span class="dot"></span>RMS ${rms}</span>`);
-    }
+    if (stats.filter) pills.push(pill(stats.filter));
+    if (stats.exposure) pills.push(pill(stats.exposure));
+    if (stats.hfrText) pills.push(pill(`HFR ${stats.hfrText}`, stats.hfr > 3 ? "warn" : ""));
+    if (stats.stars) pills.push(pill(`${stats.stars} ★`));
+    if (stats.rms) pills.push(pill(`RMS ${stats.rms}`));
 
-    const targetHtml = target && target !== "null"
-      ? `<span class="target" style="font-size:0.65rem;color:rgba(255,255,255,0.5);white-space:nowrap;overflow:hidden;max-width:120px;text-overflow:ellipsis">${target}</span>`
+    const targetHtml = stats.target
+      ? `<span class="target" style="font-size:0.65rem;color:rgba(255,255,255,0.5);white-space:nowrap;overflow:hidden;max-width:120px;text-overflow:ellipsis">${stats.target}</span>`
       : "";
 
-    // The pills are the newest light's, so over any other frame they say
-    // whose readings they are.
-    const stale = (pills.length > 0 || targetHtml !== "") && !this._showsLastLight();
-    if (stale) pills.unshift(`<span class="stat-pill tag">Last light</span>`);
-
-    overlay.classList.toggle("stale", stale);
     overlay.innerHTML = `<div class="overlay-left">${pills.join("")}</div>${targetHtml}`;
+
+    const caption = this.shadowRoot?.getElementById("modal-stats");
+    if (caption) {
+      caption.textContent = [
+        stats.target, stats.filter, stats.exposure,
+        stats.hfrText && `HFR ${stats.hfrText}`,
+        stats.stars && `${stats.stars} stars`,
+        stats.mean && `mean ${stats.mean} ADU`,
+        stats.rms && `RMS ${stats.rms}`,
+        stats.temperature,
+        stats.gain && `gain ${stats.gain}`,
+        stats.saved,
+      ].filter(Boolean).join(" · ");
+    }
   }
 
   _updateStatsRow() {
     const set = (id, val) => {
       const el = this.shadowRoot?.getElementById(id);
-      if (el) el.textContent = val;
+      if (el) el.textContent = val ?? "—";
     };
-    const hfr  = this._f(this._eid("sensor", "last_image_hfr"));
-    const stars = this._s(this._eid("sensor", "last_image_star_count"), "—");
-    const adu   = this._f(this._entityId());
-    const exp   = this._duration(this._eid("sensor", "last_image_exposure"), "s");
-
-    set("st-hfr",   hfr  > 0 ? `${hfr.toFixed(2)} px`   : "—");
-    set("st-stars", shown(stars));
-    set("st-adu",   adu  > 0 ? Math.round(adu).toString() : "—");
-    set("st-exp",   exp  > 0 ? `${exp.toFixed(0)} s`      : "—");
-
-    // The newest light's too, beside a histogram of the frame on screen.
-    this.shadowRoot?.getElementById("stats-row")
-      ?.classList.toggle("stale", !this._showsLastLight());
+    const stats = frameStats(this._frame());
+    set("st-hfr",   stats.hfrText);
+    set("st-stars", stats.stars);
+    set("st-adu",   stats.mean);
+    set("st-exp",   stats.exposure);
+    set("st-rms",   stats.rms);
+    set("st-temp",  stats.temperature);
+    set("st-gain",  stats.gain);
+    set("st-saved", stats.saved);
 
     // Colour HFR
     const hfrEl = this.shadowRoot?.getElementById("st-hfr");
-    if (hfrEl && hfr > 0) {
-      hfrEl.className = `val ${hfr < 2 ? "good" : hfr > 3.5 ? "warn" : ""}`;
+    if (hfrEl) {
+      const hfr = stats.hfr;
+      hfrEl.className = `val ${hfr === null ? "" : hfr < 2 ? "good" : hfr > 3.5 ? "warn" : ""}`;
     }
   }
 
@@ -1077,8 +1099,7 @@ class NinaImagePanelCard extends HTMLElement {
     // publishing an off state.
     const cameraState = this._s(this._eid("sensor", "camera_state"));
     const connected = cameraState !== null && cameraState !== "unavailable";
-    const target = known(this._s(this._eid("sensor", "last_image_target")));
-    const filter = known(this._s(this._eid("sensor", "last_image_filter")));
+    const { target, filter } = frameStats(this._frame());
     const index  = this._currentIndex;
     const left   = exposing ? this._exposureLeft() : null;
 
@@ -1106,8 +1127,8 @@ class NinaImagePanelCard extends HTMLElement {
     }
     if (sub) {
       const parts = [];
-      if (target && target !== "null") parts.push(target);
-      if (filter && filter !== "null") parts.push(filter);
+      if (target) parts.push(target);
+      if (filter) parts.push(filter);
       // Every light this session, not the target's or the filter's beside it.
       if (intTime > 0) parts.push(`session ${intTime.toFixed(1)} h`);
       sub.textContent = parts.join(" · ") || "No lights yet this session";

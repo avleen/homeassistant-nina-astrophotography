@@ -13,12 +13,11 @@
  * `dawn_flats` is dumped from inside its own night: the last light's readings
  * and a 122-frame session of 55 lights, with the dawn flats after them. All
  * twenty `recent_frames` are those flats, so the strip's six thumbnails are
- * flats and so is the frame the histogram describes, while the pills and the
- * stats row are the newest light's — so each thumbnail is tagged FLAT, and the
- * pills and stats row are dimmed behind "Last light".
+ * flats and so is the frame on screen, whose own readings fill the pills and the
+ * stats row: no HFR or stars, since a flat has neither.
  *
  * `site_configured` is dumped on a later day than its night, so it has image
- * history but no session: a strip, no last-light readings, and the camera
+ * history but no session: a strip of lights with their readings, and the camera
  * exposing, which is the only capture where it is.
  *
  * `saves` and `saves_templated` render in `render.html` like `night`: only
@@ -63,8 +62,8 @@ export const scenarios = {
         .build(),
   },
 
-  // No strip and no histogram, which must still mark the pills over a flat:
-  // the frame on screen is read from the attribute, not from the strip.
+  // No strip and no histogram, which must still describe the frame on screen:
+  // it is read from the attribute, not from the strip.
   bare: {
     hass: (dump) => rig(dump, NIGHT).build(),
     config: { show_strip: false, show_histogram: false },
