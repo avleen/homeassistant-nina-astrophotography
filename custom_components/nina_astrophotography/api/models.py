@@ -49,6 +49,10 @@ class CameraModel:
     """`(USBLimitMin, USBLimitMax)`, per camera."""
     camera_state: str | None
     is_exposing: bool | None
+    exposure_end: datetime | None
+    """When the running exposure finishes; `None` when none is running. The
+    wire keeps the last exposure's end long after it.
+    """
     pixel_size: float | None
     """Microns."""
     has_battery: bool | None

@@ -1,6 +1,6 @@
 """wire → models. Every sentinel, timezone and quirk dies in this module."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from nina_astrophotography.api.models import AutoFocusReport
 from nina_astrophotography.api.v2.mapper import (
@@ -577,6 +577,21 @@ def test_the_profile_allowlist_maps_from_its_nested_sections() -> None:
 
 def test_an_absent_profile_section_is_no_reading() -> None:
     assert map_profile({}).focal_length is None
+
+
+def test_a_running_exposure_reports_when_it_ends() -> None:
+    camera = map_equipment_info(load("imaging_guiding_equipment_info.json")).camera
+    assert camera is not None
+    assert camera.exposure_end == datetime.fromisoformat(
+        "2026-09-05T01:52:02.0595448-05:00"
+    )
+
+
+def test_an_idle_camera_has_no_exposure_end() -> None:
+    """The wire keeps the last exposure's end while `IsExposing` is false."""
+    camera = map_equipment_info(load("dawn_equipment_info.json")).camera
+    assert camera is not None
+    assert camera.exposure_end is None
 
 
 def test_the_autofocus_reports_worst_fit_is_what_a_threshold_judges() -> None:
