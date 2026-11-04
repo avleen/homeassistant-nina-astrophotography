@@ -2,7 +2,8 @@
  * N.I.N.A. Frame Statistics Card
  * Displays per-frame HFR trend, star count, ADU sparklines and per-filter
  * frame counts for the session's recent lights, published by the integration
- * so they survive a page reload.
+ * so they survive a page reload. Beside them, guiding: the guider's live RMS
+ * and the guide RMS each light was exposed under.
  *
  * Ships with the integration and registers itself as a dashboard resource —
  * nothing to copy or add under Resources. One rig needs no configuration at
@@ -14,9 +15,14 @@
 
 import { DEFAULT_PREFIX, configForm } from "./nina-card-config.js";
 import { RigEntities } from "./nina-entity-resolver.js";
-import { quantityIn, shown } from "./nina-units.js";
+import { missing, quantityIn, shown } from "./nina-units.js";
 
 const VERSION = "2.0.0";
+
+// A reading left out rather than dashed; `unknown` and `unavailable` included.
+function known(value) {
+  return missing(value) ? null : value;
+}
 
 // A filter keeps its colour from night to night, whichever others the session
 // used: the chips are the charts' legend, and an imager reads R as red. The
@@ -267,6 +273,7 @@ class NinaFrameStatsCard extends HTMLElement {
     this._hfr = [];
     this._stars = [];
     this._adu = [];
+    this._rms = [];
     this._filters = [];
     this._boundaries = [];
   }
@@ -311,6 +318,7 @@ class NinaFrameStatsCard extends HTMLElement {
     this._hfr = lights.map((light) => light.hfr ?? null);
     this._stars = lights.map((light) => light.stars ?? null);
     this._adu = lights.map((light) => light.mean ?? null);
+    this._rms = lights.map((light) => light.rms ?? null);
     this._filters = lights.map((light) => light.filter ?? null);
     // A new target or exposure length moves star count and ADU by whole
     // factors — a galaxy field against a Milky Way one — which would
@@ -370,6 +378,19 @@ class NinaFrameStatsCard extends HTMLElement {
       : "—";
 
     const hasData = this._hfr.some(v => v !== null);
+
+    // Each is absent without a guider, and an unguided light has no RMS.
+    const arcsec = (id) => {
+      const value = parseFloat(this._state(id));
+      return Number.isFinite(value) ? `${value.toFixed(2)}″` : null;
+    };
+    const status = known(this._state(this._eid("sensor", "guider_status")));
+    const liveTotal = arcsec(this._eid("sensor", "guider_rms_total"));
+    const liveRa = arcsec(this._eid("sensor", "guider_rms_ra"));
+    const liveDec = arcsec(this._eid("sensor", "guider_rms_dec", "guider_rms_declination"));
+    const guidedRms = this._rms.filter((rms) => rms !== null);
+    const lastRms = guidedRms[guidedRms.length - 1];
+    const guiding = status !== null || liveTotal !== null || guidedRms.length > 0;
 
     const slots = this._attr(this._eid("select", "filter", "filter_wheel_filter"), "options") ?? [];
     const colours = filterColours(slots, [...Object.keys(byFilter), ...this._filters]);
@@ -442,6 +463,21 @@ class NinaFrameStatsCard extends HTMLElement {
               </div>
             </div>
 
+            ${guiding ? `
+              <div class="stat-row">
+                <div class="stat-box">
+                  <div class="label">Guiding now</div>
+                  <div class="value">${liveTotal ?? "—"}</div>
+                  <div class="sub">${[status, liveRa && `RA ${liveRa}`, liveDec && `Dec ${liveDec}`].filter(Boolean).join(" · ") || "&nbsp;"}</div>
+                </div>
+                <div class="stat-box">
+                  <div class="label">Recent lights</div>
+                  <div class="value">${guidedRms.length ? `${this._mean(guidedRms).toFixed(2)}″` : "—"}</div>
+                  <div class="sub">${guidedRms.length ? `Last frame ${lastRms.toFixed(2)}″ · ${guidedRms.length} guided` : "No guided lights"}</div>
+                </div>
+              </div>
+            ` : ""}
+
             <div class="chart-section">
               <div class="chart-label">HFR per frame</div>
               <canvas id="hfr-chart" height="64"></canvas>
@@ -456,6 +492,13 @@ class NinaFrameStatsCard extends HTMLElement {
               <div class="chart-label">Mean ADU per frame</div>
               <canvas id="adu-chart" height="48"></canvas>
             </div>
+
+            ${guidedRms.length ? `
+              <div class="chart-section">
+                <div class="chart-label">Guide RMS per frame</div>
+                <canvas id="rms-chart" height="48"></canvas>
+              </div>
+            ` : ""}
 
             ${!chipless ? `
               <div class="chart-section">
@@ -475,6 +518,9 @@ class NinaFrameStatsCard extends HTMLElement {
         this._drawSparkline("hfr-chart", this._hfr, "#7b8de8", true, lightColours, 2);
         this._drawSparkline("stars-chart", this._stars, "#5bcfcf", false, lightColours, 0);
         this._drawSparkline("adu-chart", this._adu, "#f4a261", false, lightColours, 0);
+      });
+      requestAnimationFrame(() => {
+        this._drawSparkline("rms-chart", this._rms, "#57cc99", false, lightColours, 2);
       });
     }
   }

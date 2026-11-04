@@ -19,6 +19,10 @@
  * `site_configured` holds no session, because it is dumped on a later day than
  * its night. That is the empty card, and it is also what a new night shows
  * before its first light.
+ *
+ * `dawn_flats` holds no guider, so `session` draws the RMS of its lights beside a
+ * blank live reading. `guided` hands it the guider of `site_configured`, the
+ * only capture with one, to reach the live reading too.
  */
 
 import { rig } from "../hass.mjs";
@@ -69,6 +73,20 @@ export const scenarios = {
   // match `session`'s: the same entities, reached the other way. No `prefix:` —
   // the point is the id the card builds unaided.
   templated: { hass: (dump) => rig(dump, NIGHT).unresolvable().build() },
+
+  guided: {
+    hass: (dump) => {
+      const built = rig(dump, NIGHT).build();
+      const up = rig(dump, "site_configured").build();
+      for (const id of Object.keys(up.states)) {
+        if (id.startsWith("sensor.n_i_n_a_guider_")) {
+          built.states[id] = up.states[id];
+          built.entities[id] = up.entities[id];
+        }
+      }
+      return built;
+    },
+  },
 
   // The exposure and the integration time shown in minutes, which must render
   // what `session` does.

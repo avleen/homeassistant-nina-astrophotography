@@ -152,6 +152,15 @@ async def test_recent_lights_survive_a_dawn_flat_run(
     assert recent[-1]["hfr"] == pytest.approx(float(state.state))
 
 
+async def test_recent_lights_carry_the_rms_they_were_guided_at(
+    hass: HomeAssistant, loaded_entry: MockConfigEntry, advance
+) -> None:
+    """The series behind the card's guide RMS chart."""
+    await advance("imaging_guiding")
+    recent = state_of(hass, LAST_IMAGE_HFR).attributes["recent_lights"]
+    assert recent[-1]["rms"] == pytest.approx(0.38)
+
+
 async def test_recent_lights_name_their_target(
     hass: HomeAssistant, loaded_entry: MockConfigEntry, advance
 ) -> None:
