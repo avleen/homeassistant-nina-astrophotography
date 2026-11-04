@@ -28,6 +28,9 @@
  * against the HFR sensor's `recent_lights` — the pills and target are dimmed
  * behind a "Last light" tag, and the stats row dimmed with them.
  *
+ * A tap opens the frame full screen. There the wheel, a pinch, a double tap or
+ * the on-screen buttons zoom it, and dragging pans it.
+ *
  * Card config — one rig needs none: the card finds its own sensors in the
  * registry.
  *   type: custom:nina-image-panel-card
@@ -55,6 +58,14 @@ const DEFAULT_STRIP_COUNT = 6;
 // Signed just before use, not cached: a fresh signature each call is what
 // naturally busts the browser's cache across reloads of the same index.
 const SIGNED_URL_TTL_SECONDS = 30;
+
+const MAX_ZOOM = 16;
+const DOUBLE_TAP_ZOOM = 4;
+const BUTTON_ZOOM = 1.5;
+// Pixels of wheel travel per e-fold of zoom.
+const WHEEL_TRAVEL = 400;
+// A press that wanders further than this is a drag, not a tap.
+const DRAG_SLOP = 4;
 
 // Home Assistant slugifies an instance name the same way for the entity ids
 // and the event payload: `N.I.N.A.` becomes `n_i_n_a`.
@@ -273,12 +284,38 @@ const STYLE = `
     background: rgba(0,0,0,0.92);
     align-items: center; justify-content: center;
     cursor: zoom-out;
+    overflow: hidden;
+    touch-action: none;
+    outline: none;
   }
   .modal-bg.open { display: flex; }
   .modal-bg img {
     max-width: 95vw; max-height: 90vh;
     object-fit: contain; border-radius: 8px;
     box-shadow: 0 0 60px rgba(0,0,0,0.8);
+    cursor: zoom-in;
+    user-select: none; -webkit-user-drag: none;
+  }
+  .modal-bg.zoomed img { cursor: grab; }
+  .modal-bg.dragging img { cursor: grabbing; }
+  .zoom-bar {
+    position: absolute; bottom: 16px; left: 50%;
+    transform: translateX(-50%);
+    display: flex; align-items: center; gap: 4px;
+    padding: 4px; border-radius: 20px;
+    background: rgba(0,0,0,0.6);
+    cursor: default;
+  }
+  .zoom-bar button {
+    min-width: 36px; height: 36px; padding: 0 10px;
+    color: rgba(255,255,255,0.85); font: inherit; font-size: 0.9rem;
+    background: none; border: none; border-radius: 18px;
+    cursor: pointer;
+  }
+  .zoom-bar button:hover { background: rgba(255,255,255,0.12); }
+  .zoom-level {
+    min-width: 44px; text-align: center;
+    font-size: 0.75rem; color: rgba(255,255,255,0.7);
   }
   .modal-close {
     position: absolute; top: 16px; right: 16px;
@@ -545,9 +582,15 @@ class NinaImagePanelCard extends HTMLElement {
           </div>
         ` : ""}
 
-        <div class="modal-bg" id="modal">
-          <button class="modal-close" id="modal-close">✕</button>
-          <img id="modal-img" alt="Full image" />
+        <div class="modal-bg" id="modal" tabindex="-1">
+          <img id="modal-img" alt="Full image" draggable="false" />
+          <button class="modal-close" id="modal-close" aria-label="Close">✕</button>
+          <div class="zoom-bar" id="zoom-bar">
+            <button id="zoom-out" aria-label="Zoom out">−</button>
+            <span class="zoom-level" id="zoom-level"></span>
+            <button id="zoom-in" aria-label="Zoom in">+</button>
+            <button id="zoom-fit">Fit</button>
+          </div>
         </div>
       </ha-card>
     `;
@@ -557,10 +600,113 @@ class NinaImagePanelCard extends HTMLElement {
     this.shadowRoot.getElementById("img-wrap").addEventListener("click", () => {
       if (this._hasImage) this._openModal().catch(() => {});
     });
-    this.shadowRoot.getElementById("modal").addEventListener("click", e => {
-      if (e.target !== this.shadowRoot.getElementById("modal-img")) this._closeModal();
-    });
     this.shadowRoot.getElementById("modal-close").addEventListener("click", () => this._closeModal());
+    this._bindZoom();
+  }
+
+  _bindZoom() {
+    const modal = this.shadowRoot.getElementById("modal");
+    const byId = (id) => this.shadowRoot.getElementById(id);
+    this._pointers = new Map();
+    this._view = { scale: 1, x: 0, y: 0 };
+
+    byId("zoom-in").addEventListener("click", () => this._zoomBy(BUTTON_ZOOM));
+    byId("zoom-out").addEventListener("click", () => this._zoomBy(1 / BUTTON_ZOOM));
+    byId("zoom-fit").addEventListener("click", () => this._resetZoom());
+
+    // Only a tap on the bare backdrop of a fitted frame closes: zoomed in, it is
+    // too easy to hit while panning, and the end of a drag also fires a click.
+    modal.addEventListener("click", (e) => {
+      if (e.target === modal && !this._dragged && this._view.scale === 1) this._closeModal();
+    });
+    modal.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") this._closeModal();
+      else if (e.key === "+" || e.key === "=") this._zoomBy(BUTTON_ZOOM);
+      else if (e.key === "-") this._zoomBy(1 / BUTTON_ZOOM);
+      else if (e.key === "0") this._resetZoom();
+    });
+    // Not passive: it must stop the page behind from scrolling.
+    modal.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      this._zoomBy(Math.exp(-e.deltaY / WHEEL_TRAVEL), e.clientX, e.clientY);
+    }, { passive: false });
+    byId("modal-img").addEventListener("dblclick", (e) => {
+      if (this._view.scale > 1) this._resetZoom();
+      else this._zoomBy(DOUBLE_TAP_ZOOM, e.clientX, e.clientY);
+    });
+
+    // No pointer capture: it would retarget the click, and the backdrop covers
+    // the viewport so a drag cannot leave it.
+    modal.addEventListener("pointerdown", (e) => {
+      if (e.target.closest("button, .zoom-bar")) return;
+      this._dragged = false;
+      this._pressAt = { x: e.clientX, y: e.clientY };
+      this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    });
+    modal.addEventListener("pointermove", (e) => {
+      const last = this._pointers.get(e.pointerId);
+      if (!last) return;
+      const now = { x: e.clientX, y: e.clientY };
+      if (Math.hypot(now.x - this._pressAt.x, now.y - this._pressAt.y) > DRAG_SLOP) {
+        this._dragged = true;
+      }
+      if (this._pointers.size === 2) {
+        const [other] = [...this._pointers].filter(([id]) => id !== e.pointerId).map(([, p]) => p);
+        const before = Math.hypot(last.x - other.x, last.y - other.y);
+        const after = Math.hypot(now.x - other.x, now.y - other.y);
+        if (before > 0) this._zoomBy(after / before, (now.x + other.x) / 2, (now.y + other.y) / 2);
+      } else if (this._dragged && this._view.scale > 1) {
+        this._setView({
+          ...this._view,
+          x: this._view.x + now.x - last.x,
+          y: this._view.y + now.y - last.y,
+        });
+        modal.classList.add("dragging");
+      }
+      this._pointers.set(e.pointerId, now);
+    });
+    const release = (e) => {
+      this._pointers.delete(e.pointerId);
+      if (this._pointers.size === 0) modal.classList.remove("dragging");
+    };
+    modal.addEventListener("pointerup", release);
+    modal.addEventListener("pointercancel", release);
+  }
+
+  // Scales about a viewport point, the centre by default, keeping what is under
+  // it where it is. The image rests centred, so offsets are from the centre.
+  _zoomBy(factor, clientX, clientY) {
+    const box = this.shadowRoot.getElementById("modal").getBoundingClientRect();
+    const scale = Math.min(MAX_ZOOM, Math.max(1, this._view.scale * factor));
+    const ratio = scale / this._view.scale;
+    const atX = clientX === undefined ? 0 : clientX - box.left - box.width / 2;
+    const atY = clientY === undefined ? 0 : clientY - box.top - box.height / 2;
+    this._setView({
+      scale,
+      x: atX - (atX - this._view.x) * ratio,
+      y: atY - (atY - this._view.y) * ratio,
+    });
+  }
+
+  _resetZoom() { this._setView({ scale: 1, x: 0, y: 0 }); }
+
+  // Clamped so the frame cannot be dragged off the screen: an axis it does not
+  // fill stays centred, and one it overflows keeps its edges past the viewport's.
+  _setView({ scale, x, y }) {
+    const modal = this.shadowRoot.getElementById("modal");
+    const img = this.shadowRoot.getElementById("modal-img");
+    const box = modal.getBoundingClientRect();
+    const reach = (rest, room) => Math.max(0, (rest * scale - room) / 2);
+    const clamp = (value, limit) => Math.min(limit, Math.max(-limit, value));
+    this._view = {
+      scale,
+      x: clamp(x, reach(img.offsetWidth, box.width)),
+      y: clamp(y, reach(img.offsetHeight, box.height)),
+    };
+    img.style.transform =
+      `translate(${this._view.x}px, ${this._view.y}px) scale(${scale})`;
+    modal.classList.toggle("zoomed", scale > 1);
+    this.shadowRoot.getElementById("zoom-level").textContent = `×${scale.toFixed(1)}`;
   }
 
   async _loadImage(index, silent = false) {
@@ -925,6 +1071,9 @@ class NinaImagePanelCard extends HTMLElement {
     hideUntilLoaded(modalImg);
     modalImg.src = await this._signedUrl(this._imagePath(this._currentIndex));
     modal.classList.add("open");
+    this._pointers.clear();
+    this._resetZoom();
+    modal.focus();
   }
 
   _closeModal() {
