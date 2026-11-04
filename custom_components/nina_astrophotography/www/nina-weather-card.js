@@ -11,27 +11,25 @@
  *   type: custom:nina-weather-card
  *   device_id: abc123      # which rig, for two or more; any one of its devices
  *   prefix: n_i_n_a        # fallback only, for the entities that cannot resolve
+ *
+ * The limits a reading is coloured by are options too, in °C and m/s whatever
+ * unit Home Assistant shows the reading in:
+ *   dew_margin: 3          # dew alert while the air is within this of its dew point
+ *   wind_warn: 8           # and wind_danger: 12
  */
 
 import { DEFAULT_PREFIX, configForm } from "./nina-card-config.js";
-import {
-  LinkGrace, hubEntityIds, linkLostSince, RigEntities,
-} from "./nina-entity-resolver.js";
+import { LinkView, RigEntities } from "./nina-entity-resolver.js";
 import { displayed, interval, inUnit, missing, quantity } from "./nina-units.js";
+import { THEME, applyTheme, palette } from "./nina-theme.js";
 
-const VERSION = "2.0.0";
+const VERSION = "2.3.0";
 
 const STYLE = `
+  ${THEME}
   :host {
     --bg:      var(--ha-card-background, var(--card-background-color, #1c1c2e));
     --border:  var(--divider-color, rgba(255,255,255,0.1));
-    --accent:  #7b8de8;
-    --accent2: #5bcfcf;
-    --warn:    #f4a261;
-    --danger:  #e76f51;
-    --success: #57cc99;
-    --muted:   rgba(255,255,255,0.45);
-    --text:    rgba(255,255,255,0.92);
     font-family: var(--primary-font-family, Roboto, sans-serif);
   }
   ha-card {
@@ -65,7 +63,7 @@ const STYLE = `
     animation: pulse-unsafe 2s ease-in-out infinite;
   }
   .safety-banner.unknown {
-    background: rgba(255,255,255,0.04);
+    background: color-mix(in srgb, var(--ink) 4%, transparent);
   }
   .safety-banner.unreachable {
     background: rgba(244,162,97,0.10);
@@ -83,6 +81,9 @@ const STYLE = `
   .safety-text .unknown{ color: var(--muted); }
   .safety-text .unreachable { color: var(--warn); }
 
+  /* Readings N.I.N.A. has not confirmed since it stopped answering */
+  .body.stale { opacity: 0.5; }
+
   /* ── Grid ── */
   .body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 10px; }
 
@@ -98,7 +99,7 @@ const STYLE = `
     gap: 7px;
   }
   .w-cell {
-    background: rgba(255,255,255,0.04);
+    background: color-mix(in srgb, var(--ink) 4%, transparent);
     border: 1px solid var(--border);
     border-radius: 9px; padding: 9px 11px;
     display: flex; flex-direction: column; gap: 3px;
@@ -127,7 +128,7 @@ const STYLE = `
   /* ── Sky quality bar ── */
   .sq-wrap { display: flex; flex-direction: column; gap: 4px; }
   .sq-bar-track {
-    height: 8px; background: rgba(255,255,255,0.08);
+    height: 8px; background: color-mix(in srgb, var(--ink) 8%, transparent);
     border-radius: 4px; overflow: hidden;
   }
   .sq-bar-fill {
@@ -161,33 +162,69 @@ function degToCompass(deg) {
   return DEG_LABELS[Math.round(deg / 22.5) % 16];
 }
 
+// Temperatures and the dew margin in °C, wind in m/s, humidity and cloud in %,
+// seeing in arcsec.
+const LIMITS = {
+  dew_margin: 3,
+  temperature_high: 25,
+  temperature_low: -10,
+  humidity_warn: 85,
+  humidity_danger: 95,
+  wind_warn: 8,
+  wind_danger: 12,
+  cloud_warn: 60,
+  cloud_danger: 85,
+  seeing_warn: 3,
+  seeing_danger: 5,
+};
+
+// Coerced, because YAML hands back a string as readily as a number, and `null`
+// for a key left empty. `Number` reads `null` and a blank string as 0.
+function limit(value, fallback) {
+  const text = typeof value === "string" ? value.trim() : value;
+  const n = text === null || text === "" ? NaN : Number(text);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+// " since HH:MM", or nothing without a time.
+function since(ms) {
+  return ms
+    ? ` since ${new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+    : "";
+}
+
 class NinaWeatherCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
-    this._grace = new LinkGrace(() => this._render());
+    this._view = new LinkView();
   }
 
   setConfig(config) {
-    this._config = config || {};
+    const cfg = config || {};
+    this._config = cfg;
+    this._limits = {
+      dewMargin: limit(cfg.dew_margin, LIMITS.dew_margin),
+      tempHigh: limit(cfg.temperature_high, LIMITS.temperature_high),
+      tempLow: limit(cfg.temperature_low, LIMITS.temperature_low),
+      humidWarn: limit(cfg.humidity_warn, LIMITS.humidity_warn),
+      humidDanger: limit(cfg.humidity_danger, LIMITS.humidity_danger),
+      windWarn: limit(cfg.wind_warn, LIMITS.wind_warn),
+      windDanger: limit(cfg.wind_danger, LIMITS.wind_danger),
+      cloudWarn: limit(cfg.cloud_warn, LIMITS.cloud_warn),
+      cloudDanger: limit(cfg.cloud_danger, LIMITS.cloud_danger),
+      seeingWarn: limit(cfg.seeing_warn, LIMITS.seeing_warn),
+      seeingDanger: limit(cfg.seeing_danger, LIMITS.seeing_danger),
+    };
     this._rig = new RigEntities(
       this._config.prefix || DEFAULT_PREFIX, this._config.device_id);
-    this._grace.reset();
+    this._view.reset();
   }
 
   set hass(hass) {
     this._hass = hass;
-    if (this._rig.refresh(hass)) {
-      // The monitor's connectivity stays available while the monitor is down,
-      // so it too goes `unavailable` only with the link.
-      this._linkRows = [
-        ...(hubEntityIds(hass, this._config.device_id) ?? [
-          this._eid("sensor", "weather_source"),
-          this._eid("binary_sensor", "sequencer_running"),
-        ]),
-        this._eid("binary_sensor", "safety_monitor_connected"),
-      ];
-    }
+    this._rig.refresh(hass);
+    applyTheme(this);
     this._render();
   }
 
@@ -199,20 +236,25 @@ class NinaWeatherCard extends HTMLElement {
   }
 
   _s(id, fb = null) {
-    const e = this._hass?.states?.[id];
+    const e = this._shown?.states?.[id];
     return e ? e.state : fb;
   }
   _f(id, fb = null) {
     const v = parseFloat(this._s(id));
     return isNaN(v) ? fb : v;
   }
-  _q(id) { return quantity(this._hass, id); }
+  _q(id) { return quantity(this._shown, id); }
 
   _render() {
     if (!this._hass) return;
+    const link = this._view.read(this._hass, this._rig);
+    // While N.I.N.A. is not answering, the readings are its last ones.
+    this._shown = link.hass;
+    // Nothing to show at all: the link was lost before this card saw it up.
+    const unreachable = link.lost && !link.stale;
 
     // Safety monitor
-    const safetyLinkRow = this._hass.states?.[this._eid("binary_sensor", "safety_monitor_connected")];
+    const safetyLinkRow = this._shown.states?.[this._eid("binary_sensor", "safety_monitor_connected")];
     const safetyConnected = safetyLinkRow?.state === "on";
     // `on` means UNSAFE. Three states, not two: `unknown` is no reading yet,
     // and must not render as "safe".
@@ -224,9 +266,6 @@ class NinaWeatherCard extends HTMLElement {
     // The source is diagnostic and may be disabled, so nothing else depends on it.
     const source = this._s(this._eid("sensor", "weather_source"));
     const sourceLive = !missing(source);
-    const lostSince = linkLostSince(this._hass, this._linkRows);
-    if (this._grace.hold(lostSince)) return;
-    const unreachable = lostSince !== null;
     const channels = {
       temp: this._eid("sensor", "temperature", "weather_temperature"),
       humid: this._eid("sensor", "humidity", "weather_humidity"),
@@ -268,16 +307,25 @@ class NinaWeatherCard extends HTMLElement {
     const dewC   = inUnit(dewPt, "°C");
     const windMs = inUnit(windSpd, "m/s");
 
-    // Dew threat: the air within 3 °C of its dew point.
+    const L = this._limits;
+    // Dew threat: the air within `dew_margin` of its dew point.
     const dewMargin = tempC !== null && dewC !== null ? tempC - dewC : null;
-    const dewThreat = dewMargin !== null && dewMargin < 3;
-    const windColor = windMs !== null && windMs > 12 ? "var(--danger)"
-      : windMs !== null && windMs > 8 ? "var(--warn)" : "var(--text)";
+    const dewThreat = dewMargin !== null && dewMargin < L.dewMargin;
+    const windLevel = this._windLevel(windMs);
+    const windColor = windLevel === "danger" ? "var(--danger)"
+      : windLevel === "warn" ? "var(--warn)" : "var(--text)";
 
-    // UNSAFE is tested first, ahead of the diagnostic connectivity read: the
-    // other order would let a disabled diagnostic hide a monitor screaming UNSAFE.
+    // UNSAFE is tested first, so a disabled connectivity diagnostic cannot hide
+    // a monitor reporting UNSAFE.
     let safetyIcon, safetyLabelCls, safetyLabel, safetyDetail;
-    if (isUnsafe) {
+    if (link.stale) {
+      // A safe verdict nobody has confirmed is not one; the last reading is
+      // still worth knowing.
+      const last = isUnsafe ? "unsafe" : isSafe ? "safe" : "none";
+      safetyIcon = "📡"; safetyLabelCls = "unreachable";
+      safetyLabel = "Safety state unknown";
+      safetyDetail = `No answer from N.I.N.A.${since(link.since)}. Its last reading: ${last}.`;
+    } else if (isUnsafe) {
       safetyIcon = "⚠️"; safetyLabelCls = "unsafe";
       safetyLabel = "UNSAFE — conditions exceeded";
       safetyDetail = "Automated abort should be triggered if configured";
@@ -301,7 +349,9 @@ class NinaWeatherCard extends HTMLElement {
     }
 
     let wxStatus, noReadings, noReadingsHint;
-    if (wxConnected) {
+    if (link.stale) {
+      wxStatus = `N.I.N.A. ${link.lost ? "unreachable" : "not answering"} · last readings`;
+    } else if (wxConnected) {
       wxStatus = "Connected · N.I.N.A. weather station";
     } else if (unreachable) {
       wxStatus = "N.I.N.A. unreachable · weather station";
@@ -314,12 +364,14 @@ class NinaWeatherCard extends HTMLElement {
               Compatible: OpenWeatherMap, Pegasus UPB, AAG CloudWatcher, ASCOM Alpaca, and others.`;
     }
 
-    // Bortle-ish mapping: 22+ excellent, 20–22 good, 18–20 moderate, <18 poor.
-    let sqPct = 0, sqLabel = "—", sqColor = "#7b8de8";
+    // SQM in mag/arcsec²: 21.5+ excellent, 20 good, 18.5 moderate, below that
+    // poor. The bar spans 16 to 22.5.
+    let sqPct = 0, sqLabel = "—", sqColor = "var(--accent)";
     if (skyQ !== null) {
       sqPct   = Math.min(100, Math.max(0, ((skyQ - 16) / (22.5 - 16)) * 100));
       sqLabel = skyQ >= 21.5 ? "Excellent" : skyQ >= 20 ? "Good" : skyQ >= 18.5 ? "Moderate" : "Poor";
-      sqColor = skyQ >= 21.5 ? "#57cc99" : skyQ >= 20 ? "#5bcfcf" : skyQ >= 18.5 ? "#f4a261" : "#e76f51";
+      sqColor = skyQ >= 21.5 ? "var(--success)" : skyQ >= 20 ? "var(--accent2)"
+        : skyQ >= 18.5 ? "var(--warn)" : "var(--danger)";
     }
 
     const cell = (icon, label, val, unit, warnIf = false, dangerIf = false, naIf = false) => {
@@ -354,7 +406,7 @@ class NinaWeatherCard extends HTMLElement {
       <style>${STYLE}</style>
       <ha-card>
         <div class="header">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5bcfcf" stroke-width="1.5" stroke-linecap="round">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" style="stroke:var(--accent2)" stroke-width="1.5" stroke-linecap="round">
             <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
           </svg>
           <div>
@@ -378,7 +430,7 @@ class NinaWeatherCard extends HTMLElement {
             <div class="hint">${noReadingsHint}</div>
           </div>
         ` : `
-        <div class="body">
+        <div class="body${link.stale ? " stale" : ""}">
 
           ${dewThreat ? `
             <div class="dew-alert">
@@ -389,8 +441,8 @@ class NinaWeatherCard extends HTMLElement {
           <!-- Temperature & humidity -->
           <div class="section-title">Atmosphere</div>
           <div class="weather-grid">
-            ${qcell("🌡", "Temperature", temp, 1, tempC !== null && tempC > 25, tempC !== null && tempC < -10)}
-            ${cell("💧", "Humidity", humid?.toFixed(0) ?? null, "%", humid !== null && humid > 85, humid !== null && humid > 95)}
+            ${qcell("🌡", "Temperature", temp, 1, tempC !== null && tempC > L.tempHigh, tempC !== null && tempC < L.tempLow)}
+            ${cell("💧", "Humidity", humid?.toFixed(0) ?? null, "%", humid !== null && humid > L.humidWarn, humid !== null && humid > L.humidDanger)}
             ${qcell("🌫", "Dew Point", dewPt, 1, dewThreat, false)}
             ${qcell("📊", "Pressure", press, 1, false, false, press === null)}
           </div>
@@ -422,10 +474,10 @@ class NinaWeatherCard extends HTMLElement {
           <!-- Sky conditions -->
           <div class="section-title">Sky conditions</div>
           <div class="weather-grid">
-            ${cell("☁", "Cloud cover", cloud?.toFixed(0) ?? null, "%", cloud !== null && cloud > 60, cloud !== null && cloud > 85, cloud === null)}
+            ${cell("☁", "Cloud cover", cloud?.toFixed(0) ?? null, "%", cloud !== null && cloud > L.cloudWarn, cloud !== null && cloud > L.cloudDanger, cloud === null)}
             ${qcell("🌧", "Rain rate", rain, 2, false, rain !== null && rain.value > 0, rain === null)}
             ${qcell("🌡", "Sky temp", skyT, 1, false, false, skyT === null)}
-            ${cell("👁", "Seeing", seeing?.toFixed(1) ?? null, "\"", seeing !== null && seeing > 3, seeing !== null && seeing > 5, seeing === null)}
+            ${cell("👁", "Seeing", seeing?.toFixed(1) ?? null, "\"", seeing !== null && seeing > L.seeingWarn, seeing !== null && seeing > L.seeingDanger, seeing === null)}
             ${qcell("✨", "Sky brightness", skyB, 2, false, false, skyB === null)}
           </div>
 
@@ -455,10 +507,16 @@ class NinaWeatherCard extends HTMLElement {
 
     this.shadowRoot.innerHTML = html;
 
-    // Draw wind rose after render
     if (wxConnected && windDir !== null) {
       requestAnimationFrame(() => this._drawWindRose(windDir, windMs));
     }
+  }
+
+  // `"danger"`, `"warn"` or `null`, for a speed in m/s.
+  _windLevel(speed) {
+    if (speed === null) return null;
+    return speed > this._limits.windDanger ? "danger"
+      : speed > this._limits.windWarn ? "warn" : null;
   }
 
   // `speed` in m/s, whatever unit the sensor is shown in.
@@ -466,12 +524,13 @@ class NinaWeatherCard extends HTMLElement {
     const canvas = this.shadowRoot.getElementById("wind-rose-canvas");
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
+    const theme = palette(this);
     const W = 64, H = 64, cx = 32, cy = 32, r = 26;
     ctx.clearRect(0, 0, W, H);
 
     // Background circle
     ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(255,255,255,0.12)"; ctx.lineWidth = 1; ctx.stroke();
+    ctx.strokeStyle = theme.ink(0.12); ctx.lineWidth = 1; ctx.stroke();
 
     // Cross-hairs
     for (const a of [0, 90, 180, 270]) {
@@ -479,18 +538,18 @@ class NinaWeatherCard extends HTMLElement {
       ctx.beginPath();
       ctx.moveTo(cx + (r - 6) * Math.cos(rad), cy + (r - 6) * Math.sin(rad));
       ctx.lineTo(cx + r * Math.cos(rad), cy + r * Math.sin(rad));
-      ctx.strokeStyle = "rgba(255,255,255,0.2)"; ctx.lineWidth = 0.8; ctx.stroke();
+      ctx.strokeStyle = theme.ink(0.2); ctx.lineWidth = 0.8; ctx.stroke();
     }
 
     // Cardinal labels
     ctx.font = "bold 7px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillStyle = "rgba(255,255,255,0.35)";
+    ctx.fillStyle = theme.ink(0.35);
     ctx.fillText("N", cx, cy - r + 4);
     ctx.fillText("S", cx, cy + r - 4);
     ctx.fillText("E", cx + r - 4, cy);
     ctx.fillText("W", cx - r + 4, cy);
 
-    // Meteorological: the arrow points from where the wind comes from.
+    // `dir` is meteorological, where the wind blows from; the head points there.
     const arrowRad = (dir - 90) * Math.PI / 180; // 0° = north = up
     const speedRatio = speed !== null ? Math.min(1, (speed || 0) / 20) : 0.5;
     const arrowLen = 12 + speedRatio * 10;
@@ -499,7 +558,8 @@ class NinaWeatherCard extends HTMLElement {
     const startX = cx - Math.cos(arrowRad) * arrowLen;
     const startY = cy - Math.sin(arrowRad) * arrowLen;
 
-    const color = speed !== null && speed > 12 ? "#e76f51" : speed !== null && speed > 8 ? "#f4a261" : "#5bcfcf";
+    const level = this._windLevel(speed);
+    const color = level === "danger" ? theme.danger : level === "warn" ? theme.warn : theme.accent2;
 
     // Arrow shaft
     ctx.beginPath(); ctx.moveTo(startX, startY); ctx.lineTo(endX, endY);
@@ -518,17 +578,97 @@ class NinaWeatherCard extends HTMLElement {
 
     // Centre dot
     ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(255,255,255,0.3)"; ctx.fill();
+    ctx.fillStyle = theme.ink(0.3); ctx.fill();
   }
 
   getCardSize() { return 7; }
-  static getConfigForm() { return configForm(); }
+  static getConfigForm() {
+    const number = (unit, extra = {}) => ({
+      selector: { number: { step: "any", mode: "box", unit_of_measurement: unit, ...extra } },
+    });
+    const percent = number("%", { min: 0, max: 100 });
+    // Nameless, so each limit stays a top-level key instead of nesting under it.
+    const pair = (schema) => ({ type: "grid", name: "", schema });
+    return configForm([
+      {
+        type: "expandable",
+        name: "",
+        title: "Limits",
+        schema: [
+          {
+            name: "dew_margin",
+            label: "Dew margin",
+            helper: "Show the dew alert while the air is within this of its dew point. "
+              + "Smaller with dew heaters on the optics. In °C, whatever unit the "
+              + "temperature is shown in.",
+            default: LIMITS.dew_margin,
+            ...number("°C", { min: 0 }),
+          },
+          pair([
+            {
+              name: "temperature_high",
+              label: "Warm above",
+              helper: "Warning. In °C.",
+              default: LIMITS.temperature_high,
+              ...number("°C"),
+            },
+            {
+              name: "temperature_low",
+              label: "Cold below",
+              helper: "Danger. In °C.",
+              default: LIMITS.temperature_low,
+              ...number("°C"),
+            },
+          ]),
+          pair([
+            { name: "humidity_warn", label: "Humidity warning above", default: LIMITS.humidity_warn, ...percent },
+            { name: "humidity_danger", label: "Humidity danger above", default: LIMITS.humidity_danger, ...percent },
+          ]),
+          pair([
+            {
+              name: "wind_warn",
+              label: "Wind warning above",
+              helper: "In m/s, whatever unit the speed is shown in: 1 m/s is 3.6 km/h or 2.24 mph.",
+              default: LIMITS.wind_warn,
+              ...number("m/s", { min: 0 }),
+            },
+            {
+              name: "wind_danger",
+              label: "Wind danger above",
+              helper: "In m/s. Also colours the wind rose's arrow.",
+              default: LIMITS.wind_danger,
+              ...number("m/s", { min: 0 }),
+            },
+          ]),
+          pair([
+            { name: "cloud_warn", label: "Cloud warning above", default: LIMITS.cloud_warn, ...percent },
+            { name: "cloud_danger", label: "Cloud danger above", default: LIMITS.cloud_danger, ...percent },
+          ]),
+          pair([
+            {
+              name: "seeing_warn",
+              label: "Seeing warning above",
+              helper: "Star FWHM.",
+              default: LIMITS.seeing_warn,
+              ...number("arcsec", { min: 0 }),
+            },
+            {
+              name: "seeing_danger",
+              label: "Seeing danger above",
+              default: LIMITS.seeing_danger,
+              ...number("arcsec", { min: 0 }),
+            },
+          ]),
+        ],
+      },
+    ]);
+  }
 
   static getStubConfig() { return {}; }
 }
 
-// Guarded: see nina-frame-stats-card.js — a leftover 1.4.5 `/local/` resource
-// defining the same tag would otherwise throw and abort this whole module.
+// Guarded: a stale 1.4.5 `/local/` resource defining the same tag would
+// otherwise throw and abort the rest of this module.
 if (!customElements.get("nina-weather-card")) {
   customElements.define("nina-weather-card", NinaWeatherCard);
 }

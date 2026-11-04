@@ -182,8 +182,8 @@ export function install({ width = 320, height = 320, dpr = 2 } = {}) {
     get innerHTML() {
       return html;
     },
-    // A canvas is whatever the card's own markup declares as one, rather than
-    // a list of ids to keep in step with six cards.
+    // An id the card's own markup puts on a `<canvas>` is the canvas; any
+    // other id is a recorded node.
     getElementById(id) {
       const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       if (new RegExp(`<canvas[^>]*\\sid="${escaped}"`).test(html)) return canvas;
@@ -195,9 +195,18 @@ export function install({ width = 320, height = 320, dpr = 2 } = {}) {
   };
 
   globalThis.HTMLElement = class {
+    #attributes = new Set();
     attachShadow() {
       this.shadowRoot = shadow;
       return shadow;
+    }
+    hasAttribute(name) {
+      return this.#attributes.has(name);
+    }
+    toggleAttribute(name, force = !this.#attributes.has(name)) {
+      if (force) this.#attributes.add(name);
+      else this.#attributes.delete(name);
+      return force;
     }
   };
   globalThis.customElements = {
@@ -208,6 +217,9 @@ export function install({ width = 320, height = 320, dpr = 2 } = {}) {
   };
   globalThis.window = { devicePixelRatio: dpr, customCards: [] };
   globalThis.document = { createElement: element };
+  // No stylesheet resolves here, so no theme does: a card draws in the dark
+  // palette it falls back to, which keeps a log comparable across versions.
+  globalThis.getComputedStyle = () => ({ getPropertyValue: () => "" });
   // There are no image bytes to serve, so every load fails — which is what the
   // browser page shows too, since nothing there answers the image proxy.
   globalThis.Image = class {
@@ -216,10 +228,9 @@ export function install({ width = 320, height = 320, dpr = 2 } = {}) {
     }
   };
   // Held rather than run: node fires no frames, so the runner decides when the
-  // ones a render queued go off. Kept as a list against its handles, and not as
-  // one slot: a render that queues two frames would otherwise record only the
-  // second, and a card cancelling a stale handle would wipe a live callback —
-  // both of which read as "the card stopped drawing" in a diff.
+  // ones a render queued go off. Each is kept under its own handle, so a render
+  // that queues two keeps both, and cancelling a stale handle leaves a live
+  // callback in place.
   globalThis.requestAnimationFrame = (callback) => {
     queued.set(++handle, callback);
     return handle;

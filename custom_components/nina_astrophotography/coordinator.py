@@ -27,8 +27,10 @@ from .api.models import (
     AutoFocusReport,
     EquipmentSnapshot,
     FlatsStatus,
+    FlipReading,
     Frame,
     LivestackStatus,
+    MeridianFlip,
     NinaEvent,
     ProfileSettings,
     SequenceNode,
@@ -37,11 +39,13 @@ from .api.models import (
     VersionInfo,
 )
 from .api.v2 import NinaClientV2, NinaEventStream
-from .const import CONF_HOST, DEFAULT_ROLLOVER_HOUR
+from .const import CONF_HOST, DEFAULT_OUTAGE_GRACE, DEFAULT_ROLLOVER_HOUR
+from .derive import flip_offset_minutes
 from .device import KINDS
 from .polling import (
     EventLedger,
     GuiderStopLatch,
+    OutageGrace,
     ReseedGuard,
     RestartDetector,
     TierSchedule,
@@ -53,6 +57,7 @@ from .session import (
     fold,
     latest_stack,
     latest_target,
+    meridian_flip,
     pending_guider_stop,
     recent_frames,
     scheduler_wait,
@@ -96,6 +101,13 @@ _NO_PROFILE = ProfileSettings(
     site_latitude=None,
     site_longitude=None,
     site_elevation=None,
+    dome_close_on_unsafe=None,
+    dome_refuse_unsafe_shutter_move=None,
+    dome_refuse_open_without_safety_monitor=None,
+    dome_refuse_unpark_while_shut=None,
+    dome_park_mount_before_shutter_move=None,
+    dome_park_before_shutter_move=None,
+    dome_find_home_before_park=None,
 )
 
 
@@ -135,6 +147,12 @@ class NinaData:
     """Whether a `GUIDER-STOP` is still in force: no `GUIDER-START` or running
     guider seen since. Tells a stale `LostLock` from a guider hunting for its
     star."""
+    meridian_flip: MeridianFlip | None
+    """The flip N.I.N.A. is in, its wait with tracking off included, or None."""
+    reachable: bool = True
+    """Whether N.I.N.A. answered the last poll. False while an outage is held
+    within its grace, and kept false once the coordinator fails, so the one
+    entity that outlives the outage can report it."""
 
     @property
     def newest_frame(self) -> Frame | None:
@@ -166,6 +184,7 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
         update_interval: timedelta = FAST_INTERVAL,
         version: VersionInfo = VersionInfo(None, None),
         rollover_hour: int = DEFAULT_ROLLOVER_HOUR,
+        outage_grace: timedelta = timedelta(seconds=DEFAULT_OUTAGE_GRACE),
     ) -> None:
         super().__init__(
             hass,
@@ -183,6 +202,8 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
         self._observed: set[str] = set()
         self._rejection_logged = False
         self._unavailable_logged = False
+        self._grace = OutageGrace(outage_grace.total_seconds())
+        self._reachable = True
         self._restart = RestartDetector()
         self._reseed_guard = ReseedGuard()
         self._ledger = EventLedger()
@@ -196,6 +217,7 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
         self._livestack = _NO_LIVESTACK
         self._profile = _NO_PROFILE
         self._last_autofocus: AutoFocusReport | None = None
+        self._flip_reading: FlipReading | None = None
         self._not_served: set[str] = set()
         self._tier_warned: set[str] = set()
         self._last_image_save: float | None = None
@@ -210,6 +232,7 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
         guider_stop = pending_guider_stop(self.events, self.generation)
         try:
             snapshot = await self.client.get_equipment()
+            read_at = self._now()
             application_start = await self.client.get_application_start()
             count = await self.client.get_image_history_count()
             await self._track_process(application_start, count)
@@ -223,8 +246,17 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
                 self._rejection_logged = True
             # A refusal is an answer: the rig is up.
             self._note_reachable()
-            return self.data
+            return replace(self.data, reachable=True)
         except NinaError as exc:
+            self._reachable = False
+            if self.data is not None:
+                held = replace(self.data, reachable=False)
+                if self._grace.failed():
+                    _LOGGER.debug("N.I.N.A. at %s missed a poll: %s", self._host, exc)
+                    return held
+                # Kept on failure: the reachable sensor reads it while every
+                # other entity is unavailable.
+                self.data = held
             # Once per outage, not once per tick.
             if not self._unavailable_logged:
                 _LOGGER.warning("N.I.N.A. at %s is unavailable: %s", self._host, exc)
@@ -239,6 +271,7 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
             guider_stop,
         )
         self._log_connection_changes(snapshot)
+        self._hold_flip_reading(snapshot, read_at)
         await self._run_tiers(snapshot, count)
         self._last_snapshot = snapshot
         if not self._replayed:
@@ -320,13 +353,15 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
             self._schedule.add_pending("/livestack/status")
         elif (
             name == "SAFETY-CHANGED"
-            or name.startswith("FLAT-")
+            or name.startswith(("FLAT-", "DOME-"))
             or name.endswith(("-CONNECTED", "-DISCONNECTED"))
         ):
             # Safety must not wait for a tier; a connection change moves every
             # device block; FLAT-* payloads are empty or unreliable through a
-            # ramp. The debounced refresh coalesces the burst of connection
-            # events a N.I.N.A. start emits.
+            # ramp; DOME-* carry none of the readings a move changed, and not
+            # every move raises one, so the poll stays the backstop. The
+            # debounced refresh coalesces the burst of connection events a
+            # N.I.N.A. start emits.
             self.config_entry.async_create_task(
                 self.hass, self.async_request_refresh(), "nina_event_refresh"
             )
@@ -450,7 +485,7 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
             return
         except Exception:
             # A wire shape the mapper did not anticipate. Broad on purpose: one
-            # slow endpoint must not take every device unavailable.
+            # tier endpoint must not take every device unavailable.
             if endpoint not in self._tier_warned:
                 self._tier_warned.add(endpoint)
                 _LOGGER.warning(
@@ -466,7 +501,9 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
         return self.config_entry.data[CONF_HOST]
 
     def _note_reachable(self) -> None:
-        """Announce the recovery once, and only after an outage was announced."""
+        """End the outage, and announce the recovery once if it was announced."""
+        self._grace.answered()
+        self._reachable = True
         if self._unavailable_logged:
             _LOGGER.info("N.I.N.A. at %s is back online", self._host)
             self._unavailable_logged = False
@@ -505,7 +542,7 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
     def _generation_frames(self) -> int:
         """Frames held for the current process, which is what `?count=true` counts.
 
-        So the set is never pruned within a process: a pruned set would
+        The set is therefore never pruned within a process: a pruned set would
         disagree with the count and reseed forever. A week of Target Scheduler
         is a few thousand frames.
         """
@@ -587,7 +624,39 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
             guider_stopped=self._guider_stop.stopped(
                 pending_guider_stop(self.events, self.generation)
             ),
+            meridian_flip=self._meridian_flip(moment),
+            reachable=self._reachable,
         )
+
+    def _hold_flip_reading(
+        self, snapshot: EquipmentSnapshot, read_at: datetime
+    ) -> None:
+        """Keep the newest tracked countdown, frozen while a flip is under way.
+
+        N.I.N.A. waits out the flip with tracking off, when the countdown reads
+        nothing, and it is the reading from before that places the slew.
+        """
+        if self._meridian_flip(read_at) is not None:
+            return
+        mount = snapshot.mount
+        hours = None if mount is None else mount.time_to_meridian_flip
+        self._flip_reading = None if hours is None else FlipReading(hours, read_at)
+
+    def _meridian_flip(self, now: datetime) -> MeridianFlip | None:
+        return meridian_flip(
+            self.events,
+            self.generation,
+            reading=self._flip_reading,
+            window_minutes=self._flip_window_minutes(),
+            now=now,
+        )
+
+    def _flip_window_minutes(self) -> float | None:
+        minimum = self._profile.min_minutes_after_meridian
+        maximum = self._profile.max_minutes_after_meridian
+        if minimum is None or maximum is None:
+            return None
+        return flip_offset_minutes(minimum, maximum)
 
 
 @dataclass

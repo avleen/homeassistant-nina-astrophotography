@@ -4,6 +4,270 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **`binary_sensor.<instance>_mount_meridian_flip`** is `on` while N.I.N.A.
+  is in a meridian flip, including the wait before the slew, when it turns
+  tracking off and the countdown reads `unknown`. Its `slews_at` attribute
+  estimates when the slew starts (#164).
+
+### Changed
+
+- **Test names say what each test proves** (#168), and a test's docstring
+  says only what its name and body do not. The scenarios README and the
+  image-history docstring describe the one-element list the bare
+  `/image-history` answers.
+- **The test suite loses its redundant tests and the assertions another unit
+  owns** (#196): the session fold, the v2 client, the scenario catalogue, setup,
+  the dome and the entity resolver first, then the rest of the suite. Near-
+  duplicate tests became tables (polling, redaction, the cards' source checks,
+  the stall alert's gates, the tiers' event reads, the switch commands, the
+  autofocus verdict, the derive maths), a test that another already covered was
+  dropped, and four scenario states no test used were removed.
+
+### Fixed
+
+- **The sky map's compass letters match the sky it draws.** The map drew north
+  at the bottom under the N at the top, so the scope, the stars and the flip
+  label all sat under the opposite letter. It is now a sky chart held
+  overhead: north up and east on the left, with the E and W letters to match
+  (#163).
+- **The cards show a meridian flip while N.I.N.A. waits for it.** The
+  observatory card's banner and the sky map's header used to show no flip at
+  all during the wait. They now read "Waiting to flip · slews in N min",
+  then "Flipping" (#164).
+- **The cards are readable on a light theme** (#175). Their text, washes and
+  chart lines now take the theme's text colour rather than white, and on a
+  light theme the accents darken to keep 4.5:1 against white. The sky map's
+  sky and anything drawn over an image stay dark whatever the theme.
+- **The upgrade harness upgrades from 1.4.5 to the current release** (#167).
+  `tools/upgrade-harness/` now installs the `v1.4.5` tag and upgrades to
+  `origin/main`, instead of the retired `v2` branch. `up` takes the rig's
+  address as a required `--host`; the README shows the test VM's.
+- **The frame statistics card's filter colours hold up on a light theme**
+  (#191). On white, G, OIII and four of the spare colours fell well below 3:1,
+  and two spares all but vanished. A light theme now draws each filter in a
+  darker counterpart of its colour, at least 3:1 on white, so R still reads
+  as red and Ha as rose. A filter keeps its slot's colour whichever theme is
+  showing, and the dark colours are unchanged.
+
+---
+
+## [2.3.0] - 2026-10-26
+
+### Added
+
+- **`binary_sensor.<instance>_reachable`** says whether N.I.N.A. answered the
+  last poll. It turns `off` on the first missed poll, while the other entities
+  still show their last readings, and stays available through the outage.
+- **The stall alert and abort blueprints take the rig's Reachable sensor** as
+  a new, optional *Rig reachable* input. Their unreachable arms then fire two
+  minutes after N.I.N.A. stops answering, rather than two minutes after the
+  outage grace runs out. Edit existing automations to pick it.
+
+### Changed
+
+- **A brief outage no longer makes every entity unavailable** (#134). When
+  N.I.N.A. misses a poll, the integration keeps the last readings for 30
+  seconds before marking the rig's entities `unavailable`, whatever the poll
+  interval. The period is a new option, Outage Grace Period, from 0 to 300
+  seconds. One dropped poll over a remote link no longer leaves a gap in
+  history and long-term statistics, or fires automations that trigger on
+  `unavailable`. The observatory, weather and image panel cards drop their own
+  30-second hold, which this replaces.
+- **The cards keep the last readings through an outage, marked stale.** The
+  observatory, weather and image panel cards dim them under "No answer since
+  HH:MM" from the first missed poll, and keep showing them after the entities
+  go `unavailable`, for as long as the page stays open. The weather card says
+  the safety state is unknown and names the last reading, rather than showing
+  a verdict nobody has confirmed. The image panel keeps its strip and ADU
+  range without asking N.I.N.A. for a thumbnail (#136), and stops its
+  exposing bar, since the exposure may have ended. A page opened during the
+  outage shows the lost link, as before.
+
+### Fixed
+
+- **The cards keep the last readings through a Home Assistant restart.** A
+  dashboard left open while Home Assistant restarts briefly sees none of the
+  rig's entities, as it does while the integration retries its setup. The
+  observatory, weather and image panel cards no longer take that for N.I.N.A.
+  answering, so they no longer swap the readings they held for an empty view
+  once the entities come back `unavailable` (#185).
+
+---
+
+## [2.2.0] - 2026-10-25
+
+### Added
+
+- **The weather card's limits are card options** (#113), under Limits in its
+  visual editor: the dew margin, the warm and cold temperatures, and the
+  warning and danger levels for humidity, wind, cloud cover and seeing. Each
+  defaults to the limit the card used before. Temperatures and the dew margin
+  are in °C and wind in m/s whatever unit Home Assistant shows the reading in,
+  so a limit does not move when the display unit changes.
+- **The autofocus card takes its drift threshold from the sequence** (#119).
+  With no `temperature_delta` set, it flags the focuser temperature against
+  the sequence's "AF After Temperature Change" trigger rather than a fixed
+  2 °C, and says so: "past the trigger's 2.0 °C". A sequence without the
+  trigger keeps 2 °C, and an explicit option still wins. The threshold is
+  published as `refocus_temperature_delta` on
+  `binary_sensor.<instance>_focuser_autofocus_failed`.
+
+### Changed
+
+- **The cards show the meridian flip as a range, "Flip in 12–22 min".** The
+  time-to-flip sensor counts down to the latest flip, meridian plus the
+  profile's Max minutes, but N.I.N.A. can slew as early as meridian plus Min.
+  The observatory card's banner and mount metric and the sky map's header and
+  canvas now print both ends instead of the latest alone, and "≤ 6 min" once
+  the window is open. The sensor itself is unchanged.
+- The `recent_frames` attribute of `sensor.<instance>_last_image_mean_adu`
+  carries each frame's target, exposure, HFR, star count and guide RMS beside
+  its ADU statistics.
+- The image panel card reloads from `recent_frames` rather than from the
+  `nina_image_save` event. With two rigs, a panel therefore follows only its
+  own rig's frames, whether or not its rig can be resolved. Thumbnails ignore
+  `stretch: false` where they are N.I.N.A.'s own, which it always stretches.
+
+### Fixed
+
+- **The image panel's ADU bar is drawn from the frame's statistics** (#114).
+  It used to draw a made-up bell curve around the mean, the same shape for a
+  good frame as for a bad one. It now marks the frame's median, its mean and
+  a whisker from min to max on a logarithmic axis from 0 to 65535, with
+  gridlines at 100, 1k and 10k, so a light's background and a flat's level
+  can both be read. The card has no pixel data, so this is a range, not a
+  histogram, and it cannot show how much of a frame is clipped. A max of
+  65535 is normal: star cores and hot pixels saturate. A camera whose driver
+  does not scale to 16 bits saturates lower, so its whisker stops short of
+  the right edge. The `show_histogram` option still turns it on and off.
+- **The frame statistics card reads the newest run, not the whole night**
+  (#105). A run is the lights since the last target change that share the
+  newest light's filter and exposure, interleaved filters and all. The star
+  count and mean ADU charts are scaled to it, with the rest of the night faded
+  behind, so a sky background climbing towards dawn fills the chart instead of
+  a pixel and a half under the luminance frames. The HFR trend and rolling
+  average compare that run's lights only, so moving to another target or
+  exposure in the same filter no longer reads as seeing improving or
+  degrading. The trend box names the run's filter and target.
+- **The sky map's "Flip in" warning is drawn inside the map**, where it can be
+  seen, on the side away from the telescope. It used to be placed below the
+  bottom edge of the canvas.
+- **The image panel card describes the frame it shows.** Pick an older frame
+  from the strip and the overlay, the stats row, the header and the ADU range
+  are that frame's, not the newest light's. A flat on screen shows its own ADU
+  and exposure, and no HFR or star count, where it used to show the last
+  light's behind a "Last light" tag.
+- **The image panel card asks N.I.N.A. for far fewer renders** (#110). A saved
+  frame used to cost seven JPEG renders on the imaging PC for every open
+  dashboard: the frame, then all six thumbnails again. Now it costs one for the
+  frame and one for its thumbnail, while the older thumbnails stay as they
+  were. A save arriving while the main frame loads waits for that load and
+  replaces any save already waiting, so a run of dawn flats never queues main
+  renders faster than N.I.N.A. finishes them.
+- **Thumbnails are N.I.N.A.'s own** when the Advanced API plugin keeps them
+  (its "Create Thumbnails" setting, on by default), so they cost no render.
+  They look like N.I.N.A.'s own preview, star annotations included where it
+  draws them. Where the plugin has none, they are rendered small. The main
+  preview is rendered no wider than the card draws it, and the full-size frame
+  is fetched only for the zoomed view.
+- **The image panel never shows one frame under another's readings.** The card
+  asks for each frame by when it was saved, so a frame saved in the meantime
+  cannot take its place.
+
+---
+
+## [2.1.0] - 2026-10-24
+
+### Breaking
+
+- **`sensor.<instance>_dome_shutter_status` reads `open`, `closed`,
+  `opening`, `closing` or `error`**, an enum with translated states, rather
+  than N.I.N.A.'s `ShutterOpen`, `ShutterClosed` and so on. An automation
+  comparing against the old values has to use the new ones. A driver with no
+  shutter reads `unknown`.
+
+### Added
+
+- **The shutter status carries N.I.N.A.'s own dome interlocks** as attributes —
+  whether it closes on unsafe, refuses an unsafe open or one with no safety
+  monitor, refuses an unpark with the shutter shut, parks the mount or the dome
+  before moving the shutter, and homes before parking — so you can see what
+  N.I.N.A. does on its own, whatever Home Assistant does.
+- **The shutdown and abort blueprints can wait for the roof to close.** Give
+  them the dome's shutter status (`dome_shutter`) and they wait for it to read
+  `closed` after closing, up to `close_timeout_minutes` (5 by default for the
+  shutdown, 3 for the abort). A shutter error ends the wait at once. Either way
+  they notify "Roof not closed yet" and send the close once more — many
+  drivers clear an error on a new command — and if the roof still has not
+  closed, they notify "Roof did not close". A
+  close is only sent: N.I.N.A. answers it before the roof moves, and not every
+  close raises an event.
+
+### Changed
+
+- **The dome is verified against a simulated dome, and its entities ship
+  enabled**: shutter status, open, close, park, at park, slewing, following and
+  the new `binary_sensor.<instance>_dome_synchronized`. Updating re-enables
+  those rows where 2.0.0 had disabled them — once N.I.N.A. reports the dome
+  connected, and only for what its driver supports — unless you disabled one
+  yourself or the entry's system options disable new entities. Home Assistant
+  reloads the entry once, 30 seconds later, to create them.
+  At home, home and the azimuth number stay disabled: N.I.N.A. slaves the dome
+  to the mount, and a hand move fights it.
+- **A dome gets only the controls its driver supports.** A roll-off roof with
+  no azimuth, park or home gets the shutter status, open and close. Slewing
+  needs azimuth: on the simulator it ignores the shutter, so on a roof it
+  would read still while the roof rolls. A 2.0.0 install on a roll-off roof
+  keeps the unsupported rows it registered, disabled.
+- **Homing the dome or setting its azimuth is refused while it follows the
+  mount.** N.I.N.A. answers either by quietly turning following off, which
+  takes the slit off the scope.
+- **Opening the dome is refused while the safety monitor reports unsafe**,
+  from the button and the `dome_open` action alike. N.I.N.A.'s own refusal is
+  a profile option, off by default; open from N.I.N.A. to override.
+- **A dome event refreshes the dome at once**, as a safety or connection event
+  already did, rather than waiting up to a poll. N.I.N.A. does not raise one
+  for every move, so the poll still catches the rest.
+- **Camera USB limit, rotator mechanical position and rotator reverse move
+  from the device page's Diagnostic section to Configuration.** Each changes
+  the device rather than only reporting it. They still ship disabled, and
+  their entity ids are unchanged.
+- **Mount side of pier is a primary sensor**, no longer under Diagnostic: it is
+  the mount's state an imager reads, beside the time to meridian flip.
+
+### Fixed
+
+- **The observatory card shows a dome again** (#93). It probed for the dome on
+  an entity that ships disabled, so a dome owner never saw the Dome chip or its
+  buttons; and it compared the shutter against `Open`, so it never offered
+  Close Dome. It now probes the shutter status, offers Open Dome only with the
+  shutter closed and Close Dome otherwise, shows a shutter error on the chip,
+  and asks before opening as well as closing — warning when the mount is not
+  parked. Open Dome is disabled unless the safety monitor reads safe.
+- **Guider RMS total, RA and declination read `unknown` while PHD2 is not
+  guiding.** N.I.N.A. keeps reporting the last run's RMS after guiding stops,
+  through a lost lock and while PHD2 loops or calibrates, and reports 0 for a
+  guider that has not guided since it connected — so long-term statistics
+  recorded guiding that never happened. N.I.N.A. does not clear the figure on a
+  start, so a run's first 100 guide steps (its guide graph's history size)
+  still average in the run before, a meridian flip's included. The guiding
+  alert blueprint's sustained window now restarts on a lost star.
+
+---
+
+## [2.0.1] - 2026-09-28
+
+### Changed
+
+- The brand icon follows the HACS standard.
+- Python dependencies updated.
+
+---
+
 ## [2.0.0] - 2026-09-27
 
 ### Breaking

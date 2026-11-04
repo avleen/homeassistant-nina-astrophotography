@@ -54,7 +54,18 @@ a roof-close automation needs to know the difference.
 unsafe. This follows Home Assistant's `safety` device class, where `on` means
 there is a problem. Trigger an abort on `to: "on"`.
 
-If N.I.N.A. itself is unreachable, every entity of that rig goes `unavailable`.
+If N.I.N.A. itself stops answering for 30 seconds, every entity of that rig
+goes `unavailable`. A shorter drop, such as one missed poll over a remote link,
+keeps the last readings, so it leaves no gap in history and fires no
+`unavailable` trigger. Change the 30 seconds under **Settings → Devices &
+Services → N.I.N.A. Astrophotography → Configure → Outage Grace Period**, from
+0 (unavailable on the first missed poll) to 300.
+
+While those readings are held they are not current. `binary_sensor.<instance>_reachable`
+says so: it turns `off` on the first missed poll and stays available through
+the whole outage. Trigger on it, with a `for:` delay of your choosing, rather
+than on another entity going `unavailable`, which waits out the grace period
+first.
 
 ## Entities by device
 
@@ -167,9 +178,14 @@ It fires in three cases:
 
 | Case | Fires when |
 |---|---|
-| Unreachable | *sequencer running* has been `unavailable` for 2 minutes, meaning N.I.N.A. or its API is down |
+| Unreachable | *rig reachable* has been `off` for 2 minutes, meaning N.I.N.A. or its API is down. Without that input, *sequencer running* being `unavailable` for 2 minutes, which starts only after the outage grace period |
 | Parked | the mount parks while the sequencer is still running |
 | Quiet | *imaging* has been off for 20 minutes, or no frame has been saved for your longest exposure (default 600 s) plus 30 minutes. Checked every minute. |
+
+Pick the rig's *Reachable* sensor for *rig reachable*, in this blueprint and in
+`weather_abort.yaml`. It is optional so that automations made from the older
+blueprints keep loading, but without it a lost rig is reported one outage grace
+period later.
 
 The quiet case doesn't fire while the sequencer is stopped, while the scheduler
 is waiting, for 15 minutes after a wait ends, or in daylight. Its timers start
@@ -294,6 +310,7 @@ Things to know when reading them:
 | `reason` | `hung`, `rejected`, or absent. A hung run usually means a sequence problem; a rejected one means the focus range or star detection needs adjusting. Only for `hung` do the other autofocus sensors show a different run from the one that failed. |
 | `r_squared` | the R² used for the decision: the worst among the curves the run's curve fitting uses |
 | `r_squared_threshold` | your profile's `RSquaredThreshold` |
+| `refocus_temperature_delta` | the °C of focuser drift past which your sequence's "AF After Temperature Change" trigger refocuses, or `null` with no such trigger. With several, the smallest: which one is in scope cannot be told. The autofocus card flags drift against it. |
 
 If you check R² yourself, compare against this `r_squared` attribute, not
 values from the `fits` attribute below; they can differ slightly.
@@ -389,9 +406,39 @@ card, an ApexCharts `data_generator`, or a template. For history, chart
 - `sensor.<instance>_session_avg_hfr` has `by_target` and `by_filter`
   attributes: count, integration hours and mean HFR for each.
 - `sensor.<instance>_mount_time_to_meridian_flip` has `flip_fires_at_minutes`,
-  the reading at which N.I.N.A. actually flips. It is
-  `MaxMinutesAfterMeridian − MinMinutesAfterMeridian` from your profile, not
-  zero, so base warning thresholds on it rather than a fixed number.
+  the reading at which the flip window opens: N.I.N.A. flips at the first item
+  boundary from then on. It is `MaxMinutesAfterMeridian − MinutesAfterMeridian`
+  from your profile, not zero, so base warning thresholds on it rather than a
+  fixed number. The sensor counts down to the latest flip; the cards print both
+  ends, so with Min 5 and Max 15 a reading of 22 shows as "Flip in 12–22 min",
+  and a reading of 6 as "≤ 6 min".
+
+  The range is when the mount slews, not when imaging stops. With *Pause
+  before meridian* set, N.I.N.A. stops imaging Min + Pause minutes before the
+  earliest end, at meridian − Pause, and waits; the flip itself still comes at
+  the earliest end. N.I.N.A. also stops early when the next exposure would not
+  finish by the latest end.
+
+  While N.I.N.A. waits for meridian + Min it turns tracking off, so the
+  countdown reads `unknown` for the whole wait.
+  `binary_sensor.<instance>_mount_meridian_flip` covers that. It turns `on` at
+  `MOUNT-BEFORE-FLIP`, before the guider stops and the wait begins, and `off`
+  at `MOUNT-AFTER-FLIP`. It also turns `off` when the sequence finishes or the
+  mount is parked, homed or disconnected. Its `slews_at` attribute estimates
+  when the wait ends and the slew starts, from the last countdown read while
+  the mount was tracking. It is `None` when no such reading or profile is
+  available, as after a Home Assistant restart in mid-wait. A cancelled flip
+  also sends `MOUNT-AFTER-FLIP`, so the sensor turning `off` does not prove the
+  mount flipped.
+
+- `sensor.<instance>_last_image_mean_adu` has `recent_frames`: the newest
+  frames of every type, newest first, each with its target, filter, exposure,
+  HFR, star count, guide RMS and N.I.N.A.'s min, median, mean and max ADU. The
+  image panel card draws its ADU range from these. They are statistics, not a
+  histogram like the one in N.I.N.A.'s Statistics panel: the Advanced API
+  publishes none. Building one means fetching the whole raw frame a second
+  time, which a remote observatory is already sending elsewhere. Issue #178
+  tracks doing it as an option.
 
 ## Error events
 

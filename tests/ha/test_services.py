@@ -1,4 +1,4 @@
-"""The services: device targeting, and the three redesigns.
+"""The actions: device targeting, and what each one sends.
 
 What is pinned here is device targeting and the call sites where the service's
 field name and the API's parameter name differ, because each of those is a
@@ -42,14 +42,28 @@ def _hub(hass: HomeAssistant, entry) -> str:
     return get_device(hass, entry).id
 
 
-async def test_a_service_reaches_the_rig_its_device_belongs_to(
-    hass: HomeAssistant, two_rigs
+@pytest.mark.parametrize(
+    "target",
+    [
+        lambda hass, entry: {"device_id": _hub(hass, entry)},
+        # `services.yaml` declares a `target:`, so the action must accept every
+        # form the target picker yields, not only a bare device.
+        lambda hass, entry: {
+            "entity_id": er.async_entries_for_config_entry(
+                er.async_get(hass), entry.entry_id
+            )[0].entity_id
+        },
+    ],
+    ids=["device", "entity"],
+)
+async def test_a_service_reaches_the_rig_its_target_belongs_to(
+    hass: HomeAssistant, two_rigs, target
 ) -> None:
-    """1.4.5 returned the first loaded entry, so a second rig was unreachable
-    from the services however it was targeted.
+    """The targeted device, not the first loaded entry, picks the rig, so a
+    second rig is reachable.
     """
     first, second = two_rigs.rigs
-    await _call(hass, "mount_park", device_id=_hub(hass, two_rigs.entries[1]))
+    await _call(hass, "mount_park", **target(hass, two_rigs.entries[1]))
 
     assert second.sent[-1][0] == "/equipment/mount/park"
     assert "/equipment/mount/park" not in [path for path, _ in first.sent]
@@ -65,7 +79,7 @@ async def test_an_untargeted_call_is_refused_when_two_rigs_are_configured(
 async def test_a_target_that_names_no_nina_instance_is_refused(
     hass: HomeAssistant, loaded_entry, rig
 ) -> None:
-    """Never widened back to "the only rig": a device of some other
+    """Never widened to "the only rig": a device of some other
     integration must not park this mount, and neither must a typo.
     """
     other = MockConfigEntry(domain="other")
@@ -92,22 +106,6 @@ async def test_an_untargeted_call_is_refused_while_a_second_rig_is_merely_down(
     with pytest.raises(ServiceValidationError):
         await _call(hass, "mount_park")
     assert two_rigs.rigs[1].sent == []
-
-
-async def test_an_entity_of_a_rig_targets_that_rig(
-    hass: HomeAssistant, two_rigs
-) -> None:
-    """`services.yaml` declares a `target:`, so the action must accept every
-    form the target picker yields, not only a bare device.
-    """
-    first, second = two_rigs.rigs
-    entity = er.async_entries_for_config_entry(
-        er.async_get(hass), two_rigs.entries[1].entry_id
-    )[0]
-    await _call(hass, "mount_park", entity_id=entity.entity_id)
-
-    assert second.sent[-1][0] == "/equipment/mount/park"
-    assert "/equipment/mount/park" not in [path for path, _ in first.sent]
 
 
 @pytest.mark.parametrize(
@@ -141,8 +139,8 @@ async def test_an_entity_of_a_rig_targets_that_rig(
             "/sequence/load",
             {"sequenceName": "Autumn"},
         ),
-        # `duration`, not `time`. 1.4.5 sent `time`, so the exposure length was
-        # ignored and the API defaulted it.
+        # `duration`, not `time`: the API ignores `time` and defaults the
+        # exposure length.
         (
             "camera_capture",
             {"duration": 30},
@@ -208,7 +206,7 @@ async def test_the_documented_fields_are_the_fields_the_schema_binds(
     hass: HomeAssistant, service: str
 ) -> None:
     """A field documented but not bound does nothing; a field bound but not
-    documented is invisible. Both were shipped in 1.4.5.
+    documented is invisible.
 
     No entry: the actions register in `async_setup`, so the schema cannot
     depend on one being loaded.
@@ -272,7 +270,6 @@ async def test_out_of_range_input_is_refused_rather_than_clamped(
         ("focuser_auto_focus", "/equipment/focuser/auto-focus"),
         ("guider_start", "/equipment/guider/start"),
         ("guider_stop", "/equipment/guider/stop"),
-        ("dome_open", "/equipment/dome/open"),
         ("dome_close", "/equipment/dome/close"),
         ("dome_park", "/equipment/dome/park"),
         ("sequence_start", "/sequence/start"),
@@ -285,7 +282,8 @@ async def test_every_remaining_service_reaches_its_own_endpoint(
 ) -> None:
     """The handlers that differ only in the endpoint they send. `dome_close` is
     the roof: the abort blueprint calls it, and a handler pointed at the wrong
-    path is answered `Success: true`.
+    path is answered `Success: true`. `dome_open` is refused on this rig's
+    unsafe monitor, so `test_dome.py` sends it.
     """
     data = {"temperature": -10} if service == "camera_cool" else {}
     await _call(hass, service, **data)

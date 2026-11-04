@@ -1,18 +1,16 @@
 """The stall alert's gates and clocks, run rather than schema-checked.
 
-`test_blueprints.py` proves Home Assistant ACCEPTS this blueprint. It cannot
-prove the config does anything, and two defects here were valid YAML that suite
-was happy with: gates written inside a `choose` branch, where a failing
-condition aborts only the branch and the parent sequence alerts anyway, and
-clocks that started before the sequence did. Both made the blueprint alert
-every minute of every night while the suite stayed green.
-
-So these tests fire the triggers and read the notification that comes out.
+`test_blueprints.py` proves Home Assistant ACCEPTS this blueprint, not that the
+config does anything. A gate written inside a `choose` branch, where a failing
+condition aborts only the branch and the parent sequence alerts anyway, or a
+clock that starts before the sequence does, is valid YAML that alerts every
+minute of every night. So these tests fire the triggers and read the
+notification that comes out.
 
 The inputs are this file's own, and every tuning input is left at its shipped
-default, read from the blueprint itself. Borrowing `test_blueprints.py`'s map
-made cases silently vacuous: it pins `night_only` off, so the default that
-mutes the twelve-hour daytime wait was never once executed.
+default, read from the blueprint itself. `test_blueprints.py`'s map pins
+`night_only` off, so the default that mutes the twelve-hour daytime wait would
+never run under it.
 """
 
 import asyncio
@@ -154,47 +152,67 @@ async def start_sequence(hass: HomeAssistant, clock, when=T0) -> None:
     await hass.async_block_till_done()
 
 
-async def test_a_quiet_rig_is_reported(hass: HomeAssistant, watching) -> None:
-    """The positive control: without it every silence below proves nothing."""
-    clock = await watching()
-    await start_sequence(hass, clock)
-
-    clock.move_to(T0 + STALLED)
-    await tick(hass, T0 + STALLED)
-
-    assert alert(hass) is not None
-
-
 @pytest.mark.parametrize(
-    ("entity", "state"),
+    ("overrides", "entity", "state", "alerts"),
     [
-        ("binary_sensor.rig_sequencer_running", "off"),
-        ("binary_sensor.rig_scheduler_waiting", "on"),
-        (SAFETY, "on"),
-        ("sun.sun", "above_horizon"),
+        # The positive control: without it every silence below proves nothing.
+        ({}, SAFETY, "off", True),
+        # A stopped sequencer is not a stall.
+        ({}, "binary_sensor.rig_sequencer_running", "off", False),
+        # A target-window wait is hours of nothing.
+        ({}, "binary_sensor.rig_scheduler_waiting", "on", False),
+        # A safety hold belongs to the abort blueprint.
+        ({}, SAFETY, "on", False),
+        # A daytime wait for darkness is the twelve-hour case `night_only` is for.
+        ({}, "sun.sun", "above_horizon", False),
+        # `night_only` is the one gate a user is expected to turn off.
+        ({"night_only": False}, "sun.sun", "above_horizon", True),
+        # Empty means no gate: a rig with no safety monitor has no such entity,
+        # and a `not` over a state condition with no entities is a
+        # permanently-false gate that mutes the blueprint.
+        ({"safety_unsafe": []}, SAFETY, "on", True),
+        # Wired, the gate reads "not `on`", never "is `off`": a monitor that has
+        # dropped out reads `unknown`, which is not evidence the silence is
+        # legitimate.
+        ({}, SAFETY, "unknown", True),
+        # With `sun.sun` gone, "is below the horizon" would be false forever and
+        # `night_only` would silence the quiet arm without a word.
+        ({}, "sun.sun", None, True),
     ],
-    ids=["sequencer stopped", "scheduler waiting", "conditions unsafe", "daylight"],
+    ids=[
+        "quiet rig",
+        "sequencer stopped",
+        "scheduler waiting",
+        "conditions unsafe",
+        "daylight",
+        "solar imager",
+        "no monitor to wire",
+        "monitor dropped out",
+        "no sun entity",
+    ],
 )
-async def test_a_gate_suppresses_the_alert(
-    hass: HomeAssistant, watching, entity: str, state: str
+async def test_a_gate_decides_whether_a_quiet_rig_alerts(
+    hass: HomeAssistant,
+    watching,
+    overrides: dict,
+    entity: str,
+    state: str | None,
+    alerts: bool,
 ) -> None:
-    """Each gate must silence a rig that would otherwise alert.
-
-    A stopped sequencer is not a stall, a target-window wait is hours of
-    nothing, a safety hold belongs to the abort blueprint, and a daytime wait
-    for darkness is the twelve-hour case `night_only` exists for.
-
-    These fail if the gates move back inside a `choose` branch, where a failing
+    """These fail if a gate sits inside a `choose` branch, where a failing
     condition aborts the branch and the run alerts regardless.
     """
-    clock = await watching()
+    clock = await watching(**overrides)
     await start_sequence(hass, clock)
-    hass.states.async_set(entity, state)
+    if state is None:
+        hass.states.async_remove(entity)
+    else:
+        hass.states.async_set(entity, state)
 
     clock.move_to(T0 + STALLED)
     await tick(hass, T0 + STALLED)
 
-    assert alert(hass) is None
+    assert (alert(hass) is not None) is alerts
 
 
 async def test_a_wait_that_just_ended_is_still_settling(
@@ -215,49 +233,6 @@ async def test_a_wait_that_just_ended_is_still_settling(
     await tick(hass, T0 + STALLED)
 
     assert alert(hass) is None
-
-
-async def test_a_solar_imager_can_alert_in_daylight(
-    hass: HomeAssistant, watching
-) -> None:
-    """`night_only` is the one gate a user is expected to turn off."""
-    clock = await watching(night_only=False)
-    await start_sequence(hass, clock)
-    hass.states.async_set("sun.sun", "above_horizon")
-
-    clock.move_to(T0 + STALLED)
-    await tick(hass, T0 + STALLED)
-
-    assert alert(hass) is not None
-
-
-@pytest.mark.parametrize(
-    ("wired", "state", "alerts"),
-    [
-        ([], "on", True),
-        ([SAFETY], "on", False),
-        ([SAFETY], "unknown", True),
-    ],
-    ids=["no monitor to wire", "monitor says unsafe", "monitor dropped out"],
-)
-async def test_the_safety_gate(
-    hass: HomeAssistant, watching, wired: list, state: str, alerts: bool
-) -> None:
-    """Empty means no gate — a rig with no safety monitor has no such entity,
-    and the earlier `not` over a state condition made that vacuously-true
-    condition into a permanently-false gate that muted the blueprint.
-
-    Wired, it reads "not `on`", never "is `off`": a monitor that has dropped
-    out reads `unknown`, and that is not evidence the silence is legitimate.
-    """
-    clock = await watching(safety_unsafe=wired)
-    await start_sequence(hass, clock)
-    hass.states.async_set(SAFETY, state)
-
-    clock.move_to(T0 + STALLED)
-    await tick(hass, T0 + STALLED)
-
-    assert (alert(hass) is not None) is alerts
 
 
 @pytest.mark.parametrize(
@@ -345,20 +320,25 @@ async def test_an_unreachable_rig_reports_only_what_it_knows(
     assert "mount" not in message
 
 
-async def test_a_missing_sun_does_not_mute_the_alarm(
+async def test_a_rig_with_a_reachable_sensor_is_reported_through_it(
     hass: HomeAssistant, watching
 ) -> None:
-    """With `sun.sun` gone, "is below the horizon" would be false forever and
-    `night_only` would silence the quiet arm without a word.
+    """From the first missed poll, while every other row still holds its last
+    value inside the integration's outage grace.
     """
-    clock = await watching()
-    hass.states.async_remove("sun.sun")
+    reachable = "binary_sensor.rig_reachable"
+    hass.states.async_set(reachable, "on")
+    clock = await watching(rig_reachable=[reachable])
     await start_sequence(hass, clock)
+    hass.states.async_set(reachable, "off")
+    await hass.async_block_till_done()
 
-    clock.move_to(T0 + STALLED)
-    await tick(hass, T0 + STALLED)
+    clock.move_to(T0 + timedelta(minutes=3))
+    await tick(hass, T0 + timedelta(minutes=3))
 
-    assert alert(hass) is not None
+    raised = alert(hass)
+    assert raised is not None
+    assert "cannot reach N.I.N.A." in raised["message"]
 
 
 async def test_an_alert_with_no_notify_target_still_clears(

@@ -14,9 +14,10 @@
 
 import { DEFAULT_PREFIX, configForm } from "./nina-card-config.js";
 import { RigEntities } from "./nina-entity-resolver.js";
-import { quantityIn, shown } from "./nina-units.js";
+import { quantityIn, safe, shown } from "./nina-units.js";
+import { THEME, applyTheme, palette } from "./nina-theme.js";
 
-const VERSION = "2.0.0";
+const VERSION = "2.3.0";
 
 // A filter keeps its colour from night to night, whichever others the session
 // used: the chips are the charts' legend, and an imager reads R as red. The
@@ -85,20 +86,22 @@ function passband(name) {
   return last && found.filter(Boolean).length === 1 ? last : null;
 }
 
-// Any other filter. Eight, so that an 8-position wheel of filters matching no
-// passband still draws every slot apart. Chosen for perceptual distance from
-// each other and the passband hues on the card's background, weighing hue and
-// saturation over lightness since a thin line shows those most, with and
-// without a colour-vision deficiency, and none pale enough to pass for L's
-// white. Ordered most distinct first.
+// Any other filter. Eight, so an 8-position wheel matching no passband still
+// draws every slot apart. Chosen to stay distinct from each other and from the
+// passband hues on the card's background, with and without a colour-vision
+// deficiency, weighing hue and saturation over lightness as a thin line shows
+// those most; none pale enough to pass for L's white. Most distinct first.
 const OTHER_COLOURS = [
   "#daff24", "#ff00bf", "#24ffc8", "#da886c",
   "#0db9f2", "#ff6a00", "#e1da89", "#9c6bff",
 ];
 
-// The passband hues each spare could pass for on a thin line: CIEDE2000 below
-// 12 in normal vision, or below 7 under a colour-vision deficiency. On a wheel
-// that already draws some of them, a spare goes back by how many.
+// The passband hues each spare could pass for on a thin line: CIEDE2000 with
+// kL = 2 below 12 in normal vision, or below 7 under a colour-vision deficiency
+// (Machado 2009, full severity). On a wheel that already draws some of them, a
+// spare goes back by how many. One order serves both themes, so that a slot
+// keeps its colour when the theme changes: no light counterpart could pass for
+// a passband its dark colour could not.
 const TWINS = new Map([
   ["#ff00bf", [PASSBANDS.Ha, PASSBANDS.OIII, PASSBANDS.SII]],
   ["#24ffc8", [PASSBANDS.OIII]],
@@ -116,6 +119,24 @@ function spares(drawn) {
 
 // A light with no filter name among named ones, which no chip uses.
 const NO_FILTER = "#8a909c";
+
+// What each colour draws as on a light card, where the dark palette's pale
+// hues fade into white. Picked by the same measure as the dark palette, each
+// at least 3:1 on white; L takes the text colour instead.
+const ON_LIGHT = new Map([
+  [PASSBANDS.R, "#cb070b"], [PASSBANDS.G, "#52a658"], [PASSBANDS.B, "#0664e4"],
+  [PASSBANDS.Ha, "#f7258a"], [PASSBANDS.OIII, "#13a4b4"], [PASSBANDS.SII, "#824aa9"],
+  [NO_FILTER, "#8f8b8d"],
+  ["#daff24", "#af9300"], ["#ff00bf", "#bc0e86"], ["#24ffc8", "#10714d"],
+  ["#da886c", "#d17e7b"], ["#0db9f2", "#009bec"], ["#ff6a00", "#96520b"],
+  ["#e1da89", "#718144"], ["#9c6bff", "#801aff"],
+]);
+
+// A filter's colour as `theme` draws it.
+function shade(colour, theme) {
+  if (!theme.light) return colour;
+  return colour === PASSBANDS.L ? theme.text : ON_LIGHT.get(colour);
+}
 
 // FNV-1a: stable across browsers and sessions.
 function nameHash(text) {
@@ -180,16 +201,10 @@ function filterColours(slots, names) {
 }
 
 const STYLE = `
+  ${THEME}
   :host {
     --card-bg: var(--ha-card-background, var(--card-background-color, #1c1c2e));
     --card-border: var(--divider-color, rgba(255,255,255,0.1));
-    --accent: #7b8de8;
-    --accent2: #5bcfcf;
-    --warn: #f4a261;
-    --danger: #e76f51;
-    --success: #57cc99;
-    --muted: rgba(255,255,255,0.45);
-    --text: rgba(255,255,255,0.92);
     font-family: var(--primary-font-family, Roboto, sans-serif);
   }
   ha-card {
@@ -214,7 +229,7 @@ const STYLE = `
   .stat-row { display: flex; gap: 8px; }
   .stat-box {
     flex: 1;
-    background: rgba(255,255,255,0.04);
+    background: color-mix(in srgb, var(--ink) 4%, transparent);
     border: 1px solid var(--card-border);
     border-radius: 10px;
     padding: 10px 12px;
@@ -226,6 +241,8 @@ const STYLE = `
   .stat-box.trend-improving { border-color: rgba(87,204,153,0.4); }
   .stat-box.trend-degrading { border-color: rgba(231,111,81,0.4); }
   .stat-box.trend-stable    { border-color: rgba(91,207,207,0.3); }
+  .stat-box.scoped { min-width: 0; }
+  .stat-box.scoped .sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   /* ── Chart section ── */
   .chart-section { display: flex; flex-direction: column; gap: 4px; }
@@ -254,6 +271,16 @@ const STYLE = `
 // 0.05 px is coarse on a 1.3 px rig and meaningless on a 3.5 px one.
 const TREND_EPSILON = 0.03;
 
+// The narrowest span the star and ADU charts draw a run over, so a steady run
+// does not blow its frame-to-frame scatter up to full height. Star detection
+// jitters by 5–10% between frames. A frame's mean ADU sits on the camera's
+// offset pedestal, so a span relative to it would mislead: its floor is
+// absolute, and 10 ADU assumes 16-bit-scaled data.
+const STARS_MIN_SPAN = 0.1;
+const ADU_MIN_SPAN = 10;
+// Headroom above and below a run, as a fraction of its span.
+const RUN_HEADROOM = 0.1;
+
 function hfrTrend(recent, previous, delta) {
   if (recent === null || previous === null) return "unknown";
   if (Math.abs(delta) < TREND_EPSILON * recent) return "stable";
@@ -269,6 +296,8 @@ class NinaFrameStatsCard extends HTMLElement {
     this._adu = [];
     this._filters = [];
     this._boundaries = [];
+    this._run = [];
+    this._runName = "";
   }
 
   setConfig(config) {
@@ -281,6 +310,7 @@ class NinaFrameStatsCard extends HTMLElement {
     this._hass = hass;
     this._rig.refresh(hass);
     this._updateData();
+    applyTheme(this);
     this._render();
   }
 
@@ -318,6 +348,19 @@ class NinaFrameStatsCard extends HTMLElement {
     this._boundaries = lights.flatMap((light, i) =>
       i > 0 && (light.target !== lights[i - 1].target
                 || light.exposure !== lights[i - 1].exposure) ? [i] : []);
+    // The newest light's run: the lights since the last target change that
+    // share its filter and exposure. Filters are often interleaved, by Target
+    // Scheduler or to balance RGB through a night, so a run need not be
+    // contiguous. A target returned to after another is at
+    // another altitude under another sky, so its run starts again.
+    const newest = lights[lights.length - 1];
+    let start = lights.length - 1;
+    while (start > 0 && lights[start - 1].target === newest.target) start--;
+    this._run = lights.flatMap((light, i) =>
+      i >= start && light.filter === newest.filter
+        && light.exposure === newest.exposure ? [i] : []);
+    this._runName = newest
+      ? [newest.filter, newest.target].filter(Boolean).join(" · ") : "";
   }
 
   _mean(values) {
@@ -337,7 +380,7 @@ class NinaFrameStatsCard extends HTMLElement {
     const integration  = hours === null ? "—" : hours.toFixed(1);
     const lastHfr      = this._state(this._eid("sensor", "last_image_hfr"), "—");
     const lastStars    = shown(this._state(this._eid("sensor", "last_image_star_count")));
-    const lastFilter   = shown(this._state(this._eid("sensor", "last_image_filter")));
+    const lastFilter   = safe(shown(this._state(this._eid("sensor", "last_image_filter"))));
     const exposure     = quantityIn(this._hass, this._eid("sensor", "last_image_exposure"), "s");
     const lastExposure = exposure ? exposure.toFixed(0) : "—";
     const avgHfrId = this._eid("sensor", "session_avg_hfr");
@@ -346,16 +389,15 @@ class NinaFrameStatsCard extends HTMLElement {
     // One row per filter: {count, integration_hours, hfr_mean}.
     const byFilter = this._attr(avgHfrId, "by_filter", {}) || {};
 
-    // The last five frames against the five before them, in the newest
-    // frame's filter only: filters differ by tenths of a pixel, so an LRGB or
-    // SHO rotation would otherwise read as a trend. No trend until ten.
-    const trendFilter = this._filters[this._filters.length - 1] ?? null;
-    const sameFilter = this._hfr.filter(
-      (hfr, i) => hfr !== null && this._filters[i] === trendFilter);
-    const rolling  = this._mean(sameFilter.slice(-10));
-    const recent   = this._mean(sameFilter.slice(-5));
-    const previous = sameFilter.length < 10
-      ? null : this._mean(sameFilter.slice(-10, -5));
+    // The newest run's last five lights against the five before them. Filters
+    // differ by tenths of a pixel, targets by their altitude and exposures by
+    // a few percent, any of which would otherwise read as a trend. No trend
+    // until ten.
+    const runHfr = this._run.map((i) => this._hfr[i]).filter((hfr) => hfr !== null);
+    const rolling  = this._mean(runHfr.slice(-10));
+    const recent   = this._mean(runHfr.slice(-5));
+    const previous = runHfr.length < 10
+      ? null : this._mean(runHfr.slice(-10, -5));
     const trendDelta = recent !== null && previous !== null ? recent - previous : 0;
     const trend = hfrTrend(recent, previous, trendDelta);
     const rollingHfr = rolling === null ? "—" : rolling.toFixed(2);
@@ -373,6 +415,7 @@ class NinaFrameStatsCard extends HTMLElement {
 
     const slots = this._attr(this._eid("select", "filter", "filter_wheel_filter"), "options") ?? [];
     const colours = filterColours(slots, [...Object.keys(byFilter), ...this._filters]);
+    const theme = palette(this);
     // In wheel order, as an imager reads a wheel; names it does not list last.
     const slotOf = (name) => (slots.includes(name) ? slots.indexOf(name) : slots.length);
     const filterEntries = Object.entries(byFilter).sort(([a], [b]) => slotOf(a) - slotOf(b));
@@ -386,10 +429,10 @@ class NinaFrameStatsCard extends HTMLElement {
     const lightColours = this._filters.map((name) =>
       (ownColours ? null : name === null ? NO_FILTER : colours.get(name)));
     const filterChipsHtml = filterEntries.map(([name, row]) => {
-      const colour = colours.get(name);
+      const colour = shade(colours.get(name), theme);
       return `<div class="filter-chip" style="background:${colour}22;border-color:${colour}55">
         <div class="filter-dot" style="background:${colour}"></div>
-        <span>${name}: ${row?.count ?? 0}</span>
+        <span>${safe(name)}: ${row?.count ?? 0}</span>
       </div>`;
     }).join("");
 
@@ -430,10 +473,11 @@ class NinaFrameStatsCard extends HTMLElement {
             </div>
 
             <div class="stat-row">
-              <div class="stat-box trend-${trend}">
+              <div class="stat-box scoped trend-${trend}">
                 <div class="label">HFR Trend</div>
                 <div class="value" style="font-size:0.85rem">${trendLabel}</div>
-                <div class="sub">Last 5 vs prev 5 ${trendFilter ?? ""} frames</div>
+                <div class="sub">Last 5 vs prev 5</div>
+                ${this._runName ? `<div class="sub">${safe(this._runName)}</div>` : ""}
               </div>
               <div class="stat-box">
                 <div class="label">Session avg / best</div>
@@ -472,14 +516,20 @@ class NinaFrameStatsCard extends HTMLElement {
 
     if (hasData) {
       requestAnimationFrame(() => {
-        this._drawSparkline("hfr-chart", this._hfr, "#7b8de8", true, lightColours);
-        this._drawSparkline("stars-chart", this._stars, "#5bcfcf", false, lightColours);
-        this._drawSparkline("adu-chart", this._adu, "#f4a261", false, lightColours);
+        this._drawSparkline("hfr-chart", this._hfr, theme.accent, true, lightColours);
+        this._drawSparkline("stars-chart", this._stars, theme.accent2, false, lightColours,
+          (mean) => STARS_MIN_SPAN * mean);
+        this._drawSparkline("adu-chart", this._adu, theme.warn, false, lightColours,
+          () => ADU_MIN_SPAN);
       });
     }
   }
 
-  _drawSparkline(canvasId, data, fillColour, showAvgLine, colours) {
+  // Given `minSpan`, a function of the run's mean, the chart is scaled to the
+  // newest run and the rest of the night drawn faded behind it: another
+  // filter, target or exposure sits whole factors away and would flatten the
+  // run. A run with fewer than two readings is scaled with the whole night.
+  _drawSparkline(canvasId, data, fillColour, showAvgLine, colours, minSpan = null) {
     const canvas = this.shadowRoot.getElementById(canvasId);
     if (!canvas) return;
 
@@ -490,12 +540,28 @@ class NinaFrameStatsCard extends HTMLElement {
     canvas.height = H * dpr;
     const ctx = canvas.getContext("2d");
     ctx.scale(dpr, dpr);
+    const theme = palette(this);
 
     const valid = data.filter(v => v !== null && v !== undefined);
     if (valid.length < 2) return;
 
-    const minVal = Math.min(...valid) * 0.95;
-    const maxVal = Math.max(...valid) * 1.05;
+    const known = (indices) => indices.filter((i) => data[i] !== null && data[i] !== undefined);
+    const all = data.map((_, i) => i);
+    const run = minSpan !== null && known(this._run).length >= 2 ? this._run : null;
+    const inRun = new Set(run ?? all);
+    let minVal, maxVal;
+    if (minSpan === null) {
+      minVal = Math.min(...valid) * 0.95;
+      maxVal = Math.max(...valid) * 1.05;
+    } else {
+      const scaled = known(run ?? all).map((i) => data[i]);
+      const lo = Math.min(...scaled);
+      const hi = Math.max(...scaled);
+      // A run of zero stars has no span at all, relative or not.
+      const span = Math.max(hi - lo, minSpan(this._mean(scaled))) || 1;
+      minVal = (lo + hi) / 2 - span * (0.5 + RUN_HEADROOM);
+      maxVal = (lo + hi) / 2 + span * (0.5 + RUN_HEADROOM);
+    }
     const range = maxVal - minVal || 1;
     const pad = { l: 4, r: 4, t: 6, b: 4 };
     const plotW = W - pad.l - pad.r;
@@ -506,7 +572,7 @@ class NinaFrameStatsCard extends HTMLElement {
       ? null
       : pad.t + plotH - ((v - minVal) / range) * plotH;
 
-    ctx.strokeStyle = "rgba(255,255,255,0.05)";
+    ctx.strokeStyle = theme.ink(0.05);
     ctx.lineWidth = 0.5;
     for (let g = 0; g <= 3; g++) {
       const y = pad.t + (g / 3) * plotH;
@@ -514,7 +580,7 @@ class NinaFrameStatsCard extends HTMLElement {
     }
 
     // Target or exposure changes, midway between the two frames either side.
-    ctx.strokeStyle = "rgba(255,255,255,0.35)";
+    ctx.strokeStyle = theme.ink(0.35);
     ctx.lineWidth = 1;
     ctx.setLineDash([2, 3]);
     for (const i of this._boundaries) {
@@ -523,18 +589,40 @@ class NinaFrameStatsCard extends HTMLElement {
     }
     ctx.setLineDash([]);
 
-    ctx.beginPath();
-    let started = false;
-    const firstValid = data.findIndex(v => v !== null);
-    for (let i = firstValid; i < data.length; i++) {
-      const y = yOf(data[i]);
-      if (y === null) continue;
-      if (!started) { ctx.moveTo(xOf(i), y); started = true; }
-      else ctx.lineTo(xOf(i), y);
+    // An unnamed light beside named ones is grey, and hollow too, since an L
+    // dot drawn at 60% is much the same grey.
+    const colourOf = (i) => shade(colours[i], theme) ?? fillColour;
+    const hollow = (i) => colours[i] === NO_FILTER;
+
+    // Lights outside the run: faded, unjoined, and clipped where they fall
+    // off its scale.
+    if (run) {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(pad.l, pad.t, plotW, plotH); ctx.clip();
+      for (const i of known(all).filter((i) => !inRun.has(i))) {
+        ctx.beginPath();
+        ctx.arc(xOf(i), yOf(data[i]), 2, 0, Math.PI * 2);
+        if (hollow(i)) {
+          ctx.strokeStyle = colourOf(i) + "40";
+          ctx.lineWidth = 1.2;
+          ctx.stroke();
+        } else {
+          ctx.fillStyle = colourOf(i) + "40";
+          ctx.fill();
+        }
+      }
+      ctx.restore();
     }
-    const lastValid = data.length - 1 - [...data].reverse().findIndex(v => v !== null);
-    ctx.lineTo(xOf(lastValid), H - pad.b);
-    ctx.lineTo(xOf(firstValid), H - pad.b);
+
+    const path = run ?? all;
+    const line = known(path);
+    ctx.beginPath();
+    line.forEach((i, k) => {
+      if (k === 0) ctx.moveTo(xOf(i), yOf(data[i]));
+      else ctx.lineTo(xOf(i), yOf(data[i]));
+    });
+    ctx.lineTo(xOf(line[line.length - 1]), H - pad.b);
+    ctx.lineTo(xOf(line[0]), H - pad.b);
     ctx.closePath();
     const grad = ctx.createLinearGradient(0, pad.t, 0, H);
     grad.addColorStop(0, fillColour + "44");
@@ -542,18 +630,14 @@ class NinaFrameStatsCard extends HTMLElement {
     ctx.fillStyle = grad;
     ctx.fill();
 
-    // An unnamed light beside named ones is grey, and hollow too, since an L
-    // dot drawn at 60% is much the same grey.
-    const colourOf = (i) => colours[i] ?? fillColour;
-    const hollow = (i) => colours[i] === NO_FILTER;
-
-    for (let i = 1; i < data.length; i++) {
-      const y0 = yOf(data[i - 1]);
+    for (let k = 1; k < path.length; k++) {
+      const i = path[k];
+      const y0 = yOf(data[path[k - 1]]);
       const y1 = yOf(data[i]);
       if (y0 === null || y1 === null) continue;
       const col = colourOf(i);
       ctx.beginPath();
-      ctx.moveTo(xOf(i - 1), y0);
+      ctx.moveTo(xOf(path[k - 1]), y0);
       ctx.lineTo(xOf(i), y1);
       ctx.strokeStyle = col;
       ctx.lineWidth = 1.8;
@@ -565,14 +649,14 @@ class NinaFrameStatsCard extends HTMLElement {
       const yAvg = yOf(avg);
       if (yAvg !== null) {
         ctx.setLineDash([4, 4]);
-        ctx.strokeStyle = "rgba(255,255,255,0.25)";
+        ctx.strokeStyle = theme.ink(0.25);
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(pad.l, yAvg);
         ctx.lineTo(W - pad.r, yAvg);
         ctx.stroke();
         ctx.setLineDash([]);
-        ctx.fillStyle = "rgba(255,255,255,0.4)";
+        ctx.fillStyle = theme.ink(0.4);
         ctx.font = "9px sans-serif";
         ctx.fillText(`avg ${avg.toFixed(2)}`, W - pad.r - 48, yAvg - 3);
       }
@@ -580,7 +664,7 @@ class NinaFrameStatsCard extends HTMLElement {
 
     for (let i = 0; i < data.length; i++) {
       const y = yOf(data[i]);
-      if (y === null) continue;
+      if (y === null || !inRun.has(i)) continue;
       const isLast = i === data.length - 1;
       const col = colourOf(i);
       ctx.beginPath();
@@ -594,7 +678,7 @@ class NinaFrameStatsCard extends HTMLElement {
       ctx.fillStyle = isLast ? col : col + "99";
       ctx.fill();
       if (isLast) {
-        ctx.strokeStyle = "rgba(255,255,255,0.6)";
+        ctx.strokeStyle = theme.ink(0.6);
         ctx.lineWidth = 1;
         ctx.stroke();
       }
@@ -609,7 +693,7 @@ class NinaFrameStatsCard extends HTMLElement {
         ? v.toFixed(2)
         : "";
       ctx.font = "bold 10px sans-serif";
-      ctx.fillStyle = "rgba(255,255,255,0.85)";
+      ctx.fillStyle = theme.ink(0.85);
       ctx.fillText(label, xOf(data.length - 1) + 4, Math.max(lastY, 14));
     }
   }

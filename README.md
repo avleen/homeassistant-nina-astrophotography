@@ -18,6 +18,8 @@ It provides:
 - six dashboard cards
 - six automation blueprints
 
+![The six dashboard cards on a live rig: the observatory and autofocus cards, the weather and sky map cards, and the latest image and frame statistics cards](https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/dashboard.png)
+
 This is a maintained fork of
 [C3X0Astro/homeassistant-nina-astrophotography](https://github.com/C3X0Astro/homeassistant-nina-astrophotography),
 which is no longer updated. Licensed GPL-3.0, like the original.
@@ -124,12 +126,22 @@ type: custom:nina-observatory-card
 
 | Card | Shows | Options (all optional) |
 |---|---|---|
-| `custom:nina-observatory-card` | Session summary, equipment status, meridian countdown, camera/mount/focuser readings, guiding, last frame, and controls. Stop, park and dome close ask for confirmation. | — |
+| `custom:nina-observatory-card` | Session summary, equipment status, meridian countdown, camera/mount/focuser readings, guiding, last frame, and controls. Stop, park, and opening or closing the dome ask for confirmation; Open Dome is disabled unless the safety monitor reads safe. | — |
 | `custom:nina-frame-stats-card` | HFR, star count and ADU trends for the session's frames, and a per-filter breakdown | — |
-| `custom:nina-autofocus-card` | The last autofocus run: measured points, fitted curves, final position, and whether it passed your R² threshold | `temperature_delta`: flag when the focuser has drifted this many °C since the run (default 2) |
+| `custom:nina-autofocus-card` | The last autofocus run: measured points, fitted curves, final position, and whether it passed your R² threshold | `temperature_delta`: flag when the focuser has drifted this many °C since the run (default: your sequence's "AF After Temperature Change" trigger, else 2) |
 | `custom:nina-image-panel-card` | The latest frame, recent frames, and their statistics | `refresh_on_save`, `stretch`, `show_histogram`, `show_strip` (all default `true`); `strip_count` (default 6, max 20); `quality` (JPEG, default 85) |
 | `custom:nina-sky-map-card` | A star chart with the telescope's pointing, recent positions and the meridian | `trail_length` (default 60); `map_size` in px (default 320); `latitude` to override the site |
-| `custom:nina-weather-card` | Safety status, weather and sky quality | — |
+| `custom:nina-weather-card` | Safety status, weather and sky quality | Its warning and danger limits, in °C and m/s whatever unit a reading is shown in: `dew_margin` (default 3); `temperature_high` and `temperature_low` (25, −10); `wind_warn` and `wind_danger` (8, 12); `humidity_warn`/`_danger` (85, 95) and `cloud_warn`/`_danger` (60, 85) in %; `seeing_warn`/`_danger` (3, 5) in arcsec |
+
+| Observatory | Latest image | Sky map |
+|:-:|:-:|:-:|
+| <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/observatory.png" alt="Observatory card" width="260"> | <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/image-panel.png" alt="Latest image card" width="260"> | <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/sky-map.png" alt="Sky map card" width="260"> |
+| **Weather** | **Autofocus** | **Frame statistics** |
+| <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/weather.png" alt="Weather card" width="260"> | <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/autofocus.png" alt="Autofocus card" width="260"> | <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/frame-stats.png" alt="Frame statistics card" width="260"> |
+
+With a dome, the observatory card adds a Dome chip and Open or Close Dome:
+
+<img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/observatory-dome.png" alt="Observatory card with a dome: a Dome chip, and Close Dome among the controls" width="260">
 
 Every card also accepts:
 
@@ -163,9 +175,9 @@ on the imported blueprint and pick your rig's entities.
 
 | Blueprint | What it does |
 |---|---|
-| [Unsafe conditions abort](https://github.com/dgivens/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/weather_abort.yaml) | When the safety monitor reports unsafe or stops reporting: stop the sequence, park, warm the camera, close the dome. Can resume when conditions clear. |
+| [Unsafe conditions abort](https://github.com/dgivens/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/weather_abort.yaml) | When the safety monitor reports unsafe or stops reporting: stop the sequence, park, warm the camera, close the dome — and, given the shutter status, alert if it does not close. Can resume when conditions clear. |
 | [Session startup](https://github.com/dgivens/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/session_startup.yaml) | Unpark, start tracking, open the dome, cool the camera, load and start a sequence. |
-| [Session shutdown](https://github.com/dgivens/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/session_shutdown.yaml) | At a set time: stop, park, warm the camera, close the dome. |
+| [Session shutdown](https://github.com/dgivens/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/session_shutdown.yaml) | At a set time: stop, park, warm the camera, close the dome — and, given the shutter status, alert if it does not close. |
 | [Meridian flip warning](https://github.com/dgivens/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/meridian_flip_warning.yaml) | Notifies before a meridian flip, when it starts, and when it finishes. |
 | [Guiding alert](https://github.com/dgivens/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/guiding_alert.yaml) | Notifies, and optionally runs autofocus, when guiding RMS stays high. |
 | [Imaging stall alert](https://github.com/dgivens/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/imaging_stall_alert.yaml) | Notifies when frames stop for a bad reason (N.I.N.A. unreachable, mount parked mid-sequence, no frames), and clears when they resume. [Details](docs/reference.md#the-imaging-stall-alert-blueprint). |
@@ -286,6 +298,11 @@ others. Cards aren't affected, but your automations are.
 **`Last Image HFR` doesn't change during flats.** That's intended: the
 `last_image_*` sensors show the last light frame.
 
-**Dome problems.** The dome support hasn't been tested on real hardware.
-Please [open an issue](https://github.com/dgivens/homeassistant-nina-astrophotography/issues)
+**Dome problems.** The dome support has been tested against a simulated dome,
+not real hardware. A dome only gets the controls its driver says it supports, so
+a roll-off roof gets the shutter status and the open and close buttons. Opening
+is refused while the safety monitor reports unsafe. Dome park closes the shutter
+as well, so a dashboard button for it wants the same `confirmation:` as dome
+close. Please
+[open an issue](https://github.com/dgivens/homeassistant-nina-astrophotography/issues)
 with what you see.

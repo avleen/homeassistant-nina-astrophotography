@@ -5,7 +5,7 @@
 wire→model mapper all run against captured bytes. `goto()` moves to a state;
 `advance()` walks an ordered sequence.
 
-Dispatch is on the path AND its single query parameter, because three endpoints
+Dispatch is on the path AND its single query parameter, because one path can
 answer differently by parameter — `/image-history` bare, `?count=true` and
 `?all=true` — and matching the path alone cannot tell them apart. Parameters do
 not appear in the URL: the client passes them to `session.get` separately.
@@ -59,8 +59,8 @@ class FakeRig(FakeSession):
         *,
         sequence: Iterable[str] | None = None,
     ) -> None:
-        # Not FakeSession.__init__: its `responses`/`default` are the fragment
-        # matcher this class replaces, and a second lookup table would rot.
+        # Not FakeSession.__init__: its `responses` are the fragment matcher
+        # this class replaces, and a second lookup table would rot.
         self.requests: list[tuple[str, dict | None]] = []
         self.states = states
         self._sequence = list(sequence or ())

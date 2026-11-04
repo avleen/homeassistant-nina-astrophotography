@@ -40,8 +40,10 @@ class Dump(NamedTuple):
     # The conftest fixture that sets the clock; `None` leaves the real one.
     clock: str | None
     units: UnitSystem
-    # A state the rig moves to after setup, for one setup cannot reach.
-    moved_to: str | None = None
+    # Whether N.I.N.A. stops answering after setup, which setup cannot reach:
+    # for one poll, inside the outage grace, or for good.
+    missed: bool = False
+    lost: bool = False
 
 
 # `site_configured` rather than the `imaging_guiding` it derives from: it is the
@@ -59,17 +61,28 @@ class Dump(NamedTuple):
 # instance: Home Assistant's own conversion of the same readings, which is what
 # a card that assumed the integration's units would mislabel.
 #
+# `nina_not_answering` is `site_configured` one missed poll later: every reading
+# still its last, and `reachable` off.
+#
 # `nina_unreachable` is `site_configured` after N.I.N.A. stops answering: every
 # entity as Home Assistant shows a coordinator that has lost its rig. Set up
-# first and then moved, because an entry that cannot reach N.I.N.A. at setup
+# first and then taken down, because an entry that cannot reach N.I.N.A. at setup
 # creates no entity to dump.
+#
+# The `simulator_dome_*` dumps are the test VM's rig (`docs/test-vm.md`), the
+# only one with a dome: parked with the shutter closed, open and following the
+# mount, and parked when N.I.N.A. stops answering.
 DUMPS: dict[str, Dump] = {
     "site_configured": Dump("site_configured", None, METRIC_SYSTEM),
     "equipment_disconnected": Dump("equipment_disconnected", None, METRIC_SYSTEM),
     "dawn_flats": Dump("dawn_flats", "inside_the_dawn_session", METRIC_SYSTEM),
     "site_configured_us_customary": Dump("site_configured", None, US_CUSTOMARY_SYSTEM),
-    "nina_unreachable": Dump(
-        "site_configured", None, METRIC_SYSTEM, moved_to="nina_unreachable"
+    "nina_not_answering": Dump("site_configured", None, METRIC_SYSTEM, missed=True),
+    "nina_unreachable": Dump("site_configured", None, METRIC_SYSTEM, lost=True),
+    "simulator_dome_parked": Dump("simulator_dome_parked", None, METRIC_SYSTEM),
+    "simulator_dome_following": Dump("simulator_dome_following", None, METRIC_SYSTEM),
+    "simulator_dome_unreachable": Dump(
+        "simulator_dome_parked", None, METRIC_SYSTEM, lost=True
     ),
 }
 
@@ -176,6 +189,7 @@ async def test_the_card_harness_dump_is_current(
     config_entry,
     rig,
     set_up_at,
+    outage,
     request: pytest.FixtureRequest,
     dump: str,
     setup: Dump,
@@ -189,10 +203,12 @@ async def test_the_card_harness_dump_is_current(
         request.getfixturevalue(setup.clock)
     hass.config.units = setup.units
     await set_up_at(hass, config_entry, rig, setup.rig_state)
-    if setup.moved_to:
-        rig.goto(setup.moved_to)
+    if setup.missed:
+        rig.goto("nina_unreachable")
         await config_entry.runtime_data.coordinator.async_refresh()
         await hass.async_block_till_done()
+    if setup.lost:
+        await outage()
 
     current = json.loads(DUMP.read_text(encoding="utf-8")) if DUMP.exists() else {}
     # Round-tripped before comparing: an attribute Home Assistant holds as a

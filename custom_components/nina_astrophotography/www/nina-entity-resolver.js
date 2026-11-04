@@ -94,7 +94,7 @@ export class RigEntities {
   }
 
   /**
-   * Re-resolve if the registry changed; `true` when it did.
+   * Re-resolve if the registry changed.
    *
    * The frontend replaces `hass.entities` only when the registry itself
    * changes, so this walks it on a rename, not on every state tick.
@@ -102,10 +102,9 @@ export class RigEntities {
    * the map arrives with an entity-registry change too.
    */
   refresh(hass) {
-    if (hass.entities === this._from) return false;
+    if (hass.entities === this._from) return;
     this._from = hass.entities;
     this._map = resolveEntities(hass, this._deviceId);
-    return true;
   }
 
   /** The entity id for `translation_key` `key`, else `<domain>.<prefix>_<slug>`. */
@@ -114,110 +113,84 @@ export class RigEntities {
   }
 }
 
+// Hub rows created on every setup. They go `unavailable` only once the
+// coordinator stops holding the last data: a rig with every driver down still
+// reports them. Two, so disabling one cannot blind the check.
+const HELD_ROWS = [
+  ["binary_sensor", "sequencer_running"],
+  ["sensor", "session_image_count"],
+];
+
 /**
- * This integration's entity ids on the hub, for `linkLostSince`; `null` when
- * the rig cannot be identified.
+ * The link to N.I.N.A., read from the rig's `reachable` row.
  *
- * No hub entity overrides `available`, so these go `unavailable` only when the
- * coordinator fails: a rig with every driver down still reports `off` and `0`.
- * All of them, so disabling a few cannot blind the check. Other integrations'
- * helpers linked to the hub are left out; they go unavailable on their own.
- *
- * Walks the whole registry: memoise it as `resolveEntities` is.
+ * That row turns `off` on the first missed poll and stays available, so it
+ * says when N.I.N.A. went quiet but not when the grace period ran out; the
+ * held rows going `unavailable` say that. It is created on every setup, so a
+ * restored copy means the entry is not loaded. Should it be disabled, the
+ * held rows alone still tell a lost link, though not since when.
  *
  * @param {object} hass the Home Assistant object a card is handed
- * @param {string} [configuredDeviceId] only consulted for two or more rigs
- * @returns {string[]|null}
+ * @param {RigEntities} rig the card's entity ids, refreshed from `hass` here
+ * @returns {{since: number|null, lost: boolean}} `since`, when N.I.N.A.
+ *   stopped answering (epoch ms), `null` while it answers; `lost`, past the
+ *   grace period
  */
-export function hubEntityIds(hass, configuredDeviceId) {
-  const hubId = hubOf(hass?.devices, configuredDeviceId);
-  if (!hubId) return null;
-  return Object.values(hass.entities ?? {})
-    .filter((entity) => entity.device_id === hubId && entity.platform === DOMAIN)
-    .map((entity) => entity.entity_id);
+export function linkState(hass, rig) {
+  rig.refresh(hass);
+  const row = (domain, key) => hass.states?.[rig.id(domain, key)];
+  const reachable = row("binary_sensor", "reachable");
+  const failed = reachable?.attributes?.restored === true;
+  const quiet = failed || reachable?.state === "off";
+  const lost =
+    failed || HELD_ROWS.some(([domain, key]) => row(domain, key)?.state === "unavailable");
+  return { since: quiet ? Date.parse(reachable.last_changed) || null : null, lost };
+}
+
+/** Whether `hass` holds the rig's rows at all, which it does not until the entry sets up. */
+function reported(hass, rig) {
+  return [["binary_sensor", "reachable"], ...HELD_ROWS].some(
+    ([domain, key]) => hass.states?.[rig.id(domain, key)] !== undefined,
+  );
 }
 
 /**
- * When N.I.N.A. stopped answering (epoch ms), or `null` while it answers: the
- * earliest `last_changed` of the rows that count.
+ * What a card draws from while N.I.N.A. is not answering: the last `hass` in
+ * which the link was up, kept in memory, so the readings stay on screen marked
+ * stale rather than turning to `unavailable`.
  *
- * A restored row counts only when every row is restored — an entry that failed
- * to load. Beside live rows it is an entity not created this run (first-sight,
- * like the live stack, or an orphan): `unavailable` regardless of the link,
- * and changed at Home Assistant's start.
- *
- * @param {object} hass the Home Assistant object a card is handed
- * @param {string[]} ids rows that go `unavailable` only with the link:
- *   `hubEntityIds`, or a card's templated hub ids when that is `null`
- * @returns {number|null}
+ * Inside the grace period Home Assistant still holds the readings, so `hass`
+ * itself is drawn. Past it, only a card that saw the link up has anything to
+ * show; one loaded during the outage draws the lost link. A `hass` without the
+ * rig's rows, as Home Assistant starting up or an entry retrying its setup
+ * hands a card, is not the link up and never replaces the view kept. Nothing
+ * is stored across a reload: readings from last night are not worth showing.
  */
-export function linkLostSince(hass, ids) {
-  const rows = ids.map((id) => hass.states?.[id]).filter(Boolean);
-  const down = rows.filter((row) => row.state === "unavailable");
-  const fresh = down.filter((row) => !row.attributes?.restored);
-  // A lone restored row cannot tell a failed entry from an orphan.
-  const failed = rows.length > 1 && down.length === rows.length;
-  const lost = fresh.length ? fresh : failed ? down : [];
-  if (!lost.length) return null;
-  return Math.min(...lost.map((row) => Date.parse(row.last_changed) || 0));
-}
-
-// One failed poll makes every entity unavailable; on a remote link that is
-// routine while the rig images on.
-export const LINK_GRACE_MS = 30_000;
-
-/**
- * Keeps a card's last live view through a failed poll, which would otherwise
- * draw every reading `unavailable`.
- *
- * A card calls `hold(since)` before rendering: `true` means keep what is on
- * screen, and `onExpire` fires when the grace period ends. Nothing is held
- * without a live view to keep (a fresh load, a new config).
- *
- * The wait is capped at LINK_GRACE_MS: `since` is on Home Assistant's clock,
- * `Date.now()` on the browser's. A detached card's timer is left to run.
- */
-export class LinkGrace {
-  /** @param {function(): void} onExpire re-renders the card */
-  constructor(onExpire) {
-    this._onExpire = onExpire;
-    this._live = false;
-    this._timer = null;
+export class LinkView {
+  constructor() {
+    this._live = null;
   }
 
   /**
-   * @param {number|null} since `linkLostSince`, or `null` for a live link
-   * @returns {boolean} whether to keep the last view rather than render
+   * @param {object} hass the Home Assistant object a card is handed
+   * @param {RigEntities} rig the card's entity ids
+   * @returns {{hass: object, since: number|null, lost: boolean, stale: boolean}}
+   *   `hass` to draw readings from; `since` and `lost` as `linkState` gives
+   *   them; `stale`, readings drawn but not current
    */
-  hold(since) {
-    this._clear();
-    if (since !== null && this._live) {
-      const wait = Math.min(LINK_GRACE_MS, since + LINK_GRACE_MS - Date.now());
-      if (wait > 0) {
-        this._timer = setTimeout(() => {
-          this._timer = null;
-          this._onExpire();
-        }, wait);
-        return true;
-      }
-    }
-    this._live = since === null;
-    return false;
+  read(hass, rig) {
+    const { since, lost } = linkState(hass, rig);
+    if (!lost && reported(hass, rig)) this._live = hass;
+    return {
+      hass: lost ? this._live ?? hass : hass,
+      since,
+      lost,
+      stale: lost ? this._live !== null : since !== null,
+    };
   }
 
-  /** Whether a hold is in progress. */
-  get holding() {
-    return this._timer !== null;
-  }
-
-  /** Forget the live view, as a new config must. */
+  /** Forget the last live view, as a new config must. */
   reset() {
-    this._clear();
-    this._live = false;
-  }
-
-  _clear() {
-    clearTimeout(this._timer);
-    this._timer = null;
+    this._live = null;
   }
 }

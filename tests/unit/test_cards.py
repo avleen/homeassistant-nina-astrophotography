@@ -3,8 +3,7 @@ own image URLs.
 
 They read `hass.states` and call the Advanced API directly from the browser
 rather than going through the integration, so a renamed entity or a corrected
-path leaves them behind — which is how the image-history endpoint stayed broken
-in `nina-image-panel-card.js` for a release after it was fixed everywhere else.
+path leaves them behind.
 
 Source checks only: these read the card files as text. A card names an entity
 either by templating its configured prefix onto a suffix, or by asking the
@@ -43,8 +42,8 @@ assert CARDS, "no cards found"
 UNRESOLVABLE = {("switch", "guider")}
 
 # Entities the reference rig cannot produce, so the snapshot cannot carry them
-# (docs/2.0-renames.md): every dome entity, since nobody involved has the
-# hardware, and the three weather channels this source reports as "NaN".
+# (docs/2.0-renames.md): every dome entity, which only the simulator rig
+# reports, and the three weather channels this source reports as "NaN".
 ABSENT_FROM_THE_SNAPSHOT = {
     "weather_cloud_cover",
     "weather_sky_quality",
@@ -75,7 +74,7 @@ def _entity_suffixes() -> frozenset[str]:
 
 @pytest.mark.parametrize("card", CARDS, ids=lambda p: p.name)
 def test_no_card_reads_an_entity_that_2_0_does_not_create(card: Path) -> None:
-    """Every 1.4.5 card named entities phases B and C renamed or deleted.
+    """Every entity suffix a card templates onto its prefix is one 2.0 creates.
 
     Existence only: the snapshot lists registry rows whether or not they are
     enabled, so this cannot catch a card probing an entity that ships disabled
@@ -144,16 +143,23 @@ def test_no_card_hardcodes_an_entity_id(card: Path) -> None:
     assert not hardcoded, f"{card.name} hardcodes: {sorted(hardcoded)}"
 
 
-@pytest.mark.parametrize("card", CARDS, ids=lambda p: p.name)
-def test_no_card_asks_for_the_stretch_by_the_wrong_name(card: Path) -> None:
-    """`useAutoStretch` is not a parameter on /image/{index}; `autoPrepare` is."""
-    assert "useAutoStretch" not in card.read_text(encoding="utf-8")
+# Strings no card may contain, and why.
+FORBIDDEN = {
+    # Not a parameter on /image/{index}; `autoPrepare` is.
+    "useAutoStretch": "is not a parameter of /image/{index}",
+    # /image is not a route: the index is a path segment, /image/{index}.
+    "/image?": "puts the image index in the query string",
+    # Home Assistant prefers getConfigElement(), so defining it hides the form.
+    "getConfigElement": "hides the config form behind an editor element",
+}
 
 
 @pytest.mark.parametrize("card", CARDS, ids=lambda p: p.name)
-def test_no_card_puts_the_image_index_in_the_query_string(card: Path) -> None:
-    """/image is not a route — the index is a path segment, /image/{index}."""
-    assert "/image?" not in card.read_text(encoding="utf-8")
+@pytest.mark.parametrize("needle", FORBIDDEN, ids=FORBIDDEN.get)
+def test_no_card_contains_what_the_api_or_the_host_rejects(
+    card: Path, needle: str
+) -> None:
+    assert needle not in card.read_text(encoding="utf-8")
 
 
 ELEMENTS = [
@@ -196,16 +202,9 @@ def test_the_visual_editor_offers_exactly_the_options_the_card_reads(
     assert _form_fields(card) == read
 
 
-@pytest.mark.parametrize("card", ELEMENTS, ids=lambda p: p.name)
-def test_no_card_hides_its_form_behind_an_editor_element(card: Path) -> None:
-    """Home Assistant prefers `getConfigElement()`, so defining it hides the form."""
-    assert "getConfigElement" not in card.read_text(encoding="utf-8")
-
-
 def test_the_documented_action_fields_are_the_translated_ones() -> None:
     """`services.yaml` is what the UI reads, `strings.json` is what it labels
     them with, and a field in one and not the other is invisible or unlabelled.
-    Phase D renamed three user-facing fields across both.
     """
     component = ROOT / "custom_components" / "nina_astrophotography"
     services = yaml.safe_load((component / "services.yaml").read_text(encoding="utf-8"))

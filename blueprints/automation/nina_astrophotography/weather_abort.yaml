@@ -20,8 +20,9 @@ blueprint:
     If your weather station ships an ASCOM SafetyMonitor, connect it in N.I.N.A.
     — that is the device this blueprint keys on.
 
-    It cannot help when N.I.N.A. itself becomes unreachable: every entity goes
-    unavailable and no command can reach the rig. It notifies instead.
+    It cannot help when N.I.N.A. itself becomes unreachable: no command can
+    reach the rig. It notifies instead, two minutes after N.I.N.A. stops
+    answering if you pick the rig's Reachable sensor below.
   domain: automation
   author: dgivens
   source_url: https://github.com/dgivens/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/weather_abort.yaml
@@ -57,6 +58,21 @@ blueprint:
               integration: nina_astrophotography
               domain: binary_sensor
               device_class: connectivity
+        rig_reachable:
+          name: Rig reachable
+          description: >
+            Optional, and recommended. The rig's "Reachable" sensor, which
+            turns off on the first poll N.I.N.A. misses. Without it, a lost
+            rig is noticed only once the monitor's connectivity sensor goes
+            unavailable, which waits out the integration's outage grace period
+            first.
+          default: []
+          selector:
+            entity:
+              integration: nina_astrophotography
+              domain: binary_sensor
+              device_class: connectivity
+              multiple: true
         mount_parked:
           name: Mount at park
           description: >
@@ -66,6 +82,19 @@ blueprint:
             entity:
               integration: nina_astrophotography
               domain: binary_sensor
+        dome_shutter:
+          name: Dome shutter status
+          description: >
+            Optional. After closing the dome, wait for this to read closed, and
+            notify if it does not: a close is only sent, and N.I.N.A. answers it
+            before the roof has moved. The first one picked is the one checked.
+          default: []
+          selector:
+            entity:
+              integration: nina_astrophotography
+              domain: sensor
+              device_class: enum
+              multiple: true
 
     shutdown:
       name: Shutdown steps
@@ -90,6 +119,18 @@ blueprint:
           default: false
           selector:
             boolean:
+        close_timeout_minutes:
+          name: Time for the dome to close
+          description: >
+            How long to wait for the shutter status to read closed before
+            raising the alarm. Allow for the slowest roof travel; shorter
+            than the scheduled shutdown's, since every minute here may be rain.
+          default: 3
+          selector:
+            number:
+              min: 1
+              max: 30
+              unit_of_measurement: min
         warm_camera:
           name: Warm the camera
           description: Ramp the sensor back to ambient rather than cutting cooling.
@@ -162,8 +203,10 @@ mode: restart
 
 # Inputs must be bound here before templates can reference them.
 variables:
+  dome_shutter: !input dome_shutter
   mount_parked: !input mount_parked
   nina_rig: !input nina_rig
+  rig_reachable: !input rig_reachable
   safety_unsafe: !input safety_unsafe
 
 triggers:
@@ -189,10 +232,18 @@ triggers:
     to: "off"
     for: "00:00:30"
     id: monitor_lost
-  # N.I.N.A. itself unreachable — a crashed imaging PC, a dropped tunnel. Every
-  # entity goes unavailable and no command can reach the rig, so there is
-  # nothing to abort WITH; this arm only tells someone. A restored registry row
-  # reads `unavailable` too, which the conditions below tell apart.
+  # N.I.N.A. itself unreachable — a crashed imaging PC, a dropped tunnel. No
+  # command can reach the rig, so there is nothing to abort WITH; this arm only
+  # tells someone. `reachable` is `off` from the first missed poll, and
+  # `unavailable` only when the entry failed to load. Without it, the monitor's
+  # row going `unavailable` stands in, once the outage grace has run out.
+  - trigger: state
+    entity_id: !input rig_reachable
+    to: ["off", "unavailable"]
+    for: "00:02:00"
+    id: rig_unreachable
+  # A restored registry row reads `unavailable` too, which the conditions below
+  # tell apart.
   - trigger: state
     entity_id: !input safety_connected
     to: "unavailable"
@@ -210,11 +261,17 @@ conditions:
       {% set entry = config_entry_id(safety_unsafe) %}
       {% set rig = device_attr(nina_rig, 'config_entries') %}
       {{ entry is none or rig is not iterable or entry in rig | list }}
-  # A monitor the rig has not reported since the entry last loaded has no live
-  # entity, only a restored registry row — `unavailable`, `restored: true` —
-  # while N.I.N.A. answers — after a restart or reload with the monitor
-  # disconnected, or removed for good. Restored under a LOADED entry is that
-  # row; restored under an entry that failed to load is the rig unreachable.
+  - alias: "A rig with a Reachable sensor is reported through it alone"
+    condition: template
+    value_template: >
+      {{ trigger.id != 'rig_unreachable'
+         or not rig_reachable
+         or trigger.entity_id in rig_reachable }}
+  # While N.I.N.A. answers, a monitor not reported since the entry last loaded
+  # (after a restart or reload with it disconnected, or removed for good) has
+  # no live entity, only a restored registry row: `unavailable`,
+  # `restored: true`. Restored under a LOADED entry is that row; restored under
+  # an entry that failed to load is the rig unreachable.
   # Up here, not inside the action's `if`: a failing condition in a branch
   # ends only the branch, and the run would go on to park the mount.
   - alias: "An unreachable rig is not a monitor this load has not seen"
@@ -302,6 +359,61 @@ actions:
         target:
           device_id: !input nina_rig
         continue_on_error: true
+      # The close is only sent: N.I.N.A. answers before the roof moves, and
+      # not every close raises a `DOME-SHUTTER-CLOSED`. Only the polled
+      # shutter status confirms it. A shutter in `error` has stopped and will
+      # not close unaided, so the first wait ends there too; many drivers clear
+      # the error on a new close, so the close is sent once more before the
+      # alarm. A brief `unavailable` is a missed poll and is waited through.
+      - alias: "Wait for the shutter to report closed, closing once more if not"
+        if:
+          - condition: template
+            value_template: "{{ dome_shutter | count > 0 }}"
+        then:
+          - wait_template: "{{ states(dome_shutter | first) in ['closed', 'error'] }}"
+            timeout:
+              minutes: !input close_timeout_minutes
+            continue_on_timeout: true
+          - if:
+              - condition: template
+                value_template: "{{ not is_state(dome_shutter | first, 'closed') }}"
+            then:
+              - action: notify.send_message
+                target:
+                  entity_id: !input notify_target
+                data:
+                  title: "⚠️ Roof not closed yet"
+                  message: >
+                    The dome's shutter reads {{ states(dome_shutter | first) }};
+                    closing it again.
+                continue_on_error: true
+              - action: nina_astrophotography.dome_close
+                target:
+                  device_id: !input nina_rig
+                continue_on_error: true
+              - wait_template: "{{ is_state(dome_shutter | first, 'closed') }}"
+                timeout:
+                  minutes: !input close_timeout_minutes
+                continue_on_timeout: true
+              - if:
+                  - condition: template
+                    value_template: "{{ not is_state(dome_shutter | first, 'closed') }}"
+                then:
+                  - action: notify.send_message
+                    target:
+                      entity_id: !input notify_target
+                    data:
+                      title: "🚨 Roof did not close"
+                      message: >-
+                        {%- set shutter = states(dome_shutter | first) -%}
+                        {%- if shutter in ['unavailable', 'unknown'] -%}
+                        Home Assistant has lost contact with the dome, so it
+                        cannot tell whether the roof closed.
+                        {%- else -%}
+                        The dome was told to close twice, but its shutter reads
+                        {{ shutter }}.
+                        {%- endif %} Manual intervention needed.
+                    continue_on_error: true
     else:
       - action: notify.send_message
         target:

@@ -32,17 +32,19 @@ Regenerate it with the rest of the snapshots, in its own commit:
 uv run --group test-ha pytest tests/ha/test_card_states.py -q   # writes, then fails
 ```
 
-Five dumps, from three rig states: `site_configured` (everything up, with an
+The main dumps come from three rig states: `site_configured` (everything up, with an
 observing site), `equipment_disconnected` (the drivers down) and `dawn_flats`
 (a whole night's session, dumped from inside it). Only the last holds a
 session: it is measured against the clock, and the other two are dumped on a
 later day than their night, so the image history is all their frames carry.
 `site_configured_us_customary` is `site_configured` again on a US customary
 instance — Home Assistant's own conversion to °F, mph and inHg, which is what a
-card that assumed the integration's units gets wrong. `nina_unreachable` is
-`site_configured` after N.I.N.A. stops answering — every entity `unavailable`,
-hub and equipment alike, which is how a card tells a lost link from a driver
-that is merely down. A display unit picked for one entity is `Rig.displayedIn`,
+card that assumed the integration's units gets wrong. `nina_not_answering` is
+`site_configured` one missed poll later, inside the outage grace: every reading
+held, and `reachable` `off`. `nina_unreachable` is `site_configured` after
+N.I.N.A. stops answering for good — every entity but `reachable`
+`unavailable`, hub and equipment alike, which is how a card tells a lost link
+from a driver that is merely down. A display unit picked for one entity is `Rig.displayedIn`,
 and a scenario using it must draw what the same reading in its own unit does.
 Device ids are pseudonyms — Home Assistant mints fresh ones per run — and the
 image entities' access tokens read `<per run>`.
@@ -80,6 +82,10 @@ python3 -m http.server 8901 --directory .     # from the repo root
 open "http://127.0.0.1:8901/tools/card-harness/render.html?card=nina-sky-map-card"
 ```
 
+`&theme=light` sets Home Assistant's default light theme on the page. Without
+it no theme is set, and a card draws in the dark colours it falls back to —
+which is also all `ops.mjs` sees, since node resolves no stylesheet.
+
 Served, not opened as a file: the cards are ES modules that import each other,
 and a `file://` origin refuses. `?scenario=` renders one of them alone. The page
 title carries the error count, and a scenario that throws shows its stack in
@@ -100,13 +106,14 @@ Write `scenarios/<card name>.mjs` exporting `scenarios`, keyed by name:
 ```
 
 `after` is later `hass` objects, handed over in turn after the first render —
-for a card whose output depends on what it showed before, such as one holding
-its last live view through a failed poll (`LinkGrace`). Each is logged as
-`hass`; the markup printed is what the last left. `Rig.changedAt(date)` stamps
-`last_changed`, measured against the pinned `Date.now()`; `Rig.restored(id)`
-swaps a row for core's restored placeholder; `linkScenarios()` is the shared
-set of lost-link scenarios. `render.html` hands `after` over on a real clock,
-so a `blip` shows the lost link twenty seconds in.
+for a card whose output depends on what it showed before, such as the image
+panel taking a newly saved frame. Each is logged as `hass`; the markup printed
+is what the last left. `Rig.changedAt(date)` stamps `last_changed`, measured
+against the pinned `Date.now()`; `Rig.restored(id)` swaps a row for core's
+restored placeholder; `Rig.beforeSetup()` drops every row but keeps the
+registry, as Home Assistant does before the entry sets up; `linkScenarios()`
+is the shared set of lost-link scenarios. A brief outage is not one of them:
+the integration keeps the last data through it, so a card never sees it.
 
 `events` are bus events `ops.mjs` fires at whatever the card subscribed to,
 once the first render has settled; each is logged, so the lines after it are

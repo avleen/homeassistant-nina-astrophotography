@@ -14,7 +14,10 @@ Add a field only when something consumes it.
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
+
+ShutterState = Literal["open", "closed", "opening", "closing", "error"]
+"""ASCOM's `ShutterState`, as N.I.N.A. reports it without its `Shutter` prefix."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,18 +151,31 @@ class RotatorModel:
 
 @dataclass(frozen=True, slots=True)
 class DomeModel:
-    """A dome, from the spec alone; no hardware has validated it."""
+    """A dome, validated against a simulator and not yet against hardware.
+
+    `slewing` is the azimuth only on the simulator: its shutter moves with
+    `slewing` false. A real driver may count the shutter too.
+    """
 
     connected: bool
     meta: DeviceMeta
     azimuth: float | None
-    shutter_status: str | None
+    shutter_status: ShutterState | None
+    """`None` for `ShutterNone`, which a driver with no shutter reports."""
     at_park: bool | None
     at_home: bool | None
     driver_following: bool | None
     """The driver's own slaving flag, distinct from N.I.N.A.'s `following`."""
     following: bool | None
+    synchronized: bool | None
+    """The slit is on the scope; `None` unless following, since N.I.N.A. keeps
+    the last value after following stops."""
     slewing: bool | None
+    can_set_shutter: bool | None
+    can_set_azimuth: bool | None
+    """Also what following needs: N.I.N.A. follows by slewing the dome."""
+    can_park: bool | None
+    can_find_home: bool | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -476,6 +492,9 @@ class SequenceNode:
     iterations: str | None
     """The wire's progress text, e.g. "3/10"."""
     target_name: str | None
+    refocus_temperature: float | None
+    """°C of focuser drift past which an "AF After Temperature Change"
+    trigger refocuses; `None` on every other node."""
     children: tuple[SequenceNode, ...]
 
 
@@ -499,6 +518,25 @@ class StackState:
     target: str
     filter_name: str
     updated: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class FlipReading:
+    """`TimeToMeridianFlip` as last read while the mount tracked, and when."""
+
+    hours: float
+    read_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class MeridianFlip:
+    """A meridian flip N.I.N.A. has begun and not yet finished."""
+
+    started: datetime
+    """`MOUNT-BEFORE-FLIP`, raised before the guider stops and the wait."""
+    slews_at: datetime | None
+    """When the wait with tracking off ends and the slew begins; `None` with
+    no fresh tracked reading or no profile window to place it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -536,3 +574,12 @@ class ProfileSettings:
     """Degrees east."""
     site_elevation: float | None
     """Metres."""
+    # N.I.N.A.'s own dome interlocks, which it enforces whatever Home
+    # Assistant does.
+    dome_close_on_unsafe: bool | None
+    dome_refuse_unsafe_shutter_move: bool | None
+    dome_refuse_open_without_safety_monitor: bool | None
+    dome_refuse_unpark_while_shut: bool | None
+    dome_park_mount_before_shutter_move: bool | None
+    dome_park_before_shutter_move: bool | None
+    dome_find_home_before_park: bool | None

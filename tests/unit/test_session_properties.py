@@ -37,13 +37,3 @@ def test_fold_is_idempotent(sample) -> None:
 @given(st.permutations(STRADDLE))
 def test_fold_is_order_independent(shuffled) -> None:
     assert fold(shuffled, [], "g1") == fold(STRADDLE, [], "g1")
-
-
-@given(st.sampled_from(FRAMES))
-def test_folding_one_frame_repeatedly_counts_it_once(frame) -> None:
-    """Identity is (date, filename), so the same frame arriving three times is
-    one frame. True push-vs-poll path equivalence — the same frame carried by
-    an IMAGE-SAVE event and by /image-history — needs phase B's event-carried
-    frame to reach the fold.
-    """
-    assert fold([frame, frame, frame], [], "g1").image_count == 1

@@ -70,6 +70,7 @@ REQUIRED: dict[str, dict[str, object]] = {
 OPTIONAL: dict[str, dict[str, object]] = {
     "guiding_alert.yaml": {"run_autofocus": True},
     "imaging_stall_alert.yaml": {
+        "rig_reachable": ["binary_sensor.rig_reachable"],
         "safety_unsafe": ["binary_sensor.rig_safety_monitor_unsafe"],
         "last_image_filter": ["sensor.rig_last_image_filter"],
         "guider_status": ["sensor.rig_guider_status"],
@@ -93,14 +94,22 @@ OPTIONAL: dict[str, dict[str, object]] = {
         "escalations": 3,
     },
     "meridian_flip_warning.yaml": {},
-    "session_shutdown.yaml": {"close_dome": True, "notify_target": ["notify.phone"]},
+    "session_shutdown.yaml": {
+        "close_dome": True,
+        "dome_shutter": ["sensor.rig_dome_shutter_status"],
+        "close_timeout_minutes": 10,
+        "notify_target": ["notify.phone"],
+    },
     "session_startup.yaml": {
         "open_dome": True,
         "sequence_name": "Autumn",
         "notify_target": ["notify.phone"],
     },
     "weather_abort.yaml": {
+        "rig_reachable": ["binary_sensor.rig_reachable"],
         "close_dome": True,
+        "dome_shutter": ["sensor.rig_dome_shutter_status"],
+        "close_timeout_minutes": 10,
         "auto_resume": True,
         "notify_target": ["notify.phone"],
         "resume_conditions": [

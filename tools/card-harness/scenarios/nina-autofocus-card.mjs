@@ -14,9 +14,8 @@ const VERDICT = "binary_sensor.n_i_n_a_focuser_autofocus_failed";
 const RUN = "sensor.n_i_n_a_focuser_last_autofocus";
 
 // `override` replaces an attribute map wholesale, so a verdict is patched onto
-// the rig's own rather than written from scratch: the profile's R² threshold
-// then stays whatever the capture holds, instead of drifting away from the
-// report charted beneath it at the next re-capture.
+// the rig's own: the profile's R² threshold stays whatever the capture holds,
+// and in step with the report charted beneath it.
 const verdict = (dump, changes) => ({
   ...dump[UP].states[VERDICT].attributes,
   ...changes,
@@ -89,6 +88,26 @@ export const scenarios = {
   drifted: {
     hass: (dump) => rig(dump, UP).build(),
     config: { temperature_delta: 0.1 },
+  },
+
+  // The sequence's refocus trigger sets the threshold when the card has no
+  // option. The capture's trigger reads 2 °C, so its threshold is moved to
+  // flag the rig's own 0.2 °C of drift.
+  trigger_drifted: {
+    hass: (dump) =>
+      rig(dump, UP)
+        .override(VERDICT, "off", verdict(dump, { refocus_temperature_delta: 0.1 }))
+        .build(),
+  },
+
+  // An explicit option outranks the trigger: 0.2 °C is past the trigger's 0.1
+  // but short of the card's 0.3, so nothing is flagged.
+  option_over_trigger: {
+    hass: (dump) =>
+      rig(dump, UP)
+        .override(VERDICT, "off", verdict(dump, { refocus_temperature_delta: 0.1 }))
+        .build(),
+    config: { temperature_delta: 0.3 },
   },
 
   // The same flag on a US customary instance, where Home Assistant shows both
