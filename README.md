@@ -125,7 +125,7 @@ type: custom:nina-observatory-card
 | Card | Shows | Options (all optional) |
 |---|---|---|
 | `custom:nina-observatory-card` | Session summary, equipment status, meridian countdown, camera/mount/focuser readings, guiding, last frame, and controls. Stop, park and dome close ask for confirmation. | — |
-| `custom:nina-frame-stats-card` | HFR, star count and ADU trends for the session's frames, and a per-filter breakdown | — |
+| `custom:nina-frame-stats-card` | HFR, star count, ADU and guide RMS trends for the session's frames, live guiding, and a per-filter breakdown | — |
 | `custom:nina-autofocus-card` | The last autofocus run: measured points, fitted curves, final position, and whether it passed your R² threshold | `temperature_delta`: flag when the focuser has drifted this many °C since the run (default 2) |
 | `custom:nina-image-panel-card` | The latest frame, recent frames, and their statistics | `refresh_on_save`, `stretch`, `show_histogram`, `show_strip` (all default `true`); `strip_count` (default 6, max 20); `quality` (JPEG, default 85) |
 | `custom:nina-sky-map-card` | A star chart with the telescope's pointing, recent positions and the meridian | `trail_length` (default 60); `map_size` in px (default 320); `latitude` to override the site |

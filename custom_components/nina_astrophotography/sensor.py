@@ -220,6 +220,7 @@ def _recent_lights(data: NinaData) -> tuple[Mapping[str, Any], ...]:
             "hfr": frame.hfr,
             "stars": frame.stars,
             "mean": frame.mean,
+            "rms": frame.rms_arcsec,
         }
         for frame in data.session.recent_lights
     )
