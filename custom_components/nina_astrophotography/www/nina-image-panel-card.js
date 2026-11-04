@@ -19,7 +19,8 @@
  * Reads HA sensors for the overlay and the strip/histogram:
  *   The newest LIGHT frame's HFR, star count, mean ADU, filter, exposure,
  *   guide RMS and target; the session frame count and integration time;
- *   whether the camera is exposing; and the mean-ADU sensor's `recent_frames`
+ *   whether the camera is exposing and when that exposure ends, which the
+ *   header counts down to; and the mean-ADU sensor's `recent_frames`
  *   attribute — the newest frames of any type, already bounded and ordered —
  *   for the strip's labels and the histogram's range.
  *
@@ -55,6 +56,19 @@ const DEFAULT_STRIP_COUNT = 6;
 // Signed just before use, not cached: a fresh signature each call is what
 // naturally busts the browser's cache across reloads of the same index.
 const SIGNED_URL_TTL_SECONDS = 30;
+
+const COUNTDOWN_TICK_MS = 1000;
+
+// `4:07`, or `1:04:07` from an hour up.
+function clock(seconds) {
+  const whole = Math.ceil(seconds);
+  const pad = (value) => String(value).padStart(2, "0");
+  const hours = Math.floor(whole / 3600);
+  const minutes = Math.floor(whole / 60) % 60;
+  return hours > 0
+    ? `${hours}:${pad(minutes)}:${pad(whole % 60)}`
+    : `${minutes}:${pad(whole % 60)}`;
+}
 
 // Home Assistant slugifies an instance name the same way for the entity ids
 // and the event payload: `N.I.N.A.` becomes `n_i_n_a`.
@@ -180,6 +194,7 @@ const STYLE = `
     height: 2px;
     background: linear-gradient(90deg, var(--accent), var(--accent2));
     transform-origin: left;
+    transition: transform 1s linear;
     animation: expose-pulse 2s ease-in-out infinite;
     display: none;
   }
@@ -372,7 +387,9 @@ class NinaImagePanelCard extends HTMLElement {
   // masonry re-lays its columns out, and a detached card has unsubscribed.
   connectedCallback() {
     this._detached = false;
-    if (this._hass) this._subscribe();
+    if (!this._hass) return;
+    this._subscribe();
+    if (!this._grace.holding) this._updateHeaderBadge();
   }
 
   // Refresh on `nina_image_save`, once per attachment. Not while detached,
@@ -401,6 +418,7 @@ class NinaImagePanelCard extends HTMLElement {
 
   disconnectedCallback() {
     this._detached = true;
+    this._syncCountdown(false);
     // `subscribeEvents` resolves to the unsubscribe function, so a card
     // removed before it resolves must await the promise to unsubscribe at all.
     Promise.resolve(this._unsubHassEvent)
@@ -866,6 +884,36 @@ class NinaImagePanelCard extends HTMLElement {
     }
   }
 
+  // The running exposure's seconds left, and how far through it is. The rig's
+  // clock against the browser's, so a slow browser clock reads a little long.
+  // `null` once the end has passed: the frame is downloading, or the poll saying
+  // so has not arrived. The sensor changes when an exposure starts, so its
+  // `last_changed` stands in for a start the rig does not report; `fraction` is
+  // `null` where that is not earlier than the end.
+  _exposureLeft() {
+    const row = this._hass?.states?.[this._eid("sensor", "camera_exposure_end")];
+    const end = Date.parse(row?.state);
+    const now = Date.now();
+    if (!(end > now)) return null;
+    const started = Date.parse(row.last_changed);
+    return {
+      seconds: (end - now) / 1000,
+      fraction: started < end ? Math.max(0, (now - started) / (end - started)) : null,
+    };
+  }
+
+  // Polls arrive far apart, so the countdown ticks by itself while exposing.
+  _syncCountdown(run) {
+    if (run && !this._countdown) {
+      this._countdown = setInterval(() => {
+        if (!this._grace.holding) this._updateHeaderBadge();
+      }, COUNTDOWN_TICK_MS);
+    } else if (!run && this._countdown) {
+      clearInterval(this._countdown);
+      this._countdown = null;
+    }
+  }
+
   _updateHeaderBadge() {
     const badge  = this.shadowRoot?.getElementById("hdr-badge");
     const sub    = this.shadowRoot?.getElementById("hdr-sub");
@@ -886,6 +934,7 @@ class NinaImagePanelCard extends HTMLElement {
     const target = known(this._s(this._eid("sensor", "last_image_target")));
     const filter = known(this._s(this._eid("sensor", "last_image_filter")));
     const index  = this._currentIndex;
+    const left   = exposing ? this._exposureLeft() : null;
 
     // Before the camera: a lost link makes it unavailable too.
     if (this._unreachable) {
@@ -895,7 +944,7 @@ class NinaImagePanelCard extends HTMLElement {
       badge.textContent = "Disconnected";
       badge.className   = "badge warn";
     } else if (exposing) {
-      badge.textContent = "Exposing…";
+      badge.textContent = left ? `Exposing · ${clock(left.seconds)} left` : "Exposing…";
       badge.className   = "badge";
     } else {
       badge.textContent = `${count} lights`;
@@ -903,6 +952,8 @@ class NinaImagePanelCard extends HTMLElement {
     }
 
     expBar?.classList.toggle("active", exposing);
+    if (expBar) expBar.style.transform = left?.fraction == null ? "" : `scaleX(${left.fraction})`;
+    this._syncCountdown(exposing && !this._detached);
 
     if (title) {
       title.textContent = index === 0 ? "Latest Image" : `Frame -${index}`;
