@@ -199,11 +199,19 @@ def _recent_frames(data: NinaData) -> tuple[Mapping[str, Any], ...]:
             "date": frame.date.isoformat(),
             "filename": frame.filename,
             "image_type": frame.image_type,
+            "target": frame.target_name,
             "filter": frame.filter_name,
+            "exposure": frame.exposure_time,
+            "hfr": frame.hfr,
+            "stars": frame.stars,
             "mean": frame.mean,
             "median": frame.median,
             "min": frame.min,
             "max": frame.max,
+            "rms": frame.rms_arcsec,
+            "temperature": frame.temperature,
+            "gain": frame.gain,
+            "offset": frame.offset,
         }
         for frame in data.recent_frames
     )
