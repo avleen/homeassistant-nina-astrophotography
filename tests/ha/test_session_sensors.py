@@ -105,6 +105,40 @@ async def test_recent_frames_name_their_type(
     assert recent[0]["image_type"] == "FLAT"
 
 
+@pytest.mark.parametrize(
+    ("image_type", "expected"),
+    [
+        (
+            "LIGHT",
+            {
+                "exposure": 600,
+                "stars": 4026,
+                "hfr": 1.4424,
+                "rms": 0.38,
+                "temperature": -5,
+                "gain": 100,
+                "offset": 50,
+            },
+        ),
+        ("FLAT", {"hfr": None, "stars": None, "rms": None}),
+    ],
+)
+async def test_recent_frames_carry_their_own_readings(
+    hass: HomeAssistant,
+    loaded_entry: MockConfigEntry,
+    advance,
+    image_type: str,
+    expected: dict,
+) -> None:
+    """What the image panel prints for the frame on screen. A flat must not
+    borrow a light's HFR: it has none of its own.
+    """
+    await advance("imaging_guiding" if image_type == "LIGHT" else "dawn_flats")
+    recent = state_of(hass, LAST_IMAGE_MEAN_ADU).attributes["recent_frames"]
+    frame = next(f for f in recent if f["image_type"] == image_type)
+    assert {key: frame[key] for key in expected} == pytest.approx(expected, abs=0.01)
+
+
 async def test_recent_lights_survive_a_dawn_flat_run(
     hass: HomeAssistant, loaded_entry: MockConfigEntry, advance
 ) -> None:
