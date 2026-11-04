@@ -90,6 +90,7 @@ async def test_the_cut_sensors_are_not_registered(
         "camera_gain",
         "camera_offset",
         "camera_status",
+        "camera_exposure_end",
         "mount_ra",
         "mount_dec",
         "mount_altitude",
