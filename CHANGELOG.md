@@ -8,6 +8,13 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 
 ### Added
 
+- **The imaging stall alert has quiet hours,** for a rig that is shut down
+  by day. `mute_mode` mutes new alerts, the unreachable one included,
+  between two fixed times or while the sun is up: from when the rising sun
+  passes `mute_morning_altitude` until the setting sun drops below
+  `mute_evening_altitude`. A rig still unreachable when the window closes
+  is reported then. The default is off, and the sun is placed at Home
+  Assistant's location.
 - **`binary_sensor.<instance>_mount_meridian_flip`** is `on` while N.I.N.A.
   is in a meridian flip, including the wait before the slew, when it turns
   tracking off and the countdown reads `unknown`. Its `slews_at` attribute
@@ -29,6 +36,13 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 
 ### Fixed
 
+- **The imaging stall alert waits for the rig to be let work.** Its quiet
+  clock starts at the latest of the sequencer starting, conditions turning
+  safe, the sun setting and the quiet hours ending. A rig started before
+  dusk that waited out the twilight under a closed roof was reported stalled
+  the minute its safety monitor turned safe.
+- **The imaging stall alert names only tonight's error.** An error from
+  before the sequence started is left out of the message.
 - **The sky map's compass letters match the sky it draws.** The map drew north
   at the bottom under the N at the top, so the scope, the stars and the flip
   label all sat under the opposite letter. It is now a sky chart held

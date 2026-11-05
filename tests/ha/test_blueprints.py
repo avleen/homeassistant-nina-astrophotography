@@ -84,11 +84,16 @@ OPTIONAL: dict[str, dict[str, object]] = {
         "longest_exposure_seconds": 300,
         "grace_minutes": 45,
         "settle_minutes": 20,
-        # The one input that gates nothing structural: it is read inside a
-        # condition template, so both values build the same automation. False
-        # is still the value worth sending — it is the substitution the
-        # default never produces.
+        # This and the mute inputs gate nothing structural: they are read
+        # inside condition templates, so every value builds the same
+        # automation. These are still the values worth sending — the
+        # substitutions the defaults never produce.
         "night_only": False,
+        "mute_mode": "sun",
+        "mute_from": "21:00:00",
+        "mute_until": "06:00:00",
+        "mute_morning_altitude": -6,
+        "mute_evening_altitude": 0,
         "notify_target": ["notify.phone"],
         "escalate_minutes": 90,
         "escalations": 3,
