@@ -760,11 +760,33 @@ def _polynomial(equation: str) -> tuple[float, ...] | None:
     return tuple(powers.get(power, 0.0) for power in range(max(powers), -1, -1))
 
 
+# The curves each `Fitting` places focus with, which are the ones a threshold
+# judges. N.I.N.A. can compute others beside them: a HYPERBOLIC run also reports
+# trend lines, and one scoring 0.000 does not stop it being applied. GAUSSIAN is
+# what a contrast-detection run writes, and no R² threshold applies to one.
+_TREND_LINES = frozenset({"LeftTrend", "RightTrend"})
+_JUDGED_FITS = {
+    "TRENDLINES": _TREND_LINES,
+    "PARABOLIC": frozenset({"Quadratic"}),
+    "TRENDPARABOLIC": _TREND_LINES | {"Quadratic"},
+    "HYPERBOLIC": frozenset({"Hyperbolic"}),
+    "TRENDHYPERBOLIC": _TREND_LINES | {"Hyperbolic"},
+    "GAUSSIAN": frozenset(),
+}
+
+
+def _judged_curves(wire: dict) -> frozenset[str] | None:
+    """The curves this run's fitting uses, or `None` for a fitting the table
+    does not know, which judges every curve: the cautious reading of a new one.
+    """
+    return _JUDGED_FITS.get((_text(wire, "Fitting") or "").upper())
+
+
 def _curve_fits(wire: dict) -> tuple[CurveFit, ...]:
-    """The fits this run used, each with its own R².
+    """The fits this run computed, each with its own R².
 
     N.I.N.A. sends every fitting it knows, with an empty equation for the
-    ones unused; a non-empty equation is the filter. `RSquares` has no
+    ones not computed; a non-empty equation is the filter. `RSquares` has no
     Gaussian entry, hence a lookup rather than a zip.
     """
     fittings = wire.get("Fittings")
@@ -772,12 +794,14 @@ def _curve_fits(wire: dict) -> tuple[CurveFit, ...]:
         return ()
     squares = wire.get("RSquares")
     squares = squares if isinstance(squares, dict) else {}
+    judged = _judged_curves(wire)
     return tuple(
         CurveFit(
             name=name,
             equation=equation,
             coefficients=_polynomial(equation),
             r_squared=_numeric(squares.get(name)),
+            judged=judged is None or name in judged,
         )
         for name, equation in fittings.items()
         if isinstance(equation, str) and equation.strip()
@@ -808,24 +832,23 @@ def _fit_minima(wire: dict) -> tuple[FitMinimum, ...]:
 def map_last_autofocus(wire: dict) -> AutoFocusReport | None:
     """The newest autofocus report, or `None` where the rig has never run one.
 
-    `r_squared` is the minimum of `RSquares` over the fittings this run used;
-    the rest send `"NaN"`. A CONTRASTDETECTION run's focus points are a
-    contrast score, not pixels, so the HFR fields are dropped; positions stay.
+    `r_squared` is the worst R² among the curves the run's fitting uses, and
+    `None` where it uses none or all of those read `"NaN"`. A
+    CONTRASTDETECTION run's focus points are a contrast score, not pixels, so
+    the HFR fields are dropped; positions stay.
     """
     if not wire:
         return None
     method = _text(wire, "Method")
     is_hfr = method is None or method.upper() in _HFR_METHODS
     squares = wire.get("RSquares")
-    computed = (
-        [
-            value
-            for value in (_numeric(v) for v in (squares or {}).values())
-            if value is not None
-        ]
-        if isinstance(squares, dict)
-        else []
-    )
+    judged = _judged_curves(wire)
+    computed = [
+        value
+        for name, square in (squares.items() if isinstance(squares, dict) else ())
+        if judged is None or name in judged
+        if (value := _numeric(square)) is not None
+    ]
     curve = _focus_curve(wire)
     measured = [point.value for point in curve if point.value is not None]
     return AutoFocusReport(

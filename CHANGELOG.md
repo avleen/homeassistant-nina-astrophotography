@@ -4,6 +4,16 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **An autofocus run is judged only on the curves its fitting uses** (#201).
+  `binary_sensor.<instance>_focuser_autofocus_failed` compares the profile's
+  R² threshold with those curves alone, so a trend line beside a
+  `HYPERBOLIC` fit does not fail the run, and a contrast-detection run is not
+  gated on R². The autofocus card marks the other curves `not judged`.
+
 ## [2.4.1] - 2026-11-05
 
 ### Fixed

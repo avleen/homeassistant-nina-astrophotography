@@ -345,8 +345,21 @@ async def test_a_rejected_run_raises_the_problem_and_publishes_what_it_was_judge
         # older than the session. Believing it would raise a problem every
         # time Home Assistant started.
         (None, "autofocus_rejected_on_r_squared", "off", {}),
+        # The trend line's 0.0 is not what a hyperbolic run is judged on.
+        pytest.param(
+            "inside_the_guiding_session",
+            "autofocus_hyperbolic_with_a_flat_trend_line",
+            "off",
+            {"reason": None, "r_squared": 0.988},
+            marks=pytest.mark.synthetic,
+        ),
     ],
-    ids=["fitted well", "unanswered start", "report older than the session"],
+    ids=[
+        "fitted well",
+        "unanswered start",
+        "report older than the session",
+        "unused curve fitted badly",
+    ],
 )
 async def test_the_autofocus_problem_sensor_judges_this_sessions_runs(
     hass: HomeAssistant,
