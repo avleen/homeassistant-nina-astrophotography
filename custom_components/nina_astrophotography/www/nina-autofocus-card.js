@@ -287,7 +287,7 @@ class NinaAutofocusCard extends HTMLElement {
     // `reason` separates a hung run — which wrote no report, so the curve
     // below is an earlier run's — from one rejected on its fit.
     const verdict = this._eid("binary_sensor", "autofocus_failed", "focuser_autofocus_failed");
-    const judged = this._attr(verdict, "r_squared");
+    const verdictSquare = this._attr(verdict, "r_squared");
     const threshold = this._attr(verdict, "r_squared_threshold");
     // A trigger at 0 refocuses before every frame: no drift worth flagging.
     const trigger = this._attr(verdict, "refocus_temperature_delta");
@@ -304,7 +304,7 @@ class NinaAutofocusCard extends HTMLElement {
       measured: this._attr(run, "measured_points"),
       failed: this._state(verdict) === "on",
       reason: this._attr(verdict, "reason"),
-      judged: Number.isFinite(judged) ? judged : null,
+      verdictSquare: Number.isFinite(verdictSquare) ? verdictSquare : null,
       threshold: Number.isFinite(threshold) ? threshold : null,
       position: this._number(
         this._eid("sensor", "autofocus_position", "focuser_autofocus_position")),
@@ -419,7 +419,7 @@ class NinaAutofocusCard extends HTMLElement {
     // last finished, not the failure.
     const hung = run.reason === "hung";
     const rejected = run.reason === "rejected";
-    const quality = run.judged ?? run.worstSquare;
+    const quality = run.verdictSquare ?? run.worstSquare;
 
     return `
       ${run.failed ? `
@@ -431,7 +431,7 @@ class NinaAutofocusCard extends HTMLElement {
               ? `It never finished, so it wrote no report — the run charted below is the last one
                  that did, from ${ago(run.timestamp) || "earlier"}, and not the one that failed.`
               : `${run.threshold === null ? "Its fit was not good enough"
-                  : `Its fit scored ${fixed(run.judged, 3)} against the ${fixed(run.threshold, 2)}
+                  : `Its fit scored ${fixed(run.verdictSquare, 3)} against the ${fixed(run.threshold, 2)}
                      your profile requires`}. The focuser stayed where it was, so frames since are
                  as soft as they were before it.`}</div>
           </div>

@@ -44,13 +44,12 @@ export const scenarios = {
         .build(),
   },
 
-  // A hyperbolic run that passed beside a trend line scoring 0.000, which the old
-  // card reported as rejected. The fitting, R²s and the verdict are invented: no
-  // capture holds a hyperbolic run. The fits stay the captured ones otherwise.
+  // A hyperbolic run that passed beside a trend line scoring 0.000. The fitting,
+  // R²s and the verdict are invented: no capture holds a hyperbolic run. The
+  // fits stay the captured ones otherwise.
   hyperbolic: {
     hass: (dump) => {
       const run = dump[UP].states[RUN].attributes;
-      const judge = { Quadratic: false, LeftTrend: false, RightTrend: false };
       return rig(dump, UP)
         .override(RUN, dump[UP].states[RUN].state, {
           ...run,
@@ -58,7 +57,7 @@ export const scenarios = {
           fits: [
             ...run.fits.map((fit) => ({
               ...fit,
-              judged: judge[fit.name] ?? true,
+              judged: false,
               r_squared: fit.name === "RightTrend" ? 0 : fit.r_squared,
             })),
             { name: "Hyperbolic", equation: "y = 1.8 * cosh(asinh((x - 2336) / 40))",

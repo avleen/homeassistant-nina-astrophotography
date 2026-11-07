@@ -177,6 +177,27 @@ def _dimmable(channel: dict) -> dict:
     return {**channel, "Id": 2, "Name": "Dew Heater A", "Maximum": 100, "Value": 50}
 
 
+def _hyperbolic_autofocus(name: str) -> dict:
+    """The captured autofocus report refitted HYPERBOLIC, its hyperbolic curve
+    scoring 0.988 beside a right trend line scoring 0.0. The corpus holds only
+    TRENDPARABOLIC runs, so the fitting and its R² values are derived.
+    """
+    envelope = load_envelope(name)
+    response = envelope["Response"]
+    return {
+        **envelope,
+        "Response": {
+            **response,
+            "Fitting": "HYPERBOLIC",
+            "RSquares": {
+                **response["RSquares"],
+                "Hyperbolic": 0.988,
+                "RightTrend": 0.0,
+            },
+        },
+    }
+
+
 def _rejected_autofocus(name: str, *, r_squared: float) -> dict:
     """The captured autofocus report with its curve fit degraded.
 
@@ -539,6 +560,13 @@ STATES: dict[str, State] = {
         **_IMAGING_GUIDING,
         "/equipment/focuser/last-af": _rejected_autofocus(
             "imaging_guiding_last_af.json", r_squared=0.42
+        ),
+    },
+    # A HYPERBOLIC run that passed beside a trend line its fitting doesn't use.
+    "autofocus_hyperbolic_with_a_flat_trend_line": {
+        **_IMAGING_GUIDING,
+        "/equipment/focuser/last-af": _hyperbolic_autofocus(
+            "imaging_guiding_last_af.json"
         ),
     },
     # The observing site N.I.N.A. is configured for, which is what a sky chart

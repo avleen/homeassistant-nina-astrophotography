@@ -762,7 +762,8 @@ def _polynomial(equation: str) -> tuple[float, ...] | None:
 
 # The curves each `Fitting` places focus with, which are the ones a threshold
 # judges. N.I.N.A. can compute others beside them: a HYPERBOLIC run also reports
-# trend lines, and one scoring 0.000 does not stop it being applied.
+# trend lines, and one scoring 0.000 does not stop it being applied. GAUSSIAN is
+# what a contrast-detection run writes, and no R² threshold applies to one.
 _TREND_LINES = frozenset({"LeftTrend", "RightTrend"})
 _JUDGED_FITS = {
     "TRENDLINES": _TREND_LINES,
@@ -770,15 +771,15 @@ _JUDGED_FITS = {
     "TRENDPARABOLIC": _TREND_LINES | {"Quadratic"},
     "HYPERBOLIC": frozenset({"Hyperbolic"}),
     "TRENDHYPERBOLIC": _TREND_LINES | {"Hyperbolic"},
+    "GAUSSIAN": frozenset(),
 }
 
 
-def _is_judged(wire: dict, name: str) -> bool:
-    """Whether this run's fitting uses the named curve. A fitting this table
-    does not know judges every curve, the cautious reading of a new one.
+def _judged_curves(wire: dict) -> frozenset[str] | None:
+    """The curves this run's fitting uses, or `None` for a fitting the table
+    does not know, which judges every curve: the cautious reading of a new one.
     """
-    judged = _JUDGED_FITS.get((_text(wire, "Fitting") or "").upper())
-    return judged is None or name in judged
+    return _JUDGED_FITS.get((_text(wire, "Fitting") or "").upper())
 
 
 def _curve_fits(wire: dict) -> tuple[CurveFit, ...]:
@@ -793,13 +794,14 @@ def _curve_fits(wire: dict) -> tuple[CurveFit, ...]:
         return ()
     squares = wire.get("RSquares")
     squares = squares if isinstance(squares, dict) else {}
+    judged = _judged_curves(wire)
     return tuple(
         CurveFit(
             name=name,
             equation=equation,
             coefficients=_polynomial(equation),
             r_squared=_numeric(squares.get(name)),
-            judged=_is_judged(wire, name),
+            judged=judged is None or name in judged,
         )
         for name, equation in fittings.items()
         if isinstance(equation, str) and equation.strip()
@@ -831,28 +833,22 @@ def map_last_autofocus(wire: dict) -> AutoFocusReport | None:
     """The newest autofocus report, or `None` where the rig has never run one.
 
     `r_squared` is the worst R² among the curves the run's fitting uses, and
-    `None` where all of those read `"NaN"`. A CONTRASTDETECTION run's focus
-    points are a contrast score, not pixels, so the HFR fields are dropped;
-    positions stay.
+    `None` where it uses none or all of those read `"NaN"`. A
+    CONTRASTDETECTION run's focus points are a contrast score, not pixels, so
+    the HFR fields are dropped; positions stay.
     """
     if not wire:
         return None
     method = _text(wire, "Method")
     is_hfr = method is None or method.upper() in _HFR_METHODS
     squares = wire.get("RSquares")
-    computed = (
-        [
-            value
-            for value in (
-                _numeric(square)
-                for name, square in (squares or {}).items()
-                if _is_judged(wire, name)
-            )
-            if value is not None
-        ]
-        if isinstance(squares, dict)
-        else []
-    )
+    judged = _judged_curves(wire)
+    computed = [
+        value
+        for name, square in (squares.items() if isinstance(squares, dict) else ())
+        if judged is None or name in judged
+        if (value := _numeric(square)) is not None
+    ]
     curve = _focus_curve(wire)
     measured = [point.value for point in curve if point.value is not None]
     return AutoFocusReport(

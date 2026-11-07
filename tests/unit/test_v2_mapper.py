@@ -854,25 +854,29 @@ def test_each_fit_keeps_its_own_r_squared() -> None:
     )
 
 
-JUDGED_CASES = {
-    "TRENDLINES": ({"LeftTrend", "RightTrend"}, 0.2),
-    "PARABOLIC": ({"Quadratic"}, 0.6),
-    "TRENDPARABOLIC": ({"Quadratic", "LeftTrend", "RightTrend"}, 0.2),
-    "HYPERBOLIC": ({"Hyperbolic"}, 0.988),
-    "TRENDHYPERBOLIC": ({"Hyperbolic", "LeftTrend", "RightTrend"}, 0.2),
-    "A FUTURE FITTING": ({"Hyperbolic", "Quadratic", "LeftTrend", "RightTrend"}, 0.2),
-}
-
-
 @pytest.mark.synthetic
-@pytest.mark.parametrize(("fitting", "case"), JUDGED_CASES.items())
-def test_only_the_curves_a_fitting_uses_are_judged(fitting: str, case: tuple) -> None:
-    """N.I.N.A. computes every curve and judges only the ones the profile's
-    fitting uses: a hyperbolic run with a 0.000 trend line completes and is
-    applied. The R² values and the equations are fabricated; no capture holds
-    any fitting but TRENDPARABOLIC, or a fit this poor.
+@pytest.mark.parametrize(
+    ("fitting", "judged", "worst"),
+    [
+        ("TRENDLINES", {"LeftTrend", "RightTrend"}, 0.2),
+        ("PARABOLIC", {"Quadratic"}, 0.6),
+        ("TRENDPARABOLIC", {"Quadratic", "LeftTrend", "RightTrend"}, 0.2),
+        ("HYPERBOLIC", {"Hyperbolic"}, 0.988),
+        ("TRENDHYPERBOLIC", {"Hyperbolic", "LeftTrend", "RightTrend"}, 0.2),
+        ("GAUSSIAN", set(), None),
+        (
+            "A FUTURE FITTING",
+            {"Hyperbolic", "Quadratic", "LeftTrend", "RightTrend"},
+            0.2,
+        ),
+    ],
+)
+def test_only_the_curves_a_fitting_uses_are_judged(
+    fitting: str, judged: set[str], worst: float | None
+) -> None:
+    """A hyperbolic run with a 0.000 trend line completes and is applied, and
+    a contrast-detection run, written GAUSSIAN, is not gated on R² at all.
     """
-    judged, worst = case
     report = _autofocus(
         dict(
             load("imaging_guiding_last_af.json"),
@@ -888,15 +892,13 @@ def test_only_the_curves_a_fitting_uses_are_judged(fitting: str, case: tuple) ->
             },
         )
     )
-    assert report.r_squared == pytest.approx(worst)
+    assert report.r_squared == worst
     assert {fit.name for fit in report.fits if fit.judged} == judged
 
 
 @pytest.mark.synthetic
 def test_a_judged_fit_with_no_r_squared_leaves_nothing_to_judge() -> None:
-    """A computed trend line must not stand in for the curve the run used. The
-    `"NaN"` beside a hyperbolic fitting is fabricated.
-    """
+    """A computed trend line must not stand in for the curve the run used."""
     report = _autofocus(
         dict(
             load("imaging_guiding_last_af.json"),
