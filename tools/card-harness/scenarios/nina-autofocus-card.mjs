@@ -11,6 +11,7 @@ import { rig } from "../hass.mjs";
 
 const UP = "site_configured";
 const VERDICT = "binary_sensor.n_i_n_a_focuser_autofocus_failed";
+const RUN = "sensor.n_i_n_a_focuser_last_autofocus";
 
 // `override` replaces an attribute map wholesale, so a verdict is patched onto
 // the rig's own: the profile's R² threshold stays whatever the capture holds,
@@ -41,6 +42,31 @@ export const scenarios = {
       rig(dump, UP)
         .override(VERDICT, "on", verdict(dump, { r_squared: 0.42, reason: "rejected" }))
         .build(),
+  },
+
+  // A hyperbolic run that passed beside a trend line scoring 0.000. The fitting,
+  // R²s and the verdict are invented: no capture holds a hyperbolic run. The
+  // fits stay the captured ones otherwise.
+  hyperbolic: {
+    hass: (dump) => {
+      const run = dump[UP].states[RUN].attributes;
+      return rig(dump, UP)
+        .override(RUN, dump[UP].states[RUN].state, {
+          ...run,
+          fitting: "HYPERBOLIC",
+          fits: [
+            ...run.fits.map((fit) => ({
+              ...fit,
+              judged: false,
+              r_squared: fit.name === "RightTrend" ? 0 : fit.r_squared,
+            })),
+            { name: "Hyperbolic", equation: "y = 1.8 * cosh(asinh((x - 2336) / 40))",
+              coefficients: null, r_squared: 0.988, judged: true },
+          ],
+        })
+        .override(VERDICT, "off", verdict(dump, { r_squared: 0.988, reason: null }))
+        .build();
+    },
   },
 
   // A hung run wrote no report, so the curve below the banner is an earlier

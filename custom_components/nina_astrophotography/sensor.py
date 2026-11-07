@@ -409,6 +409,17 @@ SESSION: tuple[NinaSensorDescription, ...] = (
         kind=None,
         value=lambda data: data.profile.site_latitude,
     ),
+    NinaSensorDescription(
+        key="site_longitude",
+        translation_key="site_longitude",
+        native_unit_of_measurement=DEGREE,
+        suggested_display_precision=4,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        # Enabled: with the latitude, it places the sun for a rig hosted far
+        # from Home Assistant, and a disabled entity has no state to read.
+        kind=None,
+        value=lambda data: data.profile.site_longitude,
+    ),
 )
 
 
@@ -652,8 +663,8 @@ EQUIPMENT: tuple[NinaSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         kind="focuser",
-        # The run's worst fit. `autofocus_failed` judges it against the
-        # profile's threshold.
+        # The worst of the curves the run's fitting uses. `autofocus_failed`
+        # judges it against the profile's threshold.
         value=_autofocus("r_squared"),
     ),
     NinaSensorDescription(

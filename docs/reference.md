@@ -189,23 +189,41 @@ period later.
 
 The quiet case doesn't fire while the sequencer is stopped, while the scheduler
 is waiting, for 15 minutes after a wait ends, or in daylight. Its timers start
-no earlier than the sequencer did, so the last frame of the previous night
-doesn't trigger an alert as soon as tonight's sequence starts. All of these
-times are blueprint inputs.
+at the latest of the sequencer starting, conditions turning safe, the sun
+setting and the quiet hours ending. So neither the last frame of the previous
+night nor an hour spent waiting for dark triggers an alert the moment the rig
+is let work. All of these times are blueprint inputs.
 
-It also stays quiet in two situations you should know about:
+It also stays quiet in these situations you should know about:
 
 - **While conditions are unsafe.** The rig waiting out bad weather is working
   correctly, and `weather_abort.yaml` handles that case. If your rig has a
   safety monitor, fill in the safety input; if you leave it empty you'll get an
   alert during every weather hold.
 - **In daylight,** because `night_only` is on by default. Turn it off for solar
-  imaging. It uses `sun.sun`; without that entity it doesn't suppress anything.
+  imaging. It uses the sun at the rig if you wire the site inputs (see below),
+  and `sun.sun` otherwise; with neither it doesn't suppress anything.
+
+- **During quiet hours,** if you set them, for a rig you shut down by day.
+  `mute_mode` picks the window: between two times, which may cross midnight,
+  or while the sun is up — from when the rising sun passes one altitude until
+  the setting sun drops below another. The defaults are -12° (the end of
+  nautical twilight) and +3° (roughly 20–30 minutes before sunset). The window
+  covers the unreachable alert too, and a rig still unreachable when it closes
+  is reported then. Fixed times are Home Assistant's local time, which is not
+  the rig's if it is hosted in another time zone.
+
+For a hosted rig, wire the optional site latitude and longitude inputs to the
+rig's `site_latitude` and `site_longitude` sensors. Both sun gates, night only
+and sun quiet hours, then use the sun where the rig is instead of where Home
+Assistant is. Until N.I.N.A. reports a site, Home Assistant's location stands
+in.
 
 The alert is a persistent notification plus a message to the notify entity you
 choose. It includes how long it has been quiet, the last frame's target and
 filter, the camera state, temperature and cooler power, the guider, whether the
-mount is parked or at home, autofocus, and the latest error. It repeats every
+mount is parked or at home, autofocus, and the latest error if it came after
+the sequence started. It repeats every
 60 minutes, at most twice (set reminders to 0 to turn this off). When a frame
 arrives or the sequencer stops, it dismisses the notification and says which
 happened. A sequence that finishes looks the same as one stopped by hand, so
@@ -308,7 +326,7 @@ Things to know when reading them:
 | Attribute | Meaning |
 |---|---|
 | `reason` | `hung`, `rejected`, or absent. A hung run usually means a sequence problem; a rejected one means the focus range or star detection needs adjusting. Only for `hung` do the other autofocus sensors show a different run from the one that failed. |
-| `r_squared` | the R² used for the decision: the worst value in the run's `RSquares` |
+| `r_squared` | the R² used for the decision: the worst among the curves the run's curve fitting uses |
 | `r_squared_threshold` | your profile's `RSquaredThreshold` |
 | `refocus_temperature_delta` | the °C of focuser drift past which your sequence's "AF After Temperature Change" trigger refocuses, or `null` with no such trigger. With several, the smallest: which one is in scope cannot be told. The autofocus card flags drift against it. |
 
@@ -364,9 +382,11 @@ fits:
     equation: "y = 0.0003058854621319121 * x^2 + -1.4293365331583652 * x + 1671.5984427459177"
     coefficients: [0.0003058854621319121, -1.4293365331583652, 1671.5984427459177]
     r_squared: 0.9710548595560263
+    judged: true
   - name: LeftTrend
     coefficients: [-0.04727009756935714, 111.1161540435258]
     r_squared: 0.9902518159347956
+    judged: true
   # …RightTrend
 
 minima:
@@ -380,11 +400,14 @@ minima:
 
 - `coefficients` are highest power first: `[a, b, c]` is `a·x² + b·x + c`.
   For fits other than polynomials (hyperbolic, gaussian) `coefficients` is
-  `null` and `equation` is the only record. Fits the run didn't use are left
-  out.
+  `null` and `equation` is the only record. Fits the run didn't compute are
+  left out.
 - Each fit's `r_squared` is for that fit alone, which is what a chart legend
-  wants. The `autofocus_r2` sensor is the worst fit, which is what a
-  pass/fail threshold wants.
+  wants. The `autofocus_r2` sensor is the worst fit with `judged: true`, which
+  is what a pass/fail threshold wants.
+- `judged` says whether the run's curve fitting uses that curve. A `HYPERBOLIC`
+  run can also report trend lines. They have `judged: false`, and a low R² on
+  them doesn't reject the run.
 - `minima` lists the minima N.I.N.A. computed. Pick the second by position in
   the list, not by name; its name depends on the curve fitting in your profile.
   The final focuser position is the average of the two.

@@ -18,7 +18,7 @@ import { RigEntities } from "./nina-entity-resolver.js";
 import { interval, inUnit, quantity, quantityIn, safe, shown } from "./nina-units.js";
 import { THEME, applyTheme, palette } from "./nina-theme.js";
 
-const VERSION = "2.3.0";
+const VERSION = "2.4.1";
 
 // How far the focuser temperature may drift from the run's before the card
 // flags it, when neither `temperature_delta` nor the sequence's "AF After
@@ -267,7 +267,9 @@ class NinaAutofocusCard extends HTMLElement {
     // report the quadratic minimum alone.
     const fitted = minima.map((minimum) => minimum.value).filter(Number.isFinite);
     const whole = minima.length > 0 && fitted.length === minima.length;
-    const scored = fits.filter((fit) => Number.isFinite(fit.r_squared));
+    // Only the curves the run's fitting uses: a hyperbolic run also reports trend
+    // lines, and a poor one of those does not stop N.I.N.A. applying the result.
+    const scored = fits.filter((fit) => fit.judged !== false && Number.isFinite(fit.r_squared));
     const worst = scored.reduce(
       (lowest, fit) => (lowest === null || fit.r_squared < lowest.r_squared ? fit : lowest),
       null,
@@ -285,7 +287,7 @@ class NinaAutofocusCard extends HTMLElement {
     // `reason` separates a hung run — which wrote no report, so the curve
     // below is an earlier run's — from one rejected on its fit.
     const verdict = this._eid("binary_sensor", "autofocus_failed", "focuser_autofocus_failed");
-    const judged = this._attr(verdict, "r_squared");
+    const verdictSquare = this._attr(verdict, "r_squared");
     const threshold = this._attr(verdict, "r_squared_threshold");
     // A trigger at 0 refocuses before every frame: no drift worth flagging.
     const trigger = this._attr(verdict, "refocus_temperature_delta");
@@ -302,7 +304,7 @@ class NinaAutofocusCard extends HTMLElement {
       measured: this._attr(run, "measured_points"),
       failed: this._state(verdict) === "on",
       reason: this._attr(verdict, "reason"),
-      judged: Number.isFinite(judged) ? judged : null,
+      verdictSquare: Number.isFinite(verdictSquare) ? verdictSquare : null,
       threshold: Number.isFinite(threshold) ? threshold : null,
       position: this._number(
         this._eid("sensor", "autofocus_position", "focuser_autofocus_position")),
@@ -417,7 +419,7 @@ class NinaAutofocusCard extends HTMLElement {
     // last finished, not the failure.
     const hung = run.reason === "hung";
     const rejected = run.reason === "rejected";
-    const quality = run.judged ?? run.worstSquare;
+    const quality = run.verdictSquare ?? run.worstSquare;
 
     return `
       ${run.failed ? `
@@ -429,7 +431,7 @@ class NinaAutofocusCard extends HTMLElement {
               ? `It never finished, so it wrote no report — the run charted below is the last one
                  that did, from ${ago(run.timestamp) || "earlier"}, and not the one that failed.`
               : `${run.threshold === null ? "Its fit was not good enough"
-                  : `Its fit scored ${fixed(run.judged, 3)} against the ${fixed(run.threshold, 2)}
+                  : `Its fit scored ${fixed(run.verdictSquare, 3)} against the ${fixed(run.threshold, 2)}
                      your profile requires`}. The focuser stayed where it was, so frames since are
                  as soft as they were before it.`}</div>
           </div>
@@ -529,7 +531,8 @@ class NinaAutofocusCard extends HTMLElement {
       items.push(`<div class="item">
         <span class="swatch" style="border-top-color:var(--${drawn ? colour : "muted"});border-top-style:${drawn ? dash : "dotted"}"></span>
         <span${drawn ? "" : ` style="color:var(--muted)"`}>${pretty(fit.name)}</span>
-        <span class="reading">R² ${fixed(fit.r_squared, 3)}${drawn ? "" : " · not plotted"}</span></div>`);
+        <span class="reading">R² ${fixed(fit.r_squared, 3)}${
+          fit.judged === false ? " · not judged" : ""}${drawn ? "" : " · not plotted"}</span></div>`);
     }
     // Against the axis the chart actually uses, padding included — otherwise a
     // minimum landing inside that padding is called below the axis here and

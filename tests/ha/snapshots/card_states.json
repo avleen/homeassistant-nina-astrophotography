@@ -532,6 +532,13 @@
     "platform": "nina_astrophotography",
     "translation_key": "site_latitude"
    },
+   "sensor.n_i_n_a_site_longitude": {
+    "device_id": "hub",
+    "display_precision": 4,
+    "entity_id": "sensor.n_i_n_a_site_longitude",
+    "platform": "nina_astrophotography",
+    "translation_key": "site_longitude"
+   },
    "sensor.n_i_n_a_wait_ends_at": {
     "device_id": "hub",
     "entity_id": "sensor.n_i_n_a_wait_ends_at",
@@ -2020,6 +2027,13 @@
     },
     "state": "unknown"
    },
+   "sensor.n_i_n_a_site_longitude": {
+    "attributes": {
+     "friendly_name": "N.I.N.A. Site longitude",
+     "unit_of_measurement": "\u00b0"
+    },
+    "state": "unknown"
+   },
    "sensor.n_i_n_a_wait_ends_at": {
     "attributes": {
      "device_class": "timestamp",
@@ -2330,6 +2344,13 @@
     "platform": "nina_astrophotography",
     "translation_key": "site_latitude"
    },
+   "sensor.n_i_n_a_site_longitude": {
+    "device_id": "hub",
+    "display_precision": 4,
+    "entity_id": "sensor.n_i_n_a_site_longitude",
+    "platform": "nina_astrophotography",
+    "translation_key": "site_longitude"
+   },
    "sensor.n_i_n_a_wait_ends_at": {
     "device_id": "hub",
     "entity_id": "sensor.n_i_n_a_wait_ends_at",
@@ -2528,6 +2549,13 @@
    "sensor.n_i_n_a_site_latitude": {
     "attributes": {
      "friendly_name": "N.I.N.A. Site latitude",
+     "unit_of_measurement": "\u00b0"
+    },
+    "state": "unknown"
+   },
+   "sensor.n_i_n_a_site_longitude": {
+    "attributes": {
+     "friendly_name": "N.I.N.A. Site longitude",
      "unit_of_measurement": "\u00b0"
     },
     "state": "unknown"
@@ -3101,6 +3129,13 @@
     "platform": "nina_astrophotography",
     "translation_key": "site_latitude"
    },
+   "sensor.n_i_n_a_site_longitude": {
+    "device_id": "hub",
+    "display_precision": 4,
+    "entity_id": "sensor.n_i_n_a_site_longitude",
+    "platform": "nina_astrophotography",
+    "translation_key": "site_longitude"
+   },
    "sensor.n_i_n_a_wait_ends_at": {
     "device_id": "hub",
     "entity_id": "sensor.n_i_n_a_wait_ends_at",
@@ -3587,6 +3622,7 @@
         1671.5984427459177
        ],
        "equation": "y = 0.0003058854621319121 * x^2 + -1.4293365331583652 * x + 1671.5984427459177",
+       "judged": true,
        "name": "Quadratic",
        "r_squared": 0.9710548595560263
       },
@@ -3596,6 +3632,7 @@
         111.1161540435258
        ],
        "equation": "y = -0.04727009756935714 * x + 111.1161540435258",
+       "judged": true,
        "name": "LeftTrend",
        "r_squared": 0.9902518159347956
       },
@@ -3605,6 +3642,7 @@
         -131.29156185332315
        ],
        "equation": "y = 0.056162978412705115 * x + -131.29156185332315",
+       "judged": true,
        "name": "RightTrend",
        "r_squared": 0.9998991212499581
       }
@@ -4147,6 +4185,13 @@
      "unit_of_measurement": "\u00b0"
     },
     "state": "31.5478"
+   },
+   "sensor.n_i_n_a_site_longitude": {
+    "attributes": {
+     "friendly_name": "N.I.N.A. Site longitude",
+     "unit_of_measurement": "\u00b0"
+    },
+    "state": "-110.2977"
    },
    "sensor.n_i_n_a_wait_ends_at": {
     "attributes": {
@@ -4837,6 +4882,13 @@
     "platform": "nina_astrophotography",
     "translation_key": "site_latitude"
    },
+   "sensor.n_i_n_a_site_longitude": {
+    "device_id": "hub",
+    "display_precision": 4,
+    "entity_id": "sensor.n_i_n_a_site_longitude",
+    "platform": "nina_astrophotography",
+    "translation_key": "site_longitude"
+   },
    "sensor.n_i_n_a_wait_ends_at": {
     "device_id": "hub",
     "entity_id": "sensor.n_i_n_a_wait_ends_at",
@@ -5469,6 +5521,13 @@
    "sensor.n_i_n_a_site_latitude": {
     "attributes": {
      "friendly_name": "N.I.N.A. Site latitude",
+     "unit_of_measurement": "\u00b0"
+    },
+    "state": "unavailable"
+   },
+   "sensor.n_i_n_a_site_longitude": {
+    "attributes": {
+     "friendly_name": "N.I.N.A. Site longitude",
      "unit_of_measurement": "\u00b0"
     },
     "state": "unavailable"
@@ -6249,6 +6308,13 @@
     "entity_id": "sensor.n_i_n_a_site_latitude",
     "platform": "nina_astrophotography",
     "translation_key": "site_latitude"
+   },
+   "sensor.n_i_n_a_site_longitude": {
+    "device_id": "hub",
+    "display_precision": 4,
+    "entity_id": "sensor.n_i_n_a_site_longitude",
+    "platform": "nina_astrophotography",
+    "translation_key": "site_longitude"
    },
    "sensor.n_i_n_a_switch_cloud_cover_okta": {
     "device_id": "switch_device",
@@ -7066,6 +7132,13 @@
      "unit_of_measurement": "\u00b0"
     },
     "state": "51.07861"
+   },
+   "sensor.n_i_n_a_site_longitude": {
+    "attributes": {
+     "friendly_name": "N.I.N.A. Site longitude",
+     "unit_of_measurement": "\u00b0"
+    },
+    "state": "-0.29444"
    },
    "sensor.n_i_n_a_switch_cloud_cover_okta": {
     "attributes": {
@@ -7922,6 +7995,13 @@
     "platform": "nina_astrophotography",
     "translation_key": "site_latitude"
    },
+   "sensor.n_i_n_a_site_longitude": {
+    "device_id": "hub",
+    "display_precision": 4,
+    "entity_id": "sensor.n_i_n_a_site_longitude",
+    "platform": "nina_astrophotography",
+    "translation_key": "site_longitude"
+   },
    "sensor.n_i_n_a_switch_cloud_cover_okta": {
     "device_id": "switch_device",
     "entity_id": "sensor.n_i_n_a_switch_cloud_cover_okta",
@@ -8738,6 +8818,13 @@
      "unit_of_measurement": "\u00b0"
     },
     "state": "51.07861"
+   },
+   "sensor.n_i_n_a_site_longitude": {
+    "attributes": {
+     "friendly_name": "N.I.N.A. Site longitude",
+     "unit_of_measurement": "\u00b0"
+    },
+    "state": "-0.29444"
    },
    "sensor.n_i_n_a_switch_cloud_cover_okta": {
     "attributes": {
@@ -9594,6 +9681,13 @@
     "platform": "nina_astrophotography",
     "translation_key": "site_latitude"
    },
+   "sensor.n_i_n_a_site_longitude": {
+    "device_id": "hub",
+    "display_precision": 4,
+    "entity_id": "sensor.n_i_n_a_site_longitude",
+    "platform": "nina_astrophotography",
+    "translation_key": "site_longitude"
+   },
    "sensor.n_i_n_a_switch_cloud_cover_okta": {
     "device_id": "switch_device",
     "entity_id": "sensor.n_i_n_a_switch_cloud_cover_okta",
@@ -10389,6 +10483,13 @@
     },
     "state": "unavailable"
    },
+   "sensor.n_i_n_a_site_longitude": {
+    "attributes": {
+     "friendly_name": "N.I.N.A. Site longitude",
+     "unit_of_measurement": "\u00b0"
+    },
+    "state": "unavailable"
+   },
    "sensor.n_i_n_a_switch_cloud_cover_okta": {
     "attributes": {
      "friendly_name": "N.I.N.A. Switch Cloud cover (okta)",
@@ -11156,6 +11257,13 @@
     "platform": "nina_astrophotography",
     "translation_key": "site_latitude"
    },
+   "sensor.n_i_n_a_site_longitude": {
+    "device_id": "hub",
+    "display_precision": 4,
+    "entity_id": "sensor.n_i_n_a_site_longitude",
+    "platform": "nina_astrophotography",
+    "translation_key": "site_longitude"
+   },
    "sensor.n_i_n_a_wait_ends_at": {
     "device_id": "hub",
     "entity_id": "sensor.n_i_n_a_wait_ends_at",
@@ -11642,6 +11750,7 @@
         1671.5984427459177
        ],
        "equation": "y = 0.0003058854621319121 * x^2 + -1.4293365331583652 * x + 1671.5984427459177",
+       "judged": true,
        "name": "Quadratic",
        "r_squared": 0.9710548595560263
       },
@@ -11651,6 +11760,7 @@
         111.1161540435258
        ],
        "equation": "y = -0.04727009756935714 * x + 111.1161540435258",
+       "judged": true,
        "name": "LeftTrend",
        "r_squared": 0.9902518159347956
       },
@@ -11660,6 +11770,7 @@
         -131.29156185332315
        ],
        "equation": "y = 0.056162978412705115 * x + -131.29156185332315",
+       "judged": true,
        "name": "RightTrend",
        "r_squared": 0.9998991212499581
       }
@@ -12202,6 +12313,13 @@
      "unit_of_measurement": "\u00b0"
     },
     "state": "31.5478"
+   },
+   "sensor.n_i_n_a_site_longitude": {
+    "attributes": {
+     "friendly_name": "N.I.N.A. Site longitude",
+     "unit_of_measurement": "\u00b0"
+    },
+    "state": "-110.2977"
    },
    "sensor.n_i_n_a_wait_ends_at": {
     "attributes": {
@@ -12892,6 +13010,13 @@
     "platform": "nina_astrophotography",
     "translation_key": "site_latitude"
    },
+   "sensor.n_i_n_a_site_longitude": {
+    "device_id": "hub",
+    "display_precision": 4,
+    "entity_id": "sensor.n_i_n_a_site_longitude",
+    "platform": "nina_astrophotography",
+    "translation_key": "site_longitude"
+   },
    "sensor.n_i_n_a_wait_ends_at": {
     "device_id": "hub",
     "entity_id": "sensor.n_i_n_a_wait_ends_at",
@@ -13378,6 +13503,7 @@
         1671.5984427459177
        ],
        "equation": "y = 0.0003058854621319121 * x^2 + -1.4293365331583652 * x + 1671.5984427459177",
+       "judged": true,
        "name": "Quadratic",
        "r_squared": 0.9710548595560263
       },
@@ -13387,6 +13513,7 @@
         111.1161540435258
        ],
        "equation": "y = -0.04727009756935714 * x + 111.1161540435258",
+       "judged": true,
        "name": "LeftTrend",
        "r_squared": 0.9902518159347956
       },
@@ -13396,6 +13523,7 @@
         -131.29156185332315
        ],
        "equation": "y = 0.056162978412705115 * x + -131.29156185332315",
+       "judged": true,
        "name": "RightTrend",
        "r_squared": 0.9998991212499581
       }
@@ -13938,6 +14066,13 @@
      "unit_of_measurement": "\u00b0"
     },
     "state": "31.5478"
+   },
+   "sensor.n_i_n_a_site_longitude": {
+    "attributes": {
+     "friendly_name": "N.I.N.A. Site longitude",
+     "unit_of_measurement": "\u00b0"
+    },
+    "state": "-110.2977"
    },
    "sensor.n_i_n_a_wait_ends_at": {
     "attributes": {

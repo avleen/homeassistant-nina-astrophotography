@@ -6,8 +6,38 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 
 ## [Unreleased]
 
+### Fixed
+
+- **An autofocus run is judged only on the curves its fitting uses** (#201).
+  `binary_sensor.<instance>_focuser_autofocus_failed` compares the profile's
+  R² threshold with those curves alone, so a trend line beside a
+  `HYPERBOLIC` fit does not fail the run, and a contrast-detection run is not
+  gated on R². The autofocus card marks the other curves `not judged`.
+
+## [2.4.1] - 2026-11-05
+
+### Fixed
+
+- **The integration sets up on Home Assistant 2026.11.** Setup failed on
+  that release with
+  `TypeError: unsupported operand type(s) for |: 'DeviceInfo' and 'dict'`.
+
+## [2.4.0] - 2026-11-05
+
 ### Added
 
+- **`sensor.<instance>_site_longitude`** reports the longitude N.I.N.A. is
+  configured for, beside the site latitude, so a rig hosted away from Home
+  Assistant can have its own sun placed.
+- **The imaging stall alert has quiet hours,** for a rig that is shut down
+  by day. `mute_mode` mutes new alerts, the unreachable one included,
+  between two fixed times or while the sun is up: from when the rising sun
+  passes `mute_morning_altitude` until the setting sun drops below
+  `mute_evening_altitude`. A rig still unreachable when the window closes
+  is reported then. The default is off.
+- **The imaging stall alert can place the sun at the rig.** Wire its
+  optional site latitude and longitude inputs, and both `night_only` and the
+  sun quiet hours follow the rig's sky instead of Home Assistant's.
 - **`binary_sensor.<instance>_mount_meridian_flip`** is `on` while N.I.N.A.
   is in a meridian flip, including the wait before the slew, when it turns
   tracking off and the countdown reads `unknown`. Its `slews_at` attribute
@@ -29,6 +59,17 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 
 ### Fixed
 
+- **The imaging stall alert waits for the rig to be let work.** Its quiet
+  clock starts at the latest of the sequencer starting, conditions turning
+  safe, the sun setting and the quiet hours ending. A rig started before
+  dusk that waited out the twilight under a closed roof was reported stalled
+  the minute its safety monitor turned safe.
+- **The imaging stall alert names only tonight's error.** An error from
+  before the sequence started is left out of the message.
+- **A profile whose site was never set reports no site.** Latitude and
+  longitude of exactly 0°, 0° read `unknown` rather than a point in the Gulf
+  of Guinea, so the sky map falls back to Home Assistant's latitude and the
+  stall alert's sun gates to Home Assistant's location.
 - **The sky map's compass letters match the sky it draws.** The map drew north
   at the bottom under the N at the top, so the scope, the stars and the flip
   label all sat under the opposite letter. It is now a sky chart held

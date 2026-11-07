@@ -607,6 +607,24 @@ def test_the_profile_allowlist_maps_from_its_nested_sections() -> None:
     )
 
 
+@pytest.mark.synthetic
+@pytest.mark.parametrize(
+    ("site", "mapped"),
+    [
+        ((0, 0), (None, None)),
+        ((0, -110.2977), (0.0, -110.2977)),
+        ((31.5478, 0), (31.5478, 0.0)),
+    ],
+    ids=["unset", "on-the-equator", "on-the-meridian"],
+)
+def test_a_site_of_zero_zero_is_no_site(site, mapped) -> None:
+    latitude, longitude = site
+    profile = map_profile(
+        {"AstrometrySettings": {"Latitude": latitude, "Longitude": longitude}}
+    )
+    assert (profile.site_latitude, profile.site_longitude) == mapped
+
+
 def test_the_dome_interlocks_map_from_a_captured_profile() -> None:
     """The simulator rig's profile."""
     profile = map_profile(load("simulator_dome_parked_profile.json"))
@@ -628,9 +646,8 @@ def test_an_absent_profile_section_is_no_reading() -> None:
 @pytest.mark.parametrize(
     ("field", "expected"),
     [
-        # N.I.N.A. computes an R² only for the fittings a run used and sends
-        # "NaN" for the rest, so the minimum of what survives is the worst fit
-        # computed and no fitting-to-R² table has to be guessed at.
+        # This TRENDPARABOLIC run judges its quadratic and both trend lines, and
+        # its "NaN" Hyperbolic is no reading. The quadratic is the worst of them.
         ("r_squared", pytest.approx(0.9710548595560263)),
         # `CalculatedFocusPoint` is the fitted minimum, not the run's start.
         ("position", 2340),
@@ -821,8 +838,8 @@ def test_a_fitted_curve_is_published_as_coefficients() -> None:
 
 
 def test_each_fit_keeps_its_own_r_squared() -> None:
-    """`AutoFocusReport.r_squared` is the worst fit of the run, which is right
-    for a threshold and cannot label an individual line in a chart legend.
+    """`AutoFocusReport.r_squared` is the worst judged fit, which is right for
+    a threshold and cannot label an individual line in a chart legend.
     """
     fits = {
         f.name: f.r_squared
@@ -835,6 +852,61 @@ def test_each_fit_keeps_its_own_r_squared() -> None:
             "RightTrend": 0.9998991212499581,
         }
     )
+
+
+@pytest.mark.synthetic
+@pytest.mark.parametrize(
+    ("fitting", "judged", "worst"),
+    [
+        ("TRENDLINES", {"LeftTrend", "RightTrend"}, 0.2),
+        ("PARABOLIC", {"Quadratic"}, 0.6),
+        ("TRENDPARABOLIC", {"Quadratic", "LeftTrend", "RightTrend"}, 0.2),
+        ("HYPERBOLIC", {"Hyperbolic"}, 0.988),
+        ("TRENDHYPERBOLIC", {"Hyperbolic", "LeftTrend", "RightTrend"}, 0.2),
+        ("GAUSSIAN", set(), None),
+        (
+            "A FUTURE FITTING",
+            {"Hyperbolic", "Quadratic", "LeftTrend", "RightTrend"},
+            0.2,
+        ),
+    ],
+)
+def test_only_the_curves_a_fitting_uses_are_judged(
+    fitting: str, judged: set[str], worst: float | None
+) -> None:
+    """A hyperbolic run with a 0.000 trend line completes and is applied, and
+    a contrast-detection run, written GAUSSIAN, is not gated on R² at all.
+    """
+    report = _autofocus(
+        dict(
+            load("imaging_guiding_last_af.json"),
+            Fitting=fitting,
+            Fittings=dict.fromkeys(
+                ("Hyperbolic", "Quadratic", "LeftTrend", "RightTrend"), "y = 1 * x"
+            ),
+            RSquares={
+                "Hyperbolic": 0.988,
+                "Quadratic": 0.6,
+                "LeftTrend": 0.9,
+                "RightTrend": 0.2,
+            },
+        )
+    )
+    assert report.r_squared == worst
+    assert {fit.name for fit in report.fits if fit.judged} == judged
+
+
+@pytest.mark.synthetic
+def test_a_judged_fit_with_no_r_squared_leaves_nothing_to_judge() -> None:
+    """A computed trend line must not stand in for the curve the run used."""
+    report = _autofocus(
+        dict(
+            load("imaging_guiding_last_af.json"),
+            Fitting="HYPERBOLIC",
+            RSquares={"Hyperbolic": "NaN", "LeftTrend": 0.9, "RightTrend": 0.0},
+        )
+    )
+    assert report.r_squared is None
 
 
 def test_a_fitting_this_run_did_not_use_is_not_published() -> None:
