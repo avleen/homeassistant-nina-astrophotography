@@ -138,6 +138,8 @@ reading moved inside a scenario state, not an event list built in the test.
 
 - One behaviour per test. If a test needs a paragraph to explain what it proves,
   it is testing too much.
+- **A bug a user sees on an entity gets a test through that entity** in
+  `tests/ha/`, not only one on the function that caused it.
 - **Do not test the standard library or third-party packages.** No tests that
   `json.loads` parses JSON, that `aiohttp` performs HTTP, that
   `dataclasses.frozen` prevents assignment, or that Home Assistant's own
