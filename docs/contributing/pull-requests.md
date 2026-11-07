@@ -23,6 +23,10 @@
   its squash SHA goes into `.git-blame-ignore-revs` after it merges. Git never
   sees a squashed branch as merged (`--merged`, `git cherry`), so check the
   PR's state before `git branch -D`.
+- **Every PR a user would notice adds a `CHANGELOG.md` entry** under
+  `## [Unreleased]`, in `Added`, `Changed` or `Fixed`: a bold lead sentence,
+  then the issue or PR number. State what is true now, not what changed — no
+  "no longer" or "now". Start the section if a release has just closed it.
 - **A release** bumps `version` in `manifest.json`, `pyproject.toml` and
   `uv.lock` and each card's `VERSION`, and dates its CHANGELOG section, then
   tags `v<version>` on `main` and publishes a GitHub release from it — HACS
