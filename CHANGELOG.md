@@ -6,6 +6,12 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 
 ## [Unreleased]
 
+### Added
+
+- **The integration names its category in the Marketplace** (#250):
+  `computers_network`. `hacs.json` carries only the keys the
+  Marketplace reads, `name` and `homeassistant`.
+
 ### Changed
 
 - **The quality-scale register matches Home Assistant's current rules**
