@@ -6,9 +6,22 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 
 ## [Unreleased]
 
+### Added
+
+- **The weather card can leave out the sky brightness cell** (#212), with
+  `show_sky_brightness: false` or the switch in its editor. A station that
+  measures only whole lux reads `0 lx` all night, since a dark sky is about
+  0.001 lx (#117).
+
 ### Changed
 
-- **The reference covers a contrast-detection autofocus run** (#PR):
+- **The weather card leaves out a reading it has no entity for** (#212): one
+  disabled in Home Assistant, or a channel the station never reports, such as
+  cloud cover on a station without a cloud sensor. The wind section is left
+  out when none of speed, gust or direction has an entity, and a station with
+  nothing to show says so. A reading that is only `unknown` or `unavailable`
+  still shows `—`.
+- **The reference covers a contrast-detection autofocus run** (#208):
   `autofocus_r2` reads `unknown` and every fit is `judged: false`, since no
   R² threshold applies to one. The synthetic `HYPERBOLIC` test run carries a
   hyperbolic curve beside its R².
