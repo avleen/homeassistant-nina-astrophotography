@@ -8,6 +8,14 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 
 ### Changed
 
+- **The quality-scale register matches Home Assistant's current rules**
+  (#244). `dependency-transparency` is exempt, since the integration has no
+  external dependencies. `log-when-unavailable` is not yet met: an outage is
+  logged at `warning` rather than `info`, and the event socket logs every
+  failed reconnect. `reauthentication-flow`'s exemption holds for the
+  supported 2.2.x Advanced API plugin. The design doc's §10 lists the same
+  rules as `quality_scale.yaml`, and `CLAUDE.md` and the contributor docs
+  match the code they describe.
 - **N.I.N.A. is polled every 10 seconds, and the poll interval is not a
   setting** (#232), so saving **Configure** cannot reset one. An interval an
   entry was set up or configured with is dropped when Home Assistant starts.
