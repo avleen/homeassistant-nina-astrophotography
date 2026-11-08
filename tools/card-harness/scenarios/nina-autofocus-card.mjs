@@ -11,6 +11,11 @@ import { rig } from "../hass.mjs";
 
 const UP = "site_configured";
 const VERDICT = "binary_sensor.n_i_n_a_focuser_autofocus_failed";
+const RUN = "sensor.n_i_n_a_focuser_last_autofocus";
+const POSITION = "sensor.n_i_n_a_focuser_autofocus_position";
+const FOCUSER = "number.n_i_n_a_focuser_position";
+const HFR = "sensor.n_i_n_a_focuser_autofocus_hfr";
+const STARTING_HFR = "sensor.n_i_n_a_focuser_autofocus_starting_hfr";
 
 // `override` replaces an attribute map wholesale, so a verdict is patched onto
 // the rig's own: the profile's R² threshold stays whatever the capture holds,
@@ -19,6 +24,132 @@ const verdict = (dump, changes) => ({
   ...dump[UP].states[VERDICT].attributes,
   ...changes,
 });
+
+// One of the run's captured minima, which a HYPERBOLIC focus point is not
+// built from: the trend-line intersection, or the quadratic minimum built-in
+// N.I.N.A. also reports.
+const unused = (dump, name) => ({
+  ...dump[UP].states[RUN].attributes.minima.find((minimum) => minimum.name === name),
+  used: false,
+});
+
+// A hyperbolic fit as each autofocuser writes it, and as the integration
+// publishes it parsed. The parameters are invented, the forms are not: Hocus
+// Focus's symmetric model and built-in N.I.N.A.'s, each placing the minimum at
+// 1.80 on 2336, which sits a little above the sweep's lowest two points.
+const HOCUS_HYPERBOLA = {
+  name: "Hyperbolic",
+  equation: "y = 2.8/48 * √((x - 2336)² + 48²) + -1",
+  coefficients: null,
+  hyperbola: {
+    x0: 2336, y0: -1, a: 2.8, b: 48, c: 48, slope: 0, blend: null, blend_width: null,
+  },
+  gaussian: null,
+  r_squared: 0.988,
+  judged: true,
+};
+const BUILT_IN_HYPERBOLA = {
+  ...HOCUS_HYPERBOLA,
+  equation: "y = 1.8 * cosh(asinh((2336 - x) / 34.4))",
+  hyperbola: {
+    x0: 2336, y0: 0, a: 1.8, b: 34.4, c: 34.4, slope: 0, blend: null, blend_width: null,
+  },
+};
+
+// The fitting, R²s, verdict and focus point are invented: no capture holds a
+// hyperbolic run. The focus point is the hyperbola's minimum, where a
+// HYPERBOLIC run puts it, and the hyperbolic minimum sits on it too. The fits
+// and the trend-line intersection are otherwise the captured ones, judged and
+// used as that fitting would. Hocus Focus computes only the trend lines and the
+// hyperbola on such a run, so it reports no quadratic minimum; the captured
+// quadratic fit stays in `fits` all the same. `changes` lands on the run's
+// attributes.
+const hyperbolic = (dump, hyperbola = HOCUS_HYPERBOLA, changes = {}) => {
+  const run = dump[UP].states[RUN].attributes;
+  return rig(dump, UP)
+    .override(RUN, dump[UP].states[RUN].state, {
+      ...run,
+      fitting: "HYPERBOLIC",
+      fitted_hfr: 1.8,
+      fits: [
+        ...run.fits.map((fit) => ({
+          ...fit,
+          judged: false,
+          r_squared: fit.name === "RightTrend" ? 0 : fit.r_squared,
+        })),
+        hyperbola,
+      ],
+      minima: [
+        unused(dump, "TrendLineIntersection"),
+        { name: "HyperbolicMinimum", position: 2336, value: 1.8, used: true },
+      ],
+      ...changes,
+    })
+    .override(POSITION, 2336)
+    .override(VERDICT, "off", verdict(dump, { r_squared: 0.988, reason: null }));
+};
+
+// The same run as built-in N.I.N.A. reports it, which is its own hyperbola,
+// all four minima in its own order, and "NINA" as both autofocuser and star
+// detector. Derived: the hyperbolic minimum is the hyperbola's own vertex, and
+// the gaussian maximum is a guess — built-in N.I.N.A. fits a gaussian to an
+// HFR sweep too, and no capture shows where it lands; here, up the right arm.
+// Its gaussian fit is left out of `fits` rather than given invented
+// parameters.
+const builtIn = (dump) => hyperbolic(dump, BUILT_IN_HYPERBOLA, {
+  autofocuser: "NINA",
+  star_detector: "NINA",
+  minima: [
+    unused(dump, "TrendLineIntersection"),
+    { name: "HyperbolicMinimum", position: 2336, value: 1.8, used: true },
+    unused(dump, "QuadraticMinimum"),
+    { name: "GaussianMaximum", position: 2475, value: 7.6, used: false },
+  ],
+});
+
+// A contrast-detection run, which focuses at the gaussian maximum. No capture
+// holds one, so it is derived from the captured sweep: each HFR becomes a
+// contrast score of 1/HFR², which peaks where the stars are smallest, its
+// spread carried through the same transform. As Hocus Focus does, it reports
+// the trend-line intersection beside the gaussian maximum; both minima, the
+// focus point and the gaussian's parameters are invented, the last in the form
+// N.I.N.A. writes and peaking at 0.43 on 2343. The trend lines' equations are
+// left out rather than invented too. The HFR readings are unknown, as the
+// integration publishes them for this method.
+const contrast = (dump) => {
+  const run = dump[UP].states[RUN].attributes;
+  return rig(dump, UP)
+    .override(RUN, dump[UP].states[RUN].state, {
+      ...run,
+      method: "CONTRASTDETECTION",
+      fitting: "GAUSSIAN",
+      fitted_hfr: null,
+      curve: run.curve.map((point) => ({
+        ...point,
+        value: 1 / point.value ** 2,
+        error: (2 * point.error) / point.value ** 3,
+      })),
+      fits: [
+        {
+          name: "Gaussian",
+          equation: "y = 0.405 * exp(-1 * (x - 2343) * (x - 2343) / (2 * 31.6 * 31.6)) + 0.025",
+          coefficients: null,
+          hyperbola: null,
+          gaussian: { amplitude: 0.405, mean: 2343, sigma: 31.6, offset: 0.025 },
+          r_squared: null,
+          judged: false,
+        },
+      ],
+      minima: [
+        { name: "TrendLineIntersection", position: 2344, value: 0.52, used: false },
+        { name: "GaussianMaximum", position: 2343, value: 0.43, used: true },
+      ],
+    })
+    .override(POSITION, 2343)
+    .override(HFR, "unknown")
+    .override(STARTING_HFR, "unknown")
+    .override(VERDICT, "off", verdict(dump, { r_squared: null, reason: null }));
+};
 
 export const scenarios = {
   // Every id resolved, and a run that passed.
@@ -42,6 +173,65 @@ export const scenarios = {
         .override(VERDICT, "on", verdict(dump, { r_squared: 0.42, reason: "rejected" }))
         .build(),
   },
+
+  // A run whose fit put focus outside the positions it measured, which fails
+  // whatever its R² — so the captured 0.971 stays and passes. No capture holds
+  // one: the focus point is moved a step past the sweep's 2492, and the
+  // focuser is back at the run's 2352 start, where a discarded run leaves it.
+  out_of_range: {
+    hass: (dump) =>
+      rig(dump, UP)
+        .override(POSITION, 2527)
+        .override(FOCUSER, 2352)
+        .override(VERDICT, "on", verdict(dump, { reason: "out_of_range" }))
+        .build(),
+  },
+
+  // A profile with N.I.N.A.'s R² check off, which the integration publishes as
+  // a null threshold: no fit was judged, though the minima the focus point
+  // came from were still used. Only the threshold changes; the captured run
+  // passed, so the verdict stays off.
+  r_squared_check_off: {
+    hass: (dump) =>
+      rig(dump, UP)
+        .override(VERDICT, "off", verdict(dump, { r_squared_threshold: null }))
+        .build(),
+  },
+
+  // No verdict entity at all, as when it is disabled: no threshold to read,
+  // and nothing to say the check was off, so the fits keep their own `judged`.
+  no_verdict: {
+    hass: (dump) => rig(dump, UP).without("focuser_autofocus_failed").build(),
+  },
+
+  // A hyperbolic run that passed beside a trend line scoring 0.000.
+  hyperbolic: { hass: (dump) => hyperbolic(dump).build() },
+
+  // The same run with no starting HFR to compare against, which is the one
+  // place the card prints the fitted HFR: the hyperbola's 1.80.
+  hyperbolic_unmeasured_start: {
+    hass: (dump) => hyperbolic(dump).without("focuser_autofocus_starting_hfr").build(),
+  },
+
+  // A hyperbola in a form the integration does not parse, which arrives with
+  // every parameter null: the legend lists it, muted and "not plotted", and
+  // the chart draws no curve for it. The form is the clamp triple early Hocus
+  // Focus 3 releases wrote for Uneven Blend, over the same parameters.
+  hyperbolic_unrecognised: {
+    hass: (dump) => hyperbolic(dump, {
+      ...HOCUS_HYPERBOLA,
+      equation: "y = { 0, (2336 - x) / 35, 1 } * 2.8/48 * √((x - 2336)² + 48²)"
+        + " + { 0, (x - 2336) / 35, 1 } * 2.8/48 * √((x - 2336)² + 48²) + -1",
+      hyperbola: null,
+    }).build(),
+  },
+
+  // The four minima built-in N.I.N.A. reports whatever it fitted, only one of
+  // which this fitting uses.
+  hyperbolic_built_in: { hass: (dump) => builtIn(dump).build() },
+
+  // A contrast-detection run, whose focus point is the gaussian maximum.
+  contrast: { hass: (dump) => contrast(dump).build() },
 
   // A hung run wrote no report, so the curve below the banner is an earlier
   // run's — which is the one thing the banner has to say.

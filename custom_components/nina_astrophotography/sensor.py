@@ -51,7 +51,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import derive
-from .api.models import Frame, ShutterState, TargetBreakdown
+from .api.models import Frame, ShutterState, TargetBreakdown, WeatherModel
 from .const import DOMAIN
 from .coordinator import NinaConfigEntry, NinaCoordinator, NinaData
 from .device import channel_key, channels_for, read_field
@@ -176,7 +176,13 @@ def _autofocus_run(data: NinaData) -> Mapping[str, Any]:
     detector are not). `curve` is the V a card plots, one row per position,
     `value` None where that frame measured nothing. `fits` and `minima` are
     the overlay N.I.N.A.'s chart draws, which a card cannot re-derive: which
-    points each fit used is undocumented.
+    points each fit used is undocumented. A fit carries `coefficients`,
+    `hyperbola` or `gaussian` to evaluate it by, or none of them for an
+    equation in a form the mapper does not know. A fit's `judged` says whether
+    its R² counts toward the verdict; a minimum's `used`, whether the focus
+    point is built from it. A contrast run's gaussian is used but not judged.
+    `fitted_hfr` is carried here because its sensor ships disabled, and a
+    card cannot derive it from `minima`.
     """
     report = data.autofocus_report
     if report is None:
@@ -187,6 +193,7 @@ def _autofocus_run(data: NinaData) -> Mapping[str, Any]:
         "autofocuser": report.autofocuser,
         "star_detector": report.star_detector,
         "measured_points": report.measured_points,
+        "fitted_hfr": report.fitted_hfr,
         "curve": [asdict(point) for point in report.curve],
         "fits": [asdict(fit) for fit in report.fits],
         "minima": [asdict(minimum) for minimum in report.minima],
@@ -243,6 +250,7 @@ def _recent_lights(data: NinaData) -> tuple[Mapping[str, Any], ...]:
             "hfr": frame.hfr,
             "stars": frame.stars,
             "mean": frame.mean,
+            "max": frame.max,
         }
         for frame in data.session.recent_lights
     )
@@ -408,6 +416,17 @@ SESSION: tuple[NinaSensorDescription, ...] = (
         # disabled entity. No `state_class`: the site does not move.
         kind=None,
         value=lambda data: data.profile.site_latitude,
+    ),
+    NinaSensorDescription(
+        key="site_longitude",
+        translation_key="site_longitude",
+        native_unit_of_measurement=DEGREE,
+        suggested_display_precision=4,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        # Enabled: with the latitude, it places the sun for a rig hosted far
+        # from Home Assistant, and a disabled entity has no state to read.
+        kind=None,
+        value=lambda data: data.profile.site_longitude,
     ),
 )
 
@@ -598,8 +617,8 @@ EQUIPMENT: tuple[NinaSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         kind="focuser",
-        # The fit's minimum, which N.I.N.A. moved to: an artifact of the curve
-        # fitting, often far below any frame the camera measured.
+        # The focus point the fitting chose: an artifact of the curve fitting,
+        # far below any frame the camera measured wherever trend lines enter it.
         value=_autofocus("fitted_hfr"),
     ),
     NinaSensorDescription(
@@ -652,8 +671,8 @@ EQUIPMENT: tuple[NinaSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         kind="focuser",
-        # The run's worst fit. `autofocus_failed` judges it against the
-        # profile's threshold.
+        # The worst of the curves the run's fitting uses. `autofocus_failed`
+        # judges it against the profile's threshold.
         value=_autofocus("r_squared"),
     ),
     NinaSensorDescription(
@@ -798,10 +817,25 @@ FLATS: tuple[NinaSensorDescription, ...] = (
 DESCRIPTIONS: tuple[NinaSensorDescription, ...] = SESSION + EQUIPMENT + FLATS
 
 
+def _reading(weather: WeatherModel | None, key: str) -> float | None:
+    """The source's reading of one channel.
+
+    A source that reads temperature and humidity but not dew point gets the
+    dew point derived from them; its own reading wins whenever it has one.
+    """
+    if weather is None:
+        return None
+    reading = weather.channels.get(key)
+    if reading is None and key == "dew_point":
+        return derive.dew_point(
+            weather.channels.get("temperature"), weather.channels.get("humidity")
+        )
+    return reading
+
+
 def _channel(key: str) -> Callable[[NinaData], float | None]:
     def value(data: NinaData) -> float | None:
-        weather = data.snapshot.weather
-        return None if weather is None else weather.channels.get(key)
+        return _reading(data.snapshot.weather, key)
 
     return value
 
@@ -973,7 +1007,7 @@ class NinaWeatherSensor(NinaSensor):
         device_id = weather.meta.device_id
         if device_id is None or device_id == self._established_by:
             return
-        if weather.channels.get(self.entity_description.key) is None:
+        if _reading(weather, self.entity_description.key) is None:
             return
         self._established_by = device_id
         er.async_get(self.hass).async_update_entity_options(
@@ -988,7 +1022,7 @@ class NinaWeatherSensor(NinaSensor):
         # Without a reading, available only if the active source established
         # the channel: otherwise it cannot produce one at all.
         return (
-            weather.channels.get(self.entity_description.key) is not None
+            _reading(weather, self.entity_description.key) is not None
             or self._established_by == weather.meta.device_id
         )
 
@@ -1065,8 +1099,7 @@ async def async_setup_entry(
         weather = data.snapshot.weather
         for description in WEATHER_CHANNELS:
             key = description.key
-            reading = None if weather is None else weather.channels.get(key)
-            if key in established or reading is not None:
+            if key in established or _reading(weather, key) is not None:
                 yield (
                     key,
                     partial(

@@ -1,8 +1,15 @@
 """wire → models. Every sentinel, timezone and quirk dies in this module."""
 
+from collections.abc import Callable
 from datetime import timedelta
+from operator import attrgetter
 
-from nina_astrophotography.api.models import AutoFocusReport
+from nina_astrophotography.api.models import (
+    AutoFocusReport,
+    CurveFit,
+    Gaussian,
+    Hyperbola,
+)
 from nina_astrophotography.api.v2.mapper import (
     map_equipment_info,
     map_event,
@@ -607,6 +614,38 @@ def test_the_profile_allowlist_maps_from_its_nested_sections() -> None:
     )
 
 
+@pytest.mark.synthetic
+@pytest.mark.parametrize(
+    ("site", "mapped"),
+    [
+        ((0, 0), (None, None)),
+        ((0, -110.2977), (0.0, -110.2977)),
+        ((31.5478, 0), (31.5478, 0.0)),
+    ],
+    ids=["unset", "on-the-equator", "on-the-meridian"],
+)
+def test_a_site_of_zero_zero_is_no_site(site, mapped) -> None:
+    latitude, longitude = site
+    profile = map_profile(
+        {"AstrometrySettings": {"Latitude": latitude, "Longitude": longitude}}
+    )
+    assert (profile.site_latitude, profile.site_longitude) == mapped
+
+
+@pytest.mark.synthetic
+@pytest.mark.parametrize(
+    ("wire", "mapped"),
+    [(0.05, 0.05), (0, None), (-0.5, None)],
+    ids=["gated", "zero", "negative"],
+)
+def test_an_r_squared_threshold_of_zero_or_below_is_no_threshold(wire, mapped) -> None:
+    """N.I.N.A. and Hocus Focus check R² only against a threshold above 0. An
+    R² can be negative, so 0 is not a threshold every fit passes.
+    """
+    profile = map_profile({"FocuserSettings": {"RSquaredThreshold": wire}})
+    assert profile.r_squared_threshold == mapped
+
+
 def test_the_dome_interlocks_map_from_a_captured_profile() -> None:
     """The simulator rig's profile."""
     profile = map_profile(load("simulator_dome_parked_profile.json"))
@@ -628,16 +667,15 @@ def test_an_absent_profile_section_is_no_reading() -> None:
 @pytest.mark.parametrize(
     ("field", "expected"),
     [
-        # N.I.N.A. computes an R² only for the fittings a run used and sends
-        # "NaN" for the rest, so the minimum of what survives is the worst fit
-        # computed and no fitting-to-R² table has to be guessed at.
+        # This TRENDPARABOLIC run judges its quadratic and both trend lines, and
+        # its "NaN" Hyperbolic is no reading. The quadratic is the worst of them.
         ("r_squared", pytest.approx(0.9710548595560263)),
         # `CalculatedFocusPoint` is the fitted minimum, not the run's start.
         ("position", 2340),
         ("filter_name", "L"),
-        # `CalculatedFocusPoint.Value` is not an achieved HFR: under a TREND*
-        # fitting it is the mean of the trendline intersection and the quadratic
-        # minimum. The lowest measured point is what compares across fittings.
+        # `CalculatedFocusPoint.Value` is not an achieved HFR: under this
+        # TRENDPARABOLIC fitting it is the mean of the trendline intersection
+        # and the quadratic minimum. The lowest measured point is what compares across fittings.
         ("hfr", pytest.approx(1.55229727412562)),
         ("fitted_hfr", pytest.approx(1.0932570683996303)),
         # `InitialFocusPoint` is where the focuser was before the run: the other
@@ -705,6 +743,91 @@ def test_a_focus_point_of_zero_is_no_measurement() -> None:
     assert _autofocus(wire).initial_hfr is None
 
 
+def _focused_at(position: float | str, **changes: object) -> dict:
+    """The captured report, its fitted focus point moved to `position`."""
+    wire = load("imaging_guiding_last_af.json")
+    return dict(
+        wire,
+        CalculatedFocusPoint={**wire["CalculatedFocusPoint"], "Position": position},
+        **changes,
+    )
+
+
+def _minimum_at(position: float) -> dict:
+    """The captured report, its quadratic minimum moved to `position`."""
+    wire = load("imaging_guiding_last_af.json")
+    minima = wire["Intersections"]
+    return dict(
+        wire,
+        Intersections={
+            **minima,
+            "QuadraticMinimum": {**minima["QuadraticMinimum"], "Position": position},
+        },
+    )
+
+
+def _quadratic_minimum(report: AutoFocusReport) -> int:
+    return next(m.position for m in report.minima if m.name == "QuadraticMinimum")
+
+
+@pytest.mark.synthetic
+@pytest.mark.parametrize(
+    ("wire", "read", "rounded"),
+    [
+        (_focused_at(2340.5), attrgetter("position"), 2340),
+        (_focused_at(2341.5), attrgetter("position"), 2342),
+        (_focused_at(2340.6), attrgetter("position"), 2341),
+        (_minimum_at(2341.5), _quadratic_minimum, 2342),
+    ],
+    ids=["half down", "half up", "past half", "a fit's minimum"],
+)
+def test_a_fitted_position_rounds_as_the_autofocuser_does(
+    wire: dict, read: Callable[[AutoFocusReport], int], rounded: int
+) -> None:
+    """N.I.N.A.'s fittings round their own positions, but Hocus Focus
+    reports a hyperbola's minimum unrounded and moves to `Math.Round` of it,
+    which rounds half to even.
+    """
+    assert read(_autofocus(wire)) == rounded
+
+
+@pytest.mark.synthetic
+@pytest.mark.parametrize(
+    ("autofocuser", "method", "position", "outside"),
+    [
+        ("Hocus Focus", "STARHFR", 2527, True),
+        ("Hocus Focus", "STARHFR", 2211, True),
+        # The sweep's ends are inside it.
+        ("Hocus Focus", "STARHFR", 2492, False),
+        ("Hocus Focus", "STARHFR", 2212, False),
+        # Judged once rounded.
+        ("Hocus Focus", "STARHFR", 2492.5, False),
+        ("Hocus Focus", "STARHFR", 2492.6, True),
+        # N.I.N.A. checks every method; Hocus Focus only STARHFR.
+        ("NINA", "CONTRASTDETECTION", 2527, True),
+        ("Hocus Focus", "CONTRASTDETECTION", 2527, False),
+    ],
+)
+def test_a_focus_point_outside_the_sweep_is_flagged(
+    autofocuser: str, method: str, position: float, outside: bool
+) -> None:
+    """No capture holds a run whose fit left its 2212–2492 sweep."""
+    wire = _focused_at(position, AutoFocuserName=autofocuser, Method=method)
+    assert _autofocus(wire).outside_sweep is outside
+
+
+@pytest.mark.synthetic
+@pytest.mark.parametrize(
+    "wire",
+    [_focused_at(2527, MeasurePoints=[]), _focused_at("NaN")],
+    ids=["no sweep", "no focus point"],
+)
+def test_a_report_missing_its_sweep_or_focus_point_is_not_outside_it(
+    wire: dict,
+) -> None:
+    assert _autofocus(wire).outside_sweep is False
+
+
 def test_the_autofocus_curve_ascends_in_focuser_position() -> None:
     """A plot needs monotonic x, and the report does not state its own order."""
     curve = _autofocus(load("imaging_guiding_last_af.json")).curve
@@ -770,6 +893,16 @@ def test_only_the_positions_that_measured_something_are_counted(
 
 
 @pytest.mark.synthetic
+def test_a_position_that_measured_nothing_bounds_the_sweep(
+    failed_sweep_point,
+) -> None:
+    """The focus point, 2340, lies inside 2317-2352 only because the starless
+    2317 counts: both autofocusers bound the sweep by every position visited.
+    """
+    assert failed_sweep_point.outside_sweep is False
+
+
+@pytest.mark.synthetic
 def test_a_failed_sweep_point_is_not_the_best_hfr(failed_sweep_point) -> None:
     """The headline HFR is a minimum over the curve, so a frame that measured
     nothing must not read as the sharpest focus the run achieved.
@@ -821,8 +954,8 @@ def test_a_fitted_curve_is_published_as_coefficients() -> None:
 
 
 def test_each_fit_keeps_its_own_r_squared() -> None:
-    """`AutoFocusReport.r_squared` is the worst fit of the run, which is right
-    for a threshold and cannot label an individual line in a chart legend.
+    """`AutoFocusReport.r_squared` is the worst judged fit, which is right for
+    a threshold and cannot label an individual line in a chart legend.
     """
     fits = {
         f.name: f.r_squared
@@ -837,6 +970,61 @@ def test_each_fit_keeps_its_own_r_squared() -> None:
     )
 
 
+@pytest.mark.synthetic
+@pytest.mark.parametrize(
+    ("fitting", "judged", "worst"),
+    [
+        ("TRENDLINES", {"LeftTrend", "RightTrend"}, 0.2),
+        ("PARABOLIC", {"Quadratic"}, 0.6),
+        ("TRENDPARABOLIC", {"Quadratic", "LeftTrend", "RightTrend"}, 0.2),
+        ("HYPERBOLIC", {"Hyperbolic"}, 0.988),
+        ("TRENDHYPERBOLIC", {"Hyperbolic", "LeftTrend", "RightTrend"}, 0.2),
+        ("GAUSSIAN", set(), None),
+        (
+            "A FUTURE FITTING",
+            {"Hyperbolic", "Quadratic", "LeftTrend", "RightTrend"},
+            0.2,
+        ),
+    ],
+)
+def test_only_the_curves_a_fitting_uses_are_judged(
+    fitting: str, judged: set[str], worst: float | None
+) -> None:
+    """A hyperbolic run with a 0.000 trend line completes and is applied, and
+    a contrast-detection run, written GAUSSIAN, is not gated on R² at all.
+    """
+    report = _autofocus(
+        dict(
+            load("imaging_guiding_last_af.json"),
+            Fitting=fitting,
+            Fittings=dict.fromkeys(
+                ("Hyperbolic", "Quadratic", "LeftTrend", "RightTrend"), "y = 1 * x"
+            ),
+            RSquares={
+                "Hyperbolic": 0.988,
+                "Quadratic": 0.6,
+                "LeftTrend": 0.9,
+                "RightTrend": 0.2,
+            },
+        )
+    )
+    assert report.r_squared == worst
+    assert {fit.name for fit in report.fits if fit.judged} == judged
+
+
+@pytest.mark.synthetic
+def test_a_judged_fit_with_no_r_squared_leaves_nothing_to_judge() -> None:
+    """A computed trend line must not stand in for the curve the run used."""
+    report = _autofocus(
+        dict(
+            load("imaging_guiding_last_af.json"),
+            Fitting="HYPERBOLIC",
+            RSquares={"Hyperbolic": "NaN", "LeftTrend": 0.9, "RightTrend": 0.0},
+        )
+    )
+    assert report.r_squared is None
+
+
 def test_a_fitting_this_run_did_not_use_is_not_published() -> None:
     """N.I.N.A. carries one entry per fitting it knows and an empty equation
     for the ones it did not run, which is no curve to draw.
@@ -846,15 +1034,71 @@ def test_a_fitting_this_run_did_not_use_is_not_published() -> None:
 
 
 def test_the_fit_minima_are_read_by_the_names_the_rig_uses() -> None:
-    """The second entry is named after whichever curve was fitted — the spec
-    calls it `HyperbolicMinimum`, this TRENDPARABOLIC run calls it
-    `QuadraticMinimum` — so keying on a literal name would find nothing.
+    """Hocus Focus names the entry beside `TrendLineIntersection` after the
+    curve its fitting uses — `QuadraticMinimum` on this TRENDPARABOLIC run,
+    `HyperbolicMinimum` on a hyperbolic one — so keying on a literal name
+    would find nothing.
     """
     minima = _autofocus(load("imaging_guiding_last_af.json")).minima
     assert [(m.name, m.position) for m in minima] == [
         ("TrendLineIntersection", 2344),
         ("QuadraticMinimum", 2336),
     ]
+
+
+_TREND = "TrendLineIntersection"
+_QUADRATIC = "QuadraticMinimum"
+_HYPERBOLIC = "HyperbolicMinimum"
+_GAUSSIAN = "GaussianMaximum"
+
+
+def _four_minima(fitting: str) -> dict:
+    """The captured report as built-in N.I.N.A. sends it, with all four
+    `Intersections` whatever it fitted; the hyperbolic and gaussian entries
+    are fabricated.
+    """
+    wire = load("imaging_guiding_last_af.json")
+    return dict(
+        wire,
+        Fitting=fitting,
+        Intersections={
+            **wire["Intersections"],
+            _HYPERBOLIC: {"Position": 2338, "Value": 1.62, "Error": 0},
+            _GAUSSIAN: {"Position": 2341, "Value": 1.9, "Error": 0},
+        },
+    )
+
+
+@pytest.mark.synthetic
+@pytest.mark.parametrize(
+    ("fitting", "used"),
+    [
+        ("TRENDLINES", {_TREND}),
+        ("PARABOLIC", {_QUADRATIC}),
+        ("TRENDPARABOLIC", {_TREND, _QUADRATIC}),
+        ("HYPERBOLIC", {_HYPERBOLIC}),
+        ("TRENDHYPERBOLIC", {_TREND, _HYPERBOLIC}),
+        # Any method but STARHFR writes GAUSSIAN and focuses at the maximum.
+        ("GAUSSIAN", {_GAUSSIAN}),
+        ("A FUTURE FITTING", {_TREND, _QUADRATIC, _HYPERBOLIC, _GAUSSIAN}),
+    ],
+)
+def test_a_minimum_is_used_where_the_fitting_focuses_on_it(
+    fitting: str, used: set[str]
+) -> None:
+    minima = _autofocus(_four_minima(fitting)).minima
+    assert {m.name for m in minima if m.used} == used
+
+
+@pytest.mark.synthetic
+def test_a_minimum_nobody_named_is_used() -> None:
+    """Fabricates an `Intersections` key. Unused claims the run ignored a
+    minimum, which a name the mapper cannot place does not support.
+    """
+    wire = load("imaging_guiding_last_af.json")
+    wire["Intersections"]["MoffatMinimum"] = {"Position": 2339, "Value": 1.7}
+    minima = _autofocus(wire).minima
+    assert [m.used for m in minima if m.name == "MoffatMinimum"] == [True]
 
 
 @pytest.mark.synthetic
@@ -866,14 +1110,13 @@ def test_the_fit_minima_are_read_by_the_names_the_rig_uses() -> None:
         ("y = 3 * x^3 + 1", [(3.0, 0.0, 0.0, 1.0)]),  # zero-filled, not skipped
         ("y = 1E+05 * x + 2", [(100000.0, 2.0)]),  # the split must not be on "+"
         ("", []),  # an unused fitting is not published
-        ("y = a / (x - b)", [None]),  # no hyperbolic form observed
+        ("y = a / (x - b)", [None]),  # not a polynomial
     ],
 )
 def test_the_equation_forms_a_fit_can_arrive_in(equation, expected) -> None:
     """Fabricates `Fittings.Quadratic`: the corpus carries only a quadratic and
-    two trend lines, and a hyperbolic or gaussian run has never been captured,
-    so anything that is not a polynomial yields no coefficients rather than a
-    guess.
+    two trend lines, so anything that is not a polynomial yields no
+    coefficients rather than a guess.
     """
     wire = dict(load("imaging_guiding_last_af.json"), Fittings={"Quadratic": equation})
     fits = _autofocus(wire).fits
@@ -881,6 +1124,170 @@ def test_the_equation_forms_a_fit_can_arrive_in(equation, expected) -> None:
         None if coefficients is None else pytest.approx(coefficients)
         for coefficients in expected
     ]
+
+
+def _fit(name: str, equation: str) -> CurveFit:
+    """The one fit a report carrying only `equation` publishes."""
+    wire = dict(load("imaging_guiding_last_af.json"), Fittings={name: equation})
+    (fit,) = _autofocus(wire).fits
+    return fit
+
+
+def _symmetric(
+    x0: float, y0: float, a: float, b: float, slope: float = 0.0
+) -> Hyperbola:
+    return Hyperbola(
+        x0=x0, y0=y0, a=a, b=b, c=b, slope=slope, blend=None, blend_width=None
+    )
+
+
+_SWEEP_RAMP = "min(max(0, (2336 - x) / 35), 1)"
+_SWEEP_LOGISTIC = "σ((2336 - x)/8.75)"
+_LEFT = "1.6/29 * √((x - 2336)² + 29²)"
+_RIGHT = "1.6/31.5 * √((x - 2336)² + 31.5²)"
+
+
+# Hocus Focus writes "0.###"; built-in N.I.N.A. a round-trip double.
+@pytest.mark.synthetic
+@pytest.mark.parametrize(
+    ("equation", "expected"),
+    [
+        (
+            (
+                "y = 1.8000000000000003 * cosh(asinh((2335.9999999999995 - x)"
+                " / 32.727272727272734))"
+            ),
+            _symmetric(2335.9999999999995, 0.0, 1.8000000000000003, 32.727272727272734),
+        ),
+        # cosh(asinh(z)) is even, so the sign of b does not reach the curve.
+        (
+            "y = 2.5E-05 * cosh(asinh((1E+05 - x) / -40.5))",
+            _symmetric(100000.0, 0.0, 2.5e-05, 40.5),
+        ),
+        (
+            "y = 1.6/29 * √((x - 2336)² + 29²) + 0.2",
+            _symmetric(2336.0, 0.2, 1.6, 29.0),
+        ),
+        (
+            "y = 1.6/29 * √((x - -5)² + 29²) + -0.2",
+            _symmetric(-5.0, -0.2, 1.6, 29.0),
+        ),
+        (
+            "y = 1.6/29 * √((x - 2336)² + 29²) + -0.01103·(x - 2336) + 0.2",
+            _symmetric(2336.0, 0.2, 1.6, 29.0, slope=-0.01103),
+        ),
+        (
+            f"y = {_SWEEP_RAMP} * {_LEFT} + (1 - {_SWEEP_RAMP}) * {_RIGHT} + 0.2",
+            Hyperbola(
+                x0=2336.0,
+                y0=0.2,
+                a=1.6,
+                b=29.0,
+                c=31.5,
+                slope=0.0,
+                blend="ramp",
+                blend_width=35.0,
+            ),
+        ),
+        (
+            (
+                f"y = {_SWEEP_LOGISTIC} * {_LEFT} + (1 - {_SWEEP_LOGISTIC})"
+                f" * {_RIGHT} + 0.2"
+            ),
+            Hyperbola(
+                x0=2336.0,
+                y0=0.2,
+                a=1.6,
+                b=29.0,
+                c=31.5,
+                slope=0.0,
+                blend="logistic",
+                blend_width=8.75,
+            ),
+        ),
+    ],
+    ids=[
+        "built-in",
+        "built-in exponent",
+        "symmetric",
+        "symmetric negatives",
+        "tilted",
+        "uneven blend",
+        "smooth blend",
+    ],
+)
+def test_a_hyperbolic_fit_is_published_as_its_parameters(
+    equation: str, expected: Hyperbola
+) -> None:
+    fit = _fit("Hyperbolic", equation)
+    assert (fit.hyperbola, fit.coefficients, fit.gaussian) == (expected, None, None)
+
+
+@pytest.mark.synthetic
+@pytest.mark.parametrize(
+    ("equation", "expected"),
+    [
+        (
+            (
+                "y = 0.4152 * exp(-1 * (x - 2343.2) * (x - 2343.2) / (2 * 29.6 * 29.6))"
+                " + 0.0148"
+            ),
+            Gaussian(amplitude=0.4152, mean=2343.2, sigma=29.6, offset=0.0148),
+        ),
+        (
+            (
+                "y = 4.2E-05 * exp(-1 * (x - -5) * (x - -5) / (2 * 29.6 * 29.6))"
+                " + -1.5E-06"
+            ),
+            Gaussian(amplitude=4.2e-05, mean=-5.0, sigma=29.6, offset=-1.5e-06),
+        ),
+    ],
+    ids=["contrast", "exponents and negatives"],
+)
+def test_a_gaussian_fit_is_published_as_its_parameters(
+    equation: str, expected: Gaussian
+) -> None:
+    fit = _fit("Gaussian", equation)
+    assert (fit.gaussian, fit.coefficients, fit.hyperbola) == (expected, None, None)
+
+
+@pytest.mark.synthetic
+@pytest.mark.parametrize(
+    "equation",
+    [
+        "y = 1.8 * cosh(asinh((x - 2336) / 40))",  # x and x0 swapped
+        "y = 0.43 * exp(-(x - 2343)^2 / (2 * 38^2))",
+        # Early Hocus Focus 3 releases wrote the ramp as a clamp triple.
+        (
+            "y = { 0, (2336 - x) / 35, 1 } * 1.6/29 * √((x - 2336)² + 29²)"
+            " + { 0, (x - 2336) / 35, 1 } * 1.6/31 * √((x - 2336)² + 31²) + 0.2"
+        ),
+        "y = 1.6/29 * √((x - 2336)² + 28²) + 0.2",  # one b written two ways
+        "y = NaN * cosh(asinh((NaN - x) / NaN))",
+        "y = 1.6/0 * √((x - 2336)² + 0²) + 0.2",  # a b "0.###" rounds to 0
+        f"y = σ((2336 - x)/0) * {_LEFT} + (1 - σ((2336 - x)/0)) * {_RIGHT} + 0.2",
+        "y = 0.4 * exp(-1 * (x - 2343) * (x - 2343) / (2 * 0 * 0)) + 0",
+    ],
+    ids=[
+        "invented hyperbola",
+        "invented gaussian",
+        "early uneven blend",
+        "inconsistent repeat",
+        "nan",
+        "zero b",
+        "zero blend width",
+        "zero sigma",
+    ],
+)
+def test_a_curve_in_an_unrecognised_form_is_published_unparsed(equation: str) -> None:
+    """Its equation is still the record, but a chart has nothing to evaluate."""
+    fit = _fit("Hyperbolic", equation)
+    assert (fit.equation, fit.coefficients, fit.hyperbola, fit.gaussian) == (
+        equation,
+        None,
+        None,
+        None,
+    )
 
 
 def test_a_rig_that_has_never_run_an_autofocus_has_no_report() -> None:

@@ -189,23 +189,41 @@ period later.
 
 The quiet case doesn't fire while the sequencer is stopped, while the scheduler
 is waiting, for 15 minutes after a wait ends, or in daylight. Its timers start
-no earlier than the sequencer did, so the last frame of the previous night
-doesn't trigger an alert as soon as tonight's sequence starts. All of these
-times are blueprint inputs.
+at the latest of the sequencer starting, conditions turning safe, the sun
+setting and the quiet hours ending. So neither the last frame of the previous
+night nor an hour spent waiting for dark triggers an alert the moment the rig
+is let work. All of these times are blueprint inputs.
 
-It also stays quiet in two situations you should know about:
+It also stays quiet in these situations you should know about:
 
 - **While conditions are unsafe.** The rig waiting out bad weather is working
   correctly, and `weather_abort.yaml` handles that case. If your rig has a
   safety monitor, fill in the safety input; if you leave it empty you'll get an
   alert during every weather hold.
 - **In daylight,** because `night_only` is on by default. Turn it off for solar
-  imaging. It uses `sun.sun`; without that entity it doesn't suppress anything.
+  imaging. It uses the sun at the rig if you wire the site inputs (see below),
+  and `sun.sun` otherwise; with neither it doesn't suppress anything.
+
+- **During quiet hours,** if you set them, for a rig you shut down by day.
+  `mute_mode` picks the window: between two times, which may cross midnight,
+  or while the sun is up — from when the rising sun passes one altitude until
+  the setting sun drops below another. The defaults are -12° (the end of
+  nautical twilight) and +3° (roughly 20–30 minutes before sunset). The window
+  covers the unreachable alert too, and a rig still unreachable when it closes
+  is reported then. Fixed times are Home Assistant's local time, which is not
+  the rig's if it is hosted in another time zone.
+
+For a hosted rig, wire the optional site latitude and longitude inputs to the
+rig's `site_latitude` and `site_longitude` sensors. Both sun gates, night only
+and sun quiet hours, then use the sun where the rig is instead of where Home
+Assistant is. Until N.I.N.A. reports a site, Home Assistant's location stands
+in.
 
 The alert is a persistent notification plus a message to the notify entity you
 choose. It includes how long it has been quiet, the last frame's target and
 filter, the camera state, temperature and cooler power, the guider, whether the
-mount is parked or at home, autofocus, and the latest error. It repeats every
+mount is parked or at home, autofocus, and the latest error if it came after
+the sequence started. It repeats every
 60 minutes, at most twice (set reminders to 0 to turn this off). When a frame
 arrives or the sequencer stops, it dismisses the notification and says which
 happened. A sequence that finishes looks the same as one stopped by hand, so
@@ -230,6 +248,13 @@ entities until the source starts reporting. Once created, they stay.
 A channel reads `unknown` while its source has no value for it, and
 `unavailable` when you've switched to a different source that doesn't provide
 that channel at all.
+
+A source that reports temperature and humidity but no dew point gets
+`sensor.<instance>_weather_dew_point` computed from those two with the Magnus
+formula, which adds under 0.35 °C to the error of the humidity reading itself.
+The weather card's dew alert and any automation on the sensor then work as
+they would with a dew point sensor.
+The source's own dew point is used whenever it reports one.
 
 Don't use weather readings to decide it's safe to image. Forecast-based
 sources such as OpenMeteo are gridded forecasts updated every 10 minutes, and
@@ -280,10 +305,11 @@ show N.I.N.A.'s report from the most recent autofocus run:
 Things to know when reading them:
 
 - **`autofocus_hfr` is a measured value, not N.I.N.A.'s calculated focus
-  point.** With a `TREND*` curve fitting, the calculated value partly
-  extrapolates from the trend lines and can be smaller than any star your
-  optics produce (1.09 px against a best measured 1.55 px on one run). That
-  value is `autofocus_fitted_hfr`.
+  point.** With a `TREND*` curve fitting, the calculated value extrapolates,
+  wholly or partly, from the trend lines and can be smaller than any star
+  your optics produce (1.09 px against a best measured 1.55 px on one run). That
+  value is `autofocus_fitted_hfr`, and the `fitted_hfr` attribute of
+  `sensor.<instance>_focuser_last_autofocus`.
 - **The best measured HFR can be worse than the starting HFR on a run that
   improved focus.** N.I.N.A. moves to a fitted position between two sweep
   steps, and never measures HFR there. So don't treat the two as a reliable
@@ -291,25 +317,44 @@ Things to know when reading them:
 - **A rejected run still replaces the previous report.** The report doesn't
   say whether N.I.N.A. accepted it. Use
   `binary_sensor.<instance>_focuser_autofocus_failed`, which compares R² with
-  your profile's `RSquaredThreshold`.
+  your profile's `RSquaredThreshold` and checks the focus position against
+  the sweep.
+- **A run whose focus position falls outside the positions it measured is
+  rejected whatever its R².** A position on the sweep's first or last step is
+  inside it. N.I.N.A. checks this under every autofocus method; Hocus Focus
+  checks it on `STARHFR` runs only. `autofocus_failed` reports it as
+  `out_of_range`.
+- **An `RSquaredThreshold` of 0 or below turns the R² check off**, in N.I.N.A.
+  and in Hocus Focus alike, so `autofocus_failed` rejects no run on its R².
+  It still catches a focus position outside the sweep. N.I.N.A.'s own
+  autofocus then measures HFR at the new position instead, and rejects a run
+  more than 15% worse than where it started. That measurement is not in the
+  report, so `autofocus_failed` cannot see that rejection.
 - **A run that hangs writes no report**, so the sensors keep showing the
   previous run. The failed sensor catches this too.
 - **The report survives restarts.** It may be days old; check
   `last_autofocus`.
-- **Each report covers one attempt.** N.I.N.A. retries a rejected run and only
-  the last attempt is reported, so `autofocus_duration` understates the time a
-  bad run cost.
+- **A report charts one attempt's sweep.** A failed attempt is retried, and
+  the curve, R² and focus position in the report are the last attempt's.
+  N.I.N.A. writes a report for every attempt, so with its own autofocus
+  `autofocus_failed` can turn `on` for a failed attempt and back `off` when
+  the retry succeeds. Hocus Focus writes one for the whole run, and Hocus
+  Focus 4 retries once more, centred on the computed position, after an
+  attempt whose focus falls outside its sweep. `autofocus_duration` counts
+  from the start of the run, earlier attempts included, and
+  `autofocus_starting_position` is where the focuser stood before the first.
 - On a `CONTRASTDETECTION` run the HFR sensors read `unknown`, because that
-  method measures contrast rather than star size. Positions and duration still
-  work.
+  method measures contrast rather than star size. So does `autofocus_r2`: N.I.N.A.
+  applies no R² threshold to a contrast run, so `autofocus_failed` never rejects
+  one on its R². Positions and duration still work.
 
 `autofocus_failed` has these attributes:
 
 | Attribute | Meaning |
 |---|---|
-| `reason` | `hung`, `rejected`, or absent. A hung run usually means a sequence problem; a rejected one means the focus range or star detection needs adjusting. Only for `hung` do the other autofocus sensors show a different run from the one that failed. |
-| `r_squared` | the R² used for the decision: the worst value in the run's `RSquares` |
-| `r_squared_threshold` | your profile's `RSquaredThreshold` |
+| `reason` | `hung`, `rejected`, `out_of_range`, or absent. A hung run usually means a sequence problem. A rejected one failed the R² check, and means the focus range or star detection needs adjusting. An out-of-range one put focus outside the positions it measured: start the run nearer focus, or widen the sweep with a larger step size or more steps. A run failing both the R² and the range check reads `rejected`, the check N.I.N.A. runs first. Only for `hung` do the other autofocus sensors show a different run from the one that failed. |
+| `r_squared` | the R² used for the decision: the worst among the judged curves |
+| `r_squared_threshold` | your profile's `RSquaredThreshold`, or `null` when it is 0 or below and the check is off, or before the profile has been read |
 | `refocus_temperature_delta` | the °C of focuser drift past which your sequence's "AF After Temperature Change" trigger refocuses, or `null` with no such trigger. With several, the smallest: which one is in scope cannot be told. The autofocus card flags drift against it. |
 
 If you check R² yourself, compare against this `r_squared` attribute, not
@@ -363,31 +408,98 @@ fits:
   - name: Quadratic
     equation: "y = 0.0003058854621319121 * x^2 + -1.4293365331583652 * x + 1671.5984427459177"
     coefficients: [0.0003058854621319121, -1.4293365331583652, 1671.5984427459177]
+    hyperbola: null
+    gaussian: null
     r_squared: 0.9710548595560263
+    judged: true
   - name: LeftTrend
     coefficients: [-0.04727009756935714, 111.1161540435258]
     r_squared: 0.9902518159347956
+    judged: true
   # …RightTrend
 
 minima:
   - name: TrendLineIntersection
     position: 2344
     value: 0.3330580830396599
+    used: true
   - name: QuadraticMinimum
     position: 2336
     value: 1.8534560537596008
+    used: true
+
+fitted_hfr: 1.0932570683996303
 ```
 
 - `coefficients` are highest power first: `[a, b, c]` is `a·x² + b·x + c`.
-  For fits other than polynomials (hyperbolic, gaussian) `coefficients` is
-  `null` and `equation` is the only record. Fits the run didn't use are left
-  out.
+  A hyperbolic or gaussian fit has `coefficients: null` and its parameters in
+  `hyperbola` or `gaussian` instead:
+
+  ```yaml
+  - name: Hyperbolic
+    equation: "y = 2.8/48 * √((x - 2336)² + 48²) + -1"
+    coefficients: null
+    hyperbola: {x0: 2336, y0: -1, a: 2.8, b: 48, c: 48, slope: 0, blend: null, blend_width: null}
+    gaussian: null
+  ```
+
+- `hyperbola` is one form for every autofocuser's model, with `u = x − x0`:
+  `y = y0 + slope·u + w·(a/b)·√(u² + b²) + (1 − w)·(a/c)·√(u² + c²)`. The
+  weight `w` on the left branch is 1 when `blend` is `null`, and then `c`
+  equals `b`. It is `clamp(−u / blend_width, 0, 1)` for `blend: ramp` and
+  `1 / (1 + e^(u / blend_width))` for `blend: logistic`. Built-in N.I.N.A.
+  writes `a * cosh(asinh((x0 - x) / b))`, which is published with `y0` and
+  `slope` at 0. Hocus Focus's Symmetric model sets `y0`, Tilted Hyperbola
+  `slope`, and Uneven Blend and Smooth Blend a separate right branch `c` with
+  a `ramp` or `logistic` blend.
+- `gaussian` is `y = amplitude·e^(−(x − mean)² / (2·sigma²)) + offset`, which
+  peaks at `mean`.
+- An equation in a form the integration doesn't recognise has all three
+  `null`, and `equation` is the only record. The autofocus card lists such a
+  fit with its R² and marks it `not plotted`. Fits the run didn't compute are
+  left out.
 - Each fit's `r_squared` is for that fit alone, which is what a chart legend
-  wants. The `autofocus_r2` sensor is the worst fit, which is what a
-  pass/fail threshold wants.
-- `minima` lists the minima N.I.N.A. computed. Pick the second by position in
-  the list, not by name; its name depends on the curve fitting in your profile.
-  The final focuser position is the average of the two.
+  wants. The `autofocus_r2` sensor is the worst fit with `judged: true`, which
+  is what a pass/fail threshold wants.
+- `judged` says whether that fit's R² counts toward the verdict, which
+  depends on `fitting`. A `HYPERBOLIC` run can also report trend lines. They
+  have `judged: false`, and a low R² on them doesn't reject the run. A
+  contrast-detection run, whose `fitting` is `GAUSSIAN`, has every fit
+  `judged: false`.
+- `judged` comes from the report alone, so it doesn't know whether the
+  profile's R² check is on. When
+  `binary_sensor.<instance>_focuser_autofocus_failed` has
+  `r_squared_threshold: null`, either the check is off or the profile hasn't
+  been read yet. The two look the same, so the autofocus card marks every fit
+  `not judged`, whatever `judged` says. The minima keep their `used`, which
+  R² doesn't touch.
+- `minima` lists the minima the autofocus routine computed, and which ones
+  depends on the routine. The example above is a Hocus Focus run. Hocus Focus
+  fits trend lines on every run to decide when the sweep ends, so it lists
+  `TrendLineIntersection` beside the minimum of the curve your fitting uses,
+  if any. Built-in N.I.N.A. lists all four (`TrendLineIntersection`,
+  `HyperbolicMinimum`, `QuadraticMinimum`, `GaussianMaximum`) whatever it
+  fitted. Read the final focus point from `fitted_hfr` and
+  `autofocus_position` rather than working it out from `minima`. N.I.N.A.
+  picks it by `fitting`:
+
+  | `fitting` | Final focus point |
+  |---|---|
+  | `TRENDLINES` | the trend-line intersection |
+  | `PARABOLIC` | the quadratic minimum |
+  | `HYPERBOLIC` | the hyperbolic minimum |
+  | `TRENDPARABOLIC` | the mean of the trend-line intersection and the quadratic minimum |
+  | `TRENDHYPERBOLIC` | the mean of the trend-line intersection and the hyperbolic minimum |
+
+  `fitted_hfr` is `null` on a contrast-detection run, whose focus point is
+  the gaussian maximum of a contrast score, and wherever the fit put it at
+  or below zero.
+- A minimum's `used` says whether the final focus point is built from it,
+  by the table above. `used: false` marks a minimum the run ignored, such as
+  the intersection on a `HYPERBOLIC` run. A contrast-detection run, whose
+  `fitting` is `GAUSSIAN`, uses `GaussianMaximum`. `used` has nothing to do
+  with R²: that gaussian is used, but its fit is `judged: false`. A
+  `fitting` this integration doesn't recognise marks every minimum `used`.
 - Don't scale your y-axis to include `TrendLineIntersection`. It is where the
   extrapolated trend lines cross, well below any real star size (0.333 px
   above, against 1.552 px measured). Scale to the measured points.
@@ -429,11 +541,22 @@ card, an ApexCharts `data_generator`, or a template. For history, chart
 - `sensor.<instance>_last_image_mean_adu` has `recent_frames`: the newest
   frames of every type, newest first, each with its target, filter, exposure,
   HFR, star count, guide RMS and N.I.N.A.'s min, median, mean and max ADU. The
-  image panel card draws its ADU range from these. They are statistics, not a
-  histogram like the one in N.I.N.A.'s Statistics panel: the Advanced API
-  publishes none. Building one means fetching the whole raw frame a second
+  image panel card draws its ADU range from these, on an axis to the camera's
+  full scale, which it also reads from `recent_lights`. They are statistics,
+  not a histogram like the one in N.I.N.A.'s Statistics panel: the Advanced
+  API publishes none. Building one means fetching the whole raw frame a second
   time, which a remote observatory is already sending elsewhere. Issue #178
   tracks doing it as an option.
+
+- `sensor.<instance>_last_image_hfr` has `recent_lights`: the session's
+  newest 60 lights, oldest first, each with its target, filter, exposure, HFR,
+  star count, and mean and max ADU. The frame statistics card draws its charts
+  from these.
+
+  Both cards read the camera's full scale from their frames' max: a camera
+  that does not scale its data to 16 bits saturates at or below 4095 or 16383.
+  N.I.N.A.'s bit depth is no help, since for ASCOM and DSLR cameras it is a
+  profile setting the user types in.
 
 ## Error events
 

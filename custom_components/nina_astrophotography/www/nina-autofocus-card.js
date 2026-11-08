@@ -18,7 +18,7 @@ import { RigEntities } from "./nina-entity-resolver.js";
 import { interval, inUnit, quantity, quantityIn, safe, shown } from "./nina-units.js";
 import { THEME, applyTheme, palette } from "./nina-theme.js";
 
-const VERSION = "2.3.0";
+const VERSION = "2.5.0";
 
 // How far the focuser temperature may drift from the run's before the card
 // flags it, when neither `temperature_delta` nor the sequence's "AF After
@@ -53,9 +53,10 @@ function pretty(name) {
 }
 
 // The chart's y axis: the measured points and their error bars, padded. The
-// trend lines' crossing sits well below any star the optics can produce, so
-// letting it set the floor would squash the vertex, the part worth reading.
-// The legend reads it too, to say which minima fall below the axis.
+// trend lines' crossing overshoots the vertex, below any star the optics can
+// produce or above a contrast run's peak, so letting it set the range would
+// squash the vertex, the part worth reading. The legend reads it too, to say
+// which minima fall off the axis.
 function axisRange(curve) {
   const measured = curve.filter((point) => Number.isFinite(point.value));
   const low = Math.min(...measured.map((point) => point.value - (point.error || 0)));
@@ -71,12 +72,41 @@ function isTrend(name) {
   return /trend/i.test(String(name));
 }
 
-// `coefficients` are highest power first, as the mapper parses them out of
-// N.I.N.A.'s equation string: [a, b, c] is a·x² + b·x + c. A fit whose
-// equation was not a polynomial — a hyperbola, a Gaussian — arrives with
-// `coefficients: null` and simply is not drawn.
-function evaluate(coefficients, x) {
-  return coefficients.reduce((total, coefficient) => total * x + coefficient, 0);
+// A minimum the focus point was not built from keeps its fit's colour, faded,
+// so the legend still pairs it with that fit.
+const FADED = 0.4;
+
+// Whether a fit's R² counted toward the verdict, as far as the card can tell:
+// the mapper marked it `judged`, and the verdict's threshold is not null.
+function isJudged(fit, run) {
+  return fit.judged !== false && !run.checkOff;
+}
+
+// A fit's curve as a function of focuser position, from the parameters the
+// mapper parsed out of its equation: `coefficients` highest power first, so
+// [a, b, c] is a·x² + b·x + c, and `hyperbola` and `gaussian` as
+// docs/reference.md writes them out. Null for a form the mapper did not
+// recognise, which the legend lists as not plotted.
+function curveOf(fit) {
+  const { coefficients: poly, hyperbola: h, gaussian: g } = fit;
+  if (Array.isArray(poly) && poly.length) {
+    return (x) => poly.reduce((total, coefficient) => total * x + coefficient, 0);
+  }
+  if (h) {
+    return (x) => {
+      const u = x - h.x0;
+      const w = h.blend === "ramp" ? Math.min(Math.max(-u / h.blend_width, 0), 1)
+        : h.blend === "logistic" ? 1 / (1 + Math.exp(u / h.blend_width))
+        : 1;
+      return h.y0 + h.slope * u
+        + w * (h.a / h.b) * Math.hypot(u, h.b)
+        + (1 - w) * (h.a / h.c) * Math.hypot(u, h.c);
+    };
+  }
+  if (g) {
+    return (x) => g.amplitude * Math.exp(-((x - g.mean) ** 2) / (2 * g.sigma ** 2)) + g.offset;
+  }
+  return null;
 }
 
 function ago(iso) {
@@ -261,13 +291,13 @@ class NinaAutofocusCard extends HTMLElement {
       || String(method).toUpperCase() !== "CONTRASTDETECTION";
 
     // `autofocus_fitted_hfr`/`autofocus_r2` ship disabled, so both are taken
-    // from the attributes: the fitted HFR is the mean of the minima, N.I.N.A.'s
-    // own rule, and only holds if every minimum survived — the mapper drops a
-    // negative trend-line intersection, and averaging what is left would quietly
-    // report the quadratic minimum alone.
-    const fitted = minima.map((minimum) => minimum.value).filter(Number.isFinite);
-    const whole = minima.length > 0 && fitted.length === minima.length;
-    const scored = fits.filter((fit) => Number.isFinite(fit.r_squared));
+    // from attributes. `minima` cannot stand in for the fitted HFR: a minimum
+    // at or below zero arrives with no value, so a blended fitting's mean
+    // cannot be rebuilt.
+    const fitted = this._attr(run, "fitted_hfr");
+    // Only the judged curves: a hyperbolic run also reports trend lines, and a
+    // poor one of those does not stop N.I.N.A. applying the result.
+    const scored = fits.filter((fit) => fit.judged !== false && Number.isFinite(fit.r_squared));
     const worst = scored.reduce(
       (lowest, fit) => (lowest === null || fit.r_squared < lowest.r_squared ? fit : lowest),
       null,
@@ -283,10 +313,19 @@ class NinaAutofocusCard extends HTMLElement {
     const at = inUnit(then, unit);
 
     // `reason` separates a hung run — which wrote no report, so the curve
-    // below is an earlier run's — from one rejected on its fit.
+    // below is an earlier run's — from one rejected on its fit or for focus
+    // outside its sweep.
     const verdict = this._eid("binary_sensor", "autofocus_failed", "focuser_autofocus_failed");
-    const judged = this._attr(verdict, "r_squared");
+    const verdictSquare = this._attr(verdict, "r_squared");
     const threshold = this._attr(verdict, "r_squared_threshold");
+    // The verdict publishes a null threshold where it judges no run: the
+    // profile's check off, or a profile not yet read; the card cannot tell
+    // which.
+    // A missing or disabled verdict, or an unavailable one, carries no such
+    // key, and says nothing either way.
+    const verdictAttributes = this._hass?.states?.[verdict]?.attributes ?? {};
+    const checkOff = "r_squared_threshold" in verdictAttributes
+      && verdictAttributes.r_squared_threshold === null;
     // A trigger at 0 refocuses before every frame: no drift worth flagging.
     const trigger = this._attr(verdict, "refocus_temperature_delta");
     const triggered = this._temperatureDelta === null
@@ -302,14 +341,13 @@ class NinaAutofocusCard extends HTMLElement {
       measured: this._attr(run, "measured_points"),
       failed: this._state(verdict) === "on",
       reason: this._attr(verdict, "reason"),
-      judged: Number.isFinite(judged) ? judged : null,
+      verdictSquare: Number.isFinite(verdictSquare) ? verdictSquare : null,
       threshold: Number.isFinite(threshold) ? threshold : null,
+      checkOff,
       position: this._number(
         this._eid("sensor", "autofocus_position", "focuser_autofocus_position")),
       hfr: this._number(this._eid("sensor", "autofocus_hfr", "focuser_autofocus_hfr")),
-      fittedHfr: whole && isHfr
-        ? fitted.reduce((total, value) => total + value, 0) / fitted.length
-        : null,
+      fittedHfr: isHfr && Number.isFinite(fitted) ? fitted : null,
       // The sensor is only a fallback for a report with no fits at all, and
       // it ships disabled, so this read is on the prefix path.
       worstSquare: worst ? worst.r_squared : this._number(
@@ -417,19 +455,31 @@ class NinaAutofocusCard extends HTMLElement {
     // last finished, not the failure.
     const hung = run.reason === "hung";
     const rejected = run.reason === "rejected";
-    const quality = run.judged ?? run.worstSquare;
+    const outside = run.reason === "out_of_range";
+    // Either way the run finished, and the focuser never took its position.
+    const discarded = rejected || outside;
+    const sweep = swept.length
+      ? `the ${Math.min(...swept)}–${Math.max(...swept)} it measured`
+      : "the positions it measured";
+    const quality = run.verdictSquare ?? run.worstSquare;
 
     return `
       ${run.failed ? `
         <div class="banner">
           <span style="font-size:1.1rem">⚠️</span>
           <div>
-            <div class="what">${hung ? "An autofocus run hung" : "The last autofocus was rejected"}</div>
+            <div class="what">${hung ? "An autofocus run hung"
+              : outside ? "The last autofocus put focus outside its sweep"
+              : "The last autofocus was rejected"}</div>
             <div class="why">${hung
               ? `It never finished, so it wrote no report — the run charted below is the last one
                  that did, from ${ago(run.timestamp) || "earlier"}, and not the one that failed.`
+              : outside
+              ? `Its fit chose ${shown(run.position)}, outside ${sweep}, so N.I.N.A. discarded it
+                 and the focuser stayed where it was. Start the run nearer focus, or widen the
+                 sweep with a larger step size or more steps.`
               : `${run.threshold === null ? "Its fit was not good enough"
-                  : `Its fit scored ${fixed(run.judged, 3)} against the ${fixed(run.threshold, 2)}
+                  : `Its fit scored ${fixed(run.verdictSquare, 3)} against the ${fixed(run.threshold, 2)}
                      your profile requires`}. The focuser stayed where it was, so frames since are
                  as soft as they were before it.`}</div>
           </div>
@@ -437,9 +487,10 @@ class NinaAutofocusCard extends HTMLElement {
 
       <div class="stat-row">
         <div class="stat-box">
-          <div class="label">${rejected ? "Computed position" : "Focus position"}</div>
+          <div class="label">${discarded ? "Computed position" : "Focus position"}</div>
           <div class="value">${shown(run.position)} <span class="unit">steps</span></div>
           <div class="sub">${rejected ? "Not applied — rejected"
+            : outside ? "Not applied — outside the sweep"
             : moved === null ? "&nbsp;"
             : `${moved >= 0 ? "+" : "−"}${Math.abs(moved)} from ${run.startPosition}`}</div>
         </div>
@@ -478,7 +529,7 @@ class NinaAutofocusCard extends HTMLElement {
               <div class="label">Focuser now</div>
               <div class="value">${run.nowPosition} <span class="unit">steps</span></div>
               <div class="sub">${
-                rejected
+                discarded
                   ? (run.nowPosition === run.startPosition
                       ? "Back where the run started" : "Not at the computed position")
                   : away === 0 ? "Where the run left it"
@@ -501,7 +552,7 @@ class NinaAutofocusCard extends HTMLElement {
       <div class="meta">
         ${blind ? `<span class="chip" style="border-color:rgba(231,111,81,0.45)">
           <span class="k">Measured nothing</span> ${blind} ${blind === 1 ? "position" : "positions"}</span>` : ""}
-        ${atEdge ? `<span class="chip" style="border-color:rgba(244,162,97,0.45)">
+        ${atEdge && !outside ? `<span class="chip" style="border-color:rgba(244,162,97,0.45)">
           <span class="k">Focus at the edge of the sweep</span> widen the range</span>` : ""}
         ${lonely ? `<span class="chip" style="border-color:rgba(244,162,97,0.45)">
           <span class="k">No spread to report</span> ${lonely} ${lonely === 1 ? "position" : "positions"}</span>` : ""}
@@ -522,30 +573,37 @@ class NinaAutofocusCard extends HTMLElement {
           run.isHfr ? "± spread across stars" : "contrast score"}</span></div>`,
     ];
     for (const fit of run.fits) {
-      // No coefficients to plot; listed with its R² and marked not plotted.
-      const drawn = Array.isArray(fit.coefficients) && fit.coefficients.length > 0;
+      // An unrecognised form is listed with its R² and marked not plotted.
+      const drawn = curveOf(fit) !== null;
       const colour = isTrend(fit.name) ? TREND : FIT;
       const dash = isTrend(fit.name) ? "dashed" : "solid";
       items.push(`<div class="item">
         <span class="swatch" style="border-top-color:var(--${drawn ? colour : "muted"});border-top-style:${drawn ? dash : "dotted"}"></span>
         <span${drawn ? "" : ` style="color:var(--muted)"`}>${pretty(fit.name)}</span>
-        <span class="reading">R² ${fixed(fit.r_squared, 3)}${drawn ? "" : " · not plotted"}</span></div>`);
+        <span class="reading">R² ${fixed(fit.r_squared, 3)}${
+          isJudged(fit, run) ? "" : " · not judged"}${drawn ? "" : " · not plotted"}</span></div>`);
     }
     // Against the axis the chart actually uses, padding included — otherwise a
     // minimum landing inside that padding is called below the axis here and
     // drawn as an ordinary in-range diamond there.
-    const { min: floor } = axisRange(run.curve);
+    const { min: floor, max: ceiling } = axisRange(run.curve);
     for (const minimum of run.minima) {
       const colour = isTrend(minimum.name) ? TREND : FIT;
       // A negative minimum the mapper dropped has no value to plot.
       const plotted = Number.isFinite(minimum.value);
       const under = plotted && minimum.value < floor;
+      const over = plotted && minimum.value > ceiling;
+      const used = minimum.used !== false;
+      const fill = !plotted ? "var(--muted)"
+        : used ? `var(--${colour})`
+        : `color-mix(in srgb, var(--${colour}) ${FADED * 100}%, transparent)`;
       items.push(`<div class="item">
-        <span class="diamond" style="background:var(--${plotted ? colour : "muted"})"></span>
+        <span class="diamond" style="background:${fill}"></span>
         <span${plotted ? "" : ` style="color:var(--muted)"`}>${pretty(minimum.name)}</span>
         <span class="reading">${shown(minimum.position)} · ${
-          plotted ? `${reading(minimum.value)} ${run.unit}` : "negative · not plotted"}${
-          under ? " · below the axis" : ""}</span></div>`);
+          plotted ? `${reading(minimum.value)} ${run.unit}` : "negative"}${
+          under ? " · below the axis" : over ? " · above the axis" : ""}${used ? "" : " · not used"}${
+          plotted ? "" : " · not plotted"}</span></div>`);
     }
     if (Number.isFinite(run.position)) {
       items.push(`<div class="item">
@@ -643,7 +701,8 @@ class NinaAutofocusCard extends HTMLElement {
     // Sampled across the sweep and broken wherever a fit leaves the chart, so
     // a trend line stays a line rather than a spike out of the frame.
     for (const fit of run.fits) {
-      if (!Array.isArray(fit.coefficients) || !fit.coefficients.length) continue;
+      const curve = curveOf(fit);
+      if (!curve) continue;
       ctx.strokeStyle = theme[isTrend(fit.name) ? TREND : FIT];
       ctx.lineWidth = 1.4;
       ctx.setLineDash(isTrend(fit.name) ? [5, 4] : []);
@@ -651,7 +710,7 @@ class NinaAutofocusCard extends HTMLElement {
       let pen = false;
       for (let sample = 0; sample <= 160; sample++) {
         const x = xMin + ((xMax - xMin) * sample) / 160;
-        const y = evaluate(fit.coefficients, x);
+        const y = curve(x);
         if (!Number.isFinite(y) || !inside(y)) { pen = false; continue; }
         if (pen) ctx.lineTo(xOf(x), yOf(y));
         else { ctx.moveTo(xOf(x), yOf(y)); pen = true; }
@@ -693,8 +752,10 @@ class NinaAutofocusCard extends HTMLElement {
     }
     ctx.stroke();
 
+    // Smaller stars are sharper, but a contrast score peaks at focus.
+    const better = run.isHfr ? (a, b) => a < b : (a, b) => a > b;
     const best = measured.reduce(
-      (lowest, point) => (lowest === null || point.value < lowest.value ? point : lowest),
+      (top, point) => (top === null || better(point.value, top.value) ? point : top),
       null,
     );
     for (const point of measured) {
@@ -709,7 +770,7 @@ class NinaAutofocusCard extends HTMLElement {
       }
     }
 
-    // Where the focuser was left: the minima's mean, rounded to a step.
+    // The focus point the run's fitting chose; a rejected run never took it.
     if (Number.isFinite(run.position)) {
       const x = xOf(run.position);
       ctx.strokeStyle = theme[FINAL];
@@ -722,7 +783,10 @@ class NinaAutofocusCard extends HTMLElement {
       ctx.setLineDash([]);
     }
 
-    for (const minimum of run.minima) {
+    // Unused minima first, so the ones the focus point came from land on top.
+    const minima = [...run.minima].sort(
+      (a, b) => Number(a.used !== false) - Number(b.used !== false));
+    for (const minimum of minima) {
       if (!Number.isFinite(minimum.value) || !Number.isFinite(minimum.position)) continue;
       // Near-parallel trend lines can cross well outside the sweep; the
       // legend still carries its position.
@@ -730,8 +794,10 @@ class NinaAutofocusCard extends HTMLElement {
       const x = xOf(minimum.position);
       const below = minimum.value < yMin;
       const y = yOf(Math.min(Math.max(minimum.value, yMin), yMax));
-      ctx.fillStyle = theme[isTrend(minimum.name) ? TREND : FIT];
-      ctx.strokeStyle = theme.ink(0.5);
+      const colour = isTrend(minimum.name) ? TREND : FIT;
+      const used = minimum.used !== false;
+      ctx.fillStyle = used ? theme[colour] : theme.tint(colour, FADED);
+      ctx.strokeStyle = theme.ink(used ? 0.5 : 0.25);
       ctx.lineWidth = 0.8;
       const off = below || minimum.value > yMax;
       ctx.beginPath();
@@ -753,6 +819,8 @@ class NinaAutofocusCard extends HTMLElement {
       ctx.stroke();
       // Its real value beside it, or the chevron's height reads as the value.
       if (off) {
+        // Faded text is unreadable at this size; ink at the muted alpha is not.
+        if (!used) ctx.fillStyle = theme.ink(0.45);
         ctx.font = "9px sans-serif";
         ctx.textAlign = x > W / 2 ? "right" : "left";
         ctx.fillText(reading(minimum.value), x + (x > W / 2 ? -8 : 8), y + (below ? -5 : 5));

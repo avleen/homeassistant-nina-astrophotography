@@ -362,32 +362,98 @@ class FocusPoint:
 class FitMinimum:
     """Where one of the report's fits puts best focus.
 
-    `name` is the wire's key. Besides `TrendLineIntersection`, the entry is
-    named for the fitted curve (`QuadraticMinimum` under TRENDPARABOLIC; the
-    spec says `HyperbolicMinimum`). `TrendLineIntersection`'s value lands far
-    below any measured star, so a chart must not scale to it.
+    `name` is the wire's key, and which keys arrive depends on the
+    autofocuser. Built-in N.I.N.A. reports `TrendLineIntersection`,
+    `HyperbolicMinimum`, `QuadraticMinimum` and `GaussianMaximum` whatever it
+    fitted. Hocus Focus fits trend lines on every run to end its sweep, so it
+    reports `TrendLineIntersection` beside the minimum of the curve its
+    fitting uses, if any. `TrendLineIntersection`'s value lands far below any
+    measured star, so a chart must not scale to it.
     """
 
     name: str
     position: int
     value: float | None
+    used: bool
+    """Whether the run's final focus point is built from this minimum, which
+    `fitting` decides; a contrast-detection run focuses at `GaussianMaximum`.
+    Independent of R² and of `CurveFit.judged`: that gaussian is used, though
+    its fit is not judged.
+    """
+
+
+HyperbolaBlend = Literal["ramp", "logistic"]
+"""How an asymmetric hyperbola weights its left branch (see `Hyperbola`)."""
+
+
+@dataclass(frozen=True, slots=True)
+class Hyperbola:
+    """A hyperbolic fit, in one form for every autofocuser's model.
+
+    `y = y0 + slope·u + w·(a/b)·√(u² + b²) + (1 − w)·(a/c)·√(u² + c²)`, with
+    `u = x − x0` and `w` the left branch's weight: 1 with no `blend`, where
+    `c` is `b`; `clamp(−u / blend_width, 0, 1)` for `ramp`; and
+    `1 / (1 + e^(u / blend_width))` for `logistic`.
+
+    Built-in N.I.N.A.'s `a·cosh(asinh((x0 − x) / b))` is the symmetric case
+    with `y0` and `slope` 0. Hocus Focus adds the offset `y0`, and its
+    asymmetric models a tilt or a separate right branch. Its minimum is the
+    run's `HyperbolicMinimum`, which a tilt (`slope`) moves off `x0`; a blend
+    does not, since both branches equal `a` only at `x0`.
+    """
+
+    x0: float
+    y0: float
+    a: float
+    b: float
+    """Never 0."""
+    c: float
+    """The right branch's semi-axis; equal to `b` without a blend. Never 0."""
+    slope: float
+    blend: HyperbolaBlend | None
+    blend_width: float | None
+    """Positive wherever `blend` is set."""
+
+
+@dataclass(frozen=True, slots=True)
+class Gaussian:
+    """A contrast run's fit: `y = amplitude·e^(−(x − mean)² / (2·sigma²)) +
+    offset`, peaking at `mean`.
+    """
+
+    amplitude: float
+    mean: float
+    sigma: float
+    """Never 0."""
+    offset: float
 
 
 @dataclass(frozen=True, slots=True)
 class CurveFit:
-    """One curve the run fitted through the sweep; unused fits are omitted."""
+    """One curve the run computed through the sweep; others are omitted.
+
+    At most one of `coefficients`, `hyperbola` and `gaussian` is set, and none
+    where the equation is in a form the mapper does not recognise.
+    """
 
     name: str
     """`Quadratic`, `LeftTrend`, `RightTrend`, `Hyperbolic` or `Gaussian`."""
     equation: str
-    """As N.I.N.A. wrote it; the only record for a non-polynomial fit."""
+    """As the autofocuser wrote it; the only record for an unrecognised form."""
     coefficients: tuple[float, ...] | None
     """Highest power first: `(a, b, c)` is `a·x² + b·x + c`. None where the
     equation is not a polynomial. The trend lines exclude the lowest point, so
     re-fitting the curve will not reproduce them.
     """
+    hyperbola: Hyperbola | None
+    gaussian: Gaussian | None
     r_squared: float | None
-    """This fit's own R², unlike the run's worst in `AutoFocusReport`."""
+    """This fit's own R², unlike the worst judged one in `AutoFocusReport`."""
+    judged: bool
+    """Whether this curve's R² counts against the profile's threshold, which
+    `fitting` decides. A hyperbolic run also computes trend lines that do not
+    count, and no R² check applies to a contrast run's gaussian.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -396,8 +462,9 @@ class AutoFocusReport:
 
     The report is written per attempt, before the verdict, and carries no
     failure flag, so a rejected run overwrites the last good one; only
-    `r_squared` against the profile's `RSquaredThreshold` judges it. It
-    survives a restart, so date it against the session before use.
+    `r_squared` against the profile's `RSquaredThreshold`, and
+    `outside_sweep`, judge it. It survives a restart, so date it against the
+    session before use.
     """
 
     timestamp: datetime | None
@@ -414,16 +481,22 @@ class AutoFocusReport:
     """
     star_detector: str | None
     position: int | None
-    """Where the run left the focuser."""
+    """The focus point the run's fitting chose, rounded as the autofocuser
+    rounds it to move there. A rejected run never took it: the focuser goes
+    back to `initial_position`.
+    """
     hfr: float | None
     """The lowest HFR measured in the sweep, which compares run to run.
 
     Quantized by the sweep's step. None under CONTRASTDETECTION.
     """
     fitted_hfr: float | None
-    """`CalculatedFocusPoint.Value`, an artifact of the fit: under `TREND*`
-    fittings it averages in the trendline intersection, far below any
-    measured star.
+    """`CalculatedFocusPoint.Value`, an artifact of the fit. `TRENDLINES` uses
+    the trend-line intersection, far below any measured star; `PARABOLIC` and
+    `HYPERBOLIC` the curve's minimum alone; `TRENDPARABOLIC` and
+    `TRENDHYPERBOLIC` the mean of the two. None under CONTRASTDETECTION,
+    whose focus point is a contrast score, or where the fit put it at or
+    below zero.
     """
     curve: tuple[FocusPoint, ...]
     """Every position the sweep visited, ascending, including those that
@@ -434,8 +507,9 @@ class AutoFocusReport:
     undocumented, so a card cannot re-derive them.
     """
     minima: tuple[FitMinimum, ...]
-    """Every entry of `Intersections`. `position`/`fitted_hfr` is their mean,
-    so they show which one pulled the result.
+    """Every `Intersections` entry with a position, including ones the
+    fitting ignores, which carry `used` False (see `FitMinimum`).
+    `position` and `fitted_hfr` are the point the fitting chose.
     """
     measured_points: int | None
     """How many of `curve`'s positions measured something."""
@@ -446,8 +520,14 @@ class AutoFocusReport:
     duration_seconds: float | None
     """The attempt's duration; retries cost more."""
     r_squared: float | None
-    """The worst fit's R², which is what a threshold judges. Unused fits send
-    `"NaN"` and drop out.
+    """The worst R² among the judged curves, which is what a threshold
+    judges. `None` if none of them reports one.
+    """
+    outside_sweep: bool
+    """`position` lies outside the positions `curve` visited, which the
+    autofocuser rejects whatever the R² threshold. The sweep's ends are
+    inside it. N.I.N.A. checks every method, but Hocus Focus checks only
+    STARHFR, so its contrast-detection runs are never flagged.
     """
 
 
@@ -559,6 +639,9 @@ class ProfileSettings:
     autofocus_timeout_seconds: float | None
     """How long an autofocus may run before it counts as failed."""
     r_squared_threshold: float | None
+    """The R² an autofocus fit must reach. `None` where the profile sets 0 or
+    below, which turns the check off.
+    """
     min_minutes_after_meridian: float | None
     max_minutes_after_meridian: float | None
     use_side_of_pier: bool | None

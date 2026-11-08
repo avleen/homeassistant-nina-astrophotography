@@ -6,8 +6,136 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Home Assistant shows the integration's icon** on the integrations page,
+  the add-integration dialog and the device pages (#230). The icon and logo
+  ship in the integration's own `brand/` directory, which HACS validates.
+
+---
+
+## [2.5.0] - 2026-11-08
+
 ### Added
 
+- **A weather source without a dew point gets one from temperature and
+  humidity** (#218). `sensor.<instance>_weather_dew_point` is computed with
+  the Magnus formula when the source reports both but its own dew point is
+  `NaN`, so the weather card's dew alert can fire. The source's own reading is
+  used whenever it has one.
+- **The autofocus card draws a hyperbolic or gaussian fit** (#226), so a
+  `HYPERBOLIC` or `TRENDHYPERBOLIC` run shows the curve its focus point came
+  from, and a contrast-detection run its gaussian. Each fit in
+  `sensor.<instance>_focuser_last_autofocus`'s `fits` carries the parsed
+  `hyperbola` or `gaussian` beside `coefficients`. Built-in N.I.N.A.'s forms
+  and every Hocus Focus 4 hyperbolic model are read; a fit in any other form
+  keeps `equation` alone and the card marks it `not plotted`.
+- **The weather card can leave out the sky brightness cell** (#212), with
+  `show_sky_brightness: false` or the switch in its editor. A station that
+  measures only whole lux reads `0 lx` all night, since a dark sky is about
+  0.001 lx (#117).
+
+### Changed
+
+- **The weather card leaves out a reading it has no entity for** (#212): one
+  disabled in Home Assistant, or a channel the station never reports, such as
+  cloud cover on a station without a cloud sensor. The wind section is left
+  out when none of speed, gust or direction has an entity, and a station with
+  nothing to show says so. A reading that is only `unknown` or `unavailable`
+  still shows `—`.
+- **The reference covers a contrast-detection autofocus run** (#208):
+  `autofocus_r2` reads `unknown` and every fit is `judged: false`, since no
+  R² threshold applies to one. The synthetic `HYPERBOLIC` test run carries a
+  hyperbolic curve beside its R².
+
+### Fixed
+
+- **The autofocus card circles a contrast-detection run's highest reading as
+  its best point** (#225). A contrast score peaks at focus, so the sweep's
+  lowest reading is its worst; an HFR run circles its smallest stars.
+  The legend says `above the axis` of a minimum past the chart's top, as it
+  says `below the axis` of one under its floor.
+- **An autofocus run whose focus position falls outside its sweep fails**
+  (#215). N.I.N.A. rejects such a run whatever its R² and returns the
+  focuser to where it started, so
+  `binary_sensor.<instance>_focuser_autofocus_failed` turns `on` with
+  `reason: out_of_range`. The sweep's first and last positions are inside
+  it, and Hocus Focus checks only `STARHFR` runs. A run failing the R² check
+  too reads `rejected`. The autofocus card says to start the run nearer
+  focus or widen the sweep.
+- **`sensor.<instance>_focuser_autofocus_position` reads the step the
+  focuser moved to** (#215). Hocus Focus writes a hyperbolic fit's focus
+  point unrounded, and the sensor rounds it half to even, as Hocus Focus
+  does before moving there: 2341.5 reads 2342, not 2341. A fit's minima in
+  the `minima` attribute of `sensor.<instance>_focuser_last_autofocus` are
+  rounded the same way.
+- **The image panel's ADU bar runs to the camera's full scale** (#213), read
+  from the frames' max ADU as the frame statistics card reads it. A 12-bit
+  camera's flat at half its full scale draws where a 16-bit camera's does,
+  and a gridline past full scale is left off. The full scale is 12, 14 or
+  16 bits, so dim 16-bit flats do not read as a 15-bit camera's.
+- **The autofocus card marks no fit judged when the profile's R² check is
+  off** (#217). Where `binary_sensor.<instance>_focuser_autofocus_failed`
+  has `r_squared_threshold: null`, which a profile not yet read also gives,
+  every fit reads `not judged`. Each minimum's `used` marking is
+  unaffected. A disabled or unavailable verdict entity leaves each fit as
+  its `judged` says.
+- **The autofocus card marks the minima the focus point was not built
+  from** (#216). Each entry in the `minima` attribute of
+  `sensor.<instance>_focuser_last_autofocus` carries `used`, true where
+  N.I.N.A.'s final focus point comes from that minimum. The card draws an
+  unused minimum faded and labels it `not used`: the trend-line intersection
+  on a `HYPERBOLIC` run, or the minima built-in N.I.N.A. reports beyond
+  those its fitting uses. A contrast-detection run uses its gaussian
+  maximum.
+- **The frame statistics card's mean ADU chart shows a background climb on a
+  camera that does not scale to 16 bits** (#174). The chart's 10 ADU minimum
+  span is scaled to the camera's full scale, read from the frames' max ADU,
+  so a 12-bit camera's 1.5 ADU climb fills the chart as a 16-bit camera's
+  24 ADU one does. Each light in `recent_lights` on
+  `sensor.<instance>_last_image_hfr` carries its `max`.
+- **An R² threshold of 0 or below leaves an autofocus unjudged** (#203).
+  N.I.N.A. checks R² only against a threshold above 0, so
+  `binary_sensor.<instance>_focuser_autofocus_failed` rejects no run on its
+  R² on a profile with the check off, even one whose fit scored below 0. Its
+  `r_squared_threshold` attribute is `null` there, and the autofocus card
+  shows no pass or fail on the fit.
+- **An autofocus run is judged only on the curves its fitting uses** (#201).
+  `binary_sensor.<instance>_focuser_autofocus_failed` compares the profile's
+  R² threshold with those curves alone, so a trend line beside a
+  `HYPERBOLIC` fit does not fail the run, and a contrast-detection run is not
+  gated on R². The autofocus card marks the other curves `not judged`.
+- **The autofocus card shows the fitted HFR N.I.N.A. chose** (#202): the
+  trend-line intersection under `TRENDLINES`, the curve's minimum under
+  `PARABOLIC` or `HYPERBOLIC`, and the mean of the two under
+  `TRENDPARABOLIC` or `TRENDHYPERBOLIC`.
+  `sensor.<instance>_focuser_last_autofocus` carries it as its `fitted_hfr`
+  attribute, which the card reads.
+
+## [2.4.1] - 2026-11-05
+
+### Fixed
+
+- **The integration sets up on Home Assistant 2026.11.** Setup failed on
+  that release with
+  `TypeError: unsupported operand type(s) for |: 'DeviceInfo' and 'dict'`.
+
+## [2.4.0] - 2026-11-05
+
+### Added
+
+- **`sensor.<instance>_site_longitude`** reports the longitude N.I.N.A. is
+  configured for, beside the site latitude, so a rig hosted away from Home
+  Assistant can have its own sun placed.
+- **The imaging stall alert has quiet hours,** for a rig that is shut down
+  by day. `mute_mode` mutes new alerts, the unreachable one included,
+  between two fixed times or while the sun is up: from when the rising sun
+  passes `mute_morning_altitude` until the setting sun drops below
+  `mute_evening_altitude`. A rig still unreachable when the window closes
+  is reported then. The default is off.
+- **The imaging stall alert can place the sun at the rig.** Wire its
+  optional site latitude and longitude inputs, and both `night_only` and the
+  sun quiet hours follow the rig's sky instead of Home Assistant's.
 - **`binary_sensor.<instance>_mount_meridian_flip`** is `on` while N.I.N.A.
   is in a meridian flip, including the wait before the slew, when it turns
   tracking off and the countdown reads `unknown`. Its `slews_at` attribute
@@ -29,6 +157,17 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 
 ### Fixed
 
+- **The imaging stall alert waits for the rig to be let work.** Its quiet
+  clock starts at the latest of the sequencer starting, conditions turning
+  safe, the sun setting and the quiet hours ending. A rig started before
+  dusk that waited out the twilight under a closed roof was reported stalled
+  the minute its safety monitor turned safe.
+- **The imaging stall alert names only tonight's error.** An error from
+  before the sequence started is left out of the message.
+- **A profile whose site was never set reports no site.** Latitude and
+  longitude of exactly 0°, 0° read `unknown` rather than a point in the Gulf
+  of Guinea, so the sky map falls back to Home Assistant's latitude and the
+  stall alert's sun gates to Home Assistant's location.
 - **The sky map's compass letters match the sky it draws.** The map drew north
   at the bottom under the N at the top, so the scope, the stars and the flip
   label all sat under the opposite letter. It is now a sky chart held
@@ -143,7 +282,8 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
   histogram, and it cannot show how much of a frame is clipped. A max of
   65535 is normal: star cores and hot pixels saturate. A camera whose driver
   does not scale to 16 bits saturates lower, so its whisker stops short of
-  the right edge. The `show_histogram` option still turns it on and off.
+  the right edge until #213 scales the axis to it. The `show_histogram`
+  option still turns it on and off.
 - **The frame statistics card reads the newest run, not the whole night**
   (#105). A run is the lights since the last target change that share the
   newest light's filter and exposure, interleaved filters and all. The star

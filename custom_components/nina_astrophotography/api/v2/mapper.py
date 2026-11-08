@@ -30,6 +30,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta, timezone
 import math
 import re
+from string import Formatter
 from types import MappingProxyType
 from typing import Any
 
@@ -47,7 +48,10 @@ from ..models import (
     FocuserModel,
     FocusPoint,
     Frame,
+    Gaussian,
     GuiderModel,
+    Hyperbola,
+    HyperbolaBlend,
     LivestackStatus,
     MountModel,
     NinaEvent,
@@ -117,6 +121,9 @@ _TIMESPAN = re.compile(
 # The only method whose focus points are HFR in pixels. An allowlist, so an
 # unknown method's numbers are never published as pixels.
 _HFR_METHODS = frozenset({"STARHFR"})
+# `AutoFocuserName` of the plugin that checks the sweep's range on STARHFR runs
+# only; N.I.N.A.'s own autofocus checks it under every method.
+_HOCUS_FOCUS = "Hocus Focus"
 
 
 def nan_to_none(value: Any) -> Any:
@@ -151,6 +158,12 @@ def _number(wire: Any, *path: str) -> float | None:
 def _integer(wire: Any, *path: str) -> int | None:
     value = _dig(wire, *path)
     return int(value) if _is_number(value) else None
+
+
+def _rounded(wire: Any, *path: str) -> int | None:
+    """Half to even, as .NET's `Math.Round` and Python's `round` both do."""
+    value = _dig(wire, *path)
+    return round(value) if _is_number(value) and math.isfinite(value) else None
 
 
 def _range(wire: Any, low_key: str, high_key: str) -> tuple[float, float] | None:
@@ -733,6 +746,17 @@ def _focus_curve(wire: dict) -> tuple[FocusPoint, ...]:
     return tuple(sorted(swept, key=lambda point: point.position))
 
 
+def _outside_sweep(
+    position: int | None, curve: tuple[FocusPoint, ...], *, checked: bool
+) -> bool:
+    """Whether the autofocuser rejects the run for a focus point outside the
+    positions it visited. `curve` ascends, and its ends are inside.
+    """
+    if not checked or position is None or not curve:
+        return False
+    return not curve[0].position <= position <= curve[-1].position
+
+
 _TERM = re.compile(
     r"^(?P<coefficient>[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)"
     r"(?:\s*\*\s*x(?:\^(?P<power>\d+))?)?$"
@@ -760,11 +784,148 @@ def _polynomial(equation: str) -> tuple[float, ...] | None:
     return tuple(powers.get(power, 0.0) for power in range(max(powers), -1, -1))
 
 
+# A double as .NET writes it in the invariant culture: round-trip ("1E-05")
+# from N.I.N.A., "0.###" from Hocus Focus, and a negative after an operator
+# as "+ -1.4" or "x - -5".
+_NUMBER = r"-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"
+
+
+def _form(template: str) -> re.Pattern[str]:
+    """`template` with each `{slot}` a number, matched with whitespace
+    stripped. A repeated slot must repeat its text, as one value formatted
+    twice does.
+    """
+    pattern: list[str] = []
+    seen: set[str] = set()
+    for literal, slot, _, _ in Formatter().parse("".join(template.split())):
+        pattern.append(re.escape(literal))
+        if slot is None:
+            continue
+        pattern.append(f"(?P={slot})" if slot in seen else f"(?P<{slot}>{_NUMBER})")
+        seen.add(slot)
+    return re.compile("".join(pattern))
+
+
+def _parameters(form: re.Pattern[str], equation: str) -> dict[str, float] | None:
+    """The numbers in `equation`'s slots, or None unless it is in `form`."""
+    match = form.fullmatch("".join(equation.split()))
+    if match is None:
+        return None
+    values = {slot: float(text) for slot, text in match.groupdict().items()}
+    return values if all(map(math.isfinite, values.values())) else None
+
+
+_BRANCH = "{a}/{b} * √((x - {x0})² + {b}²)"
+_RIGHT = "{a}/{c} * √((x - {x0})² + {c}²)"
+_RAMP = "min(max(0, ({x0} - x) / {w}), 1)"
+_LOGISTIC = "σ(({x0} - x)/{w})"
+_BUILT_IN_HYPERBOLA = _form("y = {a} * cosh(asinh(({x0} - x) / {b}))")
+# Hocus Focus's own models, each with the blend it writes.
+_HOCUS_HYPERBOLAS: tuple[tuple[re.Pattern[str], HyperbolaBlend | None], ...] = (
+    (_form(f"y = {_BRANCH} + {{y0}}"), None),
+    (_form(f"y = {_BRANCH} + {{s}}·(x - {{x0}}) + {{y0}}"), None),
+    (_form(f"y = {_RAMP} * {_BRANCH} + (1 - {_RAMP}) * {_RIGHT} + {{y0}}"), "ramp"),
+    (
+        _form(f"y = {_LOGISTIC} * {_BRANCH} + (1 - {_LOGISTIC}) * {_RIGHT} + {{y0}}"),
+        "logistic",
+    ),
+)
+
+
+def _hyperbola(equation: str) -> Hyperbola | None:
+    """The hyperbola `equation` writes, or None for any other curve, or one
+    dividing by zero.
+
+    Forms from N.I.N.A.'s `HyperbolicFitting.cs` and Hocus Focus's
+    `*Hyperbolic*FittingAlglib.cs` as of 4.0.
+    """
+    if (built_in := _parameters(_BUILT_IN_HYPERBOLA, equation)) is not None:
+        # cosh(asinh(z)) is even in b; the general form is not.
+        b = abs(built_in["b"])
+        hyperbola = Hyperbola(
+            x0=built_in["x0"],
+            y0=0.0,
+            a=built_in["a"],
+            b=b,
+            c=b,
+            slope=0.0,
+            blend=None,
+            blend_width=None,
+        )
+    else:
+        hyperbola = next(
+            (
+                Hyperbola(
+                    x0=v["x0"],
+                    y0=v["y0"],
+                    a=v["a"],
+                    b=v["b"],
+                    c=v.get("c", v["b"]),
+                    slope=v.get("s", 0.0),
+                    blend=blend,
+                    blend_width=v.get("w"),
+                )
+                for form, blend in _HOCUS_HYPERBOLAS
+                if (v := _parameters(form, equation)) is not None
+            ),
+            None,
+        )
+    if hyperbola is None or 0 in (hyperbola.b, hyperbola.c):
+        return None
+    if hyperbola.blend is not None and (hyperbola.blend_width or 0) <= 0:
+        return None
+    return hyperbola
+
+
+# N.I.N.A.'s `GaussianFitting.cs`, which Hocus Focus uses unchanged.
+_GAUSSIAN = _form(
+    "y = {amplitude} * exp(-1 * (x - {mean}) * (x - {mean})"
+    " / (2 * {sigma} * {sigma})) + {offset}"
+)
+
+
+def _gaussian(equation: str) -> Gaussian | None:
+    """The gaussian `equation` writes, or None for any other curve."""
+    values = _parameters(_GAUSSIAN, equation)
+    if values is None or values["sigma"] == 0:
+        return None
+    return Gaussian(
+        amplitude=values["amplitude"],
+        mean=values["mean"],
+        sigma=values["sigma"],
+        offset=values["offset"],
+    )
+
+
+# The curves whose R² each `Fitting` judges against a threshold: the ones it
+# places focus with, except a contrast run's gaussian. N.I.N.A. can compute
+# others beside them: a HYPERBOLIC run also reports
+# trend lines, and one scoring 0.000 does not stop it being applied. GAUSSIAN is
+# what a contrast-detection run writes, and no R² threshold applies to one.
+_TREND_LINES = frozenset({"LeftTrend", "RightTrend"})
+_JUDGED_FITS = {
+    "TRENDLINES": _TREND_LINES,
+    "PARABOLIC": frozenset({"Quadratic"}),
+    "TRENDPARABOLIC": _TREND_LINES | {"Quadratic"},
+    "HYPERBOLIC": frozenset({"Hyperbolic"}),
+    "TRENDHYPERBOLIC": _TREND_LINES | {"Hyperbolic"},
+    "GAUSSIAN": frozenset(),
+}
+
+
+def _judged_curves(wire: dict) -> frozenset[str] | None:
+    """The curves whose R² this run's fitting judges, or `None` for a fitting
+    the table does not know, which judges every curve: the cautious reading of
+    a new one.
+    """
+    return _JUDGED_FITS.get((_text(wire, "Fitting") or "").upper())
+
+
 def _curve_fits(wire: dict) -> tuple[CurveFit, ...]:
-    """The fits this run used, each with its own R².
+    """The fits this run computed, each with its own R².
 
     N.I.N.A. sends every fitting it knows, with an empty equation for the
-    ones unused; a non-empty equation is the filter. `RSquares` has no
+    ones not computed; a non-empty equation is the filter. `RSquares` has no
     Gaussian entry, hence a lookup rather than a zip.
     """
     fittings = wire.get("Fittings")
@@ -772,34 +933,62 @@ def _curve_fits(wire: dict) -> tuple[CurveFit, ...]:
         return ()
     squares = wire.get("RSquares")
     squares = squares if isinstance(squares, dict) else {}
+    judged = _judged_curves(wire)
     return tuple(
         CurveFit(
             name=name,
             equation=equation,
             coefficients=_polynomial(equation),
+            hyperbola=_hyperbola(equation),
+            gaussian=_gaussian(equation),
             r_squared=_numeric(squares.get(name)),
+            judged=judged is None or name in judged,
         )
         for name, equation in fittings.items()
         if isinstance(equation, str) and equation.strip()
     )
 
 
+# The `Intersections` each `Fitting` builds its final focus point from, as
+# N.I.N.A. and Hocus Focus pick it: one minimum, or the mean of two. Any method
+# but STARHFR writes GAUSSIAN and focuses at the gaussian maximum.
+_FOCUS_MINIMA = {
+    "TRENDLINES": frozenset({"TrendLineIntersection"}),
+    "PARABOLIC": frozenset({"QuadraticMinimum"}),
+    "HYPERBOLIC": frozenset({"HyperbolicMinimum"}),
+    "TRENDPARABOLIC": frozenset({"TrendLineIntersection", "QuadraticMinimum"}),
+    "TRENDHYPERBOLIC": frozenset({"TrendLineIntersection", "HyperbolicMinimum"}),
+    "GAUSSIAN": frozenset({"GaussianMaximum"}),
+}
+_KNOWN_MINIMA = frozenset().union(*_FOCUS_MINIMA.values())
+
+
+def _minimum_used(wire: dict, name: str) -> bool:
+    """Whether the final focus point is built from this minimum. A fitting or
+    a name the table does not know counts as used: calling it unused would
+    claim the run ignored it.
+    """
+    used = _FOCUS_MINIMA.get((_text(wire, "Fitting") or "").upper())
+    return used is None or name not in _KNOWN_MINIMA or name in used
+
+
 def _fit_minima(wire: dict) -> tuple[FitMinimum, ...]:
-    """Every `Intersections` entry, keyed by the wire's own name: the
-    non-trendline entry is named for whichever curve was fitted.
+    """Every `Intersections` entry with a position, keyed by the wire's own
+    name, which differs by autofocuser (see `FitMinimum`).
     """
     intersections = wire.get("Intersections")
     if not isinstance(intersections, dict):
         return ()
     found = []
     for name, point in intersections.items():
-        position = _integer(point, "Position")
+        position = _rounded(point, "Position")
         if position is not None:
             found.append(
                 FitMinimum(
                     name=name,
                     position=position,
                     value=_positive(_number(point, "Value")),
+                    used=_minimum_used(wire, name),
                 )
             )
     return tuple(found)
@@ -808,26 +997,31 @@ def _fit_minima(wire: dict) -> tuple[FitMinimum, ...]:
 def map_last_autofocus(wire: dict) -> AutoFocusReport | None:
     """The newest autofocus report, or `None` where the rig has never run one.
 
-    `r_squared` is the minimum of `RSquares` over the fittings this run used;
-    the rest send `"NaN"`. A CONTRASTDETECTION run's focus points are a
-    contrast score, not pixels, so the HFR fields are dropped; positions stay.
+    `r_squared` is the worst R² among the judged curves, and `None` where
+    there are none or all of those read `"NaN"`. A
+    CONTRASTDETECTION run's focus points are a contrast score, not pixels, so
+    the HFR fields are dropped; positions stay.
+
+    Fitted positions, `CalculatedFocusPoint`'s and the `Intersections`', are
+    rounded: Hocus Focus reports a hyperbola's minimum unrounded, then moves
+    to and judges `Math.Round` of it. N.I.N.A.'s own fittings round them
+    before writing.
     """
     if not wire:
         return None
     method = _text(wire, "Method")
     is_hfr = method is None or method.upper() in _HFR_METHODS
     squares = wire.get("RSquares")
-    computed = (
-        [
-            value
-            for value in (_numeric(v) for v in (squares or {}).values())
-            if value is not None
-        ]
-        if isinstance(squares, dict)
-        else []
-    )
+    judged = _judged_curves(wire)
+    computed = [
+        value
+        for name, square in (squares.items() if isinstance(squares, dict) else ())
+        if judged is None or name in judged
+        if (value := _numeric(square)) is not None
+    ]
     curve = _focus_curve(wire)
     measured = [point.value for point in curve if point.value is not None]
+    position = _rounded(wire, "CalculatedFocusPoint", "Position")
     return AutoFocusReport(
         timestamp=_timestamp(wire.get("Timestamp")),
         filter_name=_text(wire, "Filter") or None,
@@ -836,7 +1030,7 @@ def map_last_autofocus(wire: dict) -> AutoFocusReport | None:
         fitting=_text(wire, "Fitting"),
         autofocuser=_text(wire, "AutoFocuserName"),
         star_detector=_text(wire, "StarDetectorName"),
-        position=_integer(wire, "CalculatedFocusPoint", "Position"),
+        position=position,
         hfr=min(measured) if measured and is_hfr else None,
         fitted_hfr=_hfr(wire, "CalculatedFocusPoint") if is_hfr else None,
         curve=curve,
@@ -847,6 +1041,11 @@ def map_last_autofocus(wire: dict) -> AutoFocusReport | None:
         initial_hfr=_hfr(wire, "InitialFocusPoint") if is_hfr else None,
         duration_seconds=_timespan_seconds(wire.get("Duration")),
         r_squared=min(computed) if computed else None,
+        outside_sweep=_outside_sweep(
+            position,
+            curve,
+            checked=is_hfr or _text(wire, "AutoFocuserName") != _HOCUS_FOCUS,
+        ),
     )
 
 
@@ -860,13 +1059,24 @@ def map_livestack_status(wire: dict | str) -> LivestackStatus:
 
 def map_profile(wire: dict) -> ProfileSettings:
     """The allowlisted slice of `/profile/show`."""
+    latitude = _number(wire, "AstrometrySettings", "Latitude")
+    longitude = _number(wire, "AstrometrySettings", "Longitude")
+    # 0°N 0°E is open ocean, so the pair is a site nobody set. Read as one, it
+    # would put the sun hours away from the rig and mute its night-only alerts.
+    if latitude == 0 and longitude == 0:
+        latitude = longitude = None
+    # N.I.N.A. checks R² only against a threshold above 0. An R² can be
+    # negative, so a threshold of 0 kept as one would reject runs it applied.
+    r_squared_threshold = _number(wire, "FocuserSettings", "RSquaredThreshold")
+    if r_squared_threshold is not None and r_squared_threshold <= 0:
+        r_squared_threshold = None
     return ProfileSettings(
         focal_length=_number(wire, "TelescopeSettings", "FocalLength"),
         pixel_size=_number(wire, "CameraSettings", "PixelSize"),
         autofocus_timeout_seconds=_number(
             wire, "FocuserSettings", "AutoFocusTimeoutSeconds"
         ),
-        r_squared_threshold=_number(wire, "FocuserSettings", "RSquaredThreshold"),
+        r_squared_threshold=r_squared_threshold,
         min_minutes_after_meridian=_number(
             wire, "MeridianFlipSettings", "MinutesAfterMeridian"
         ),
@@ -874,8 +1084,8 @@ def map_profile(wire: dict) -> ProfileSettings:
             wire, "MeridianFlipSettings", "MaxMinutesAfterMeridian"
         ),
         use_side_of_pier=_flag(wire, "MeridianFlipSettings", "UseSideOfPier"),
-        site_latitude=_number(wire, "AstrometrySettings", "Latitude"),
-        site_longitude=_number(wire, "AstrometrySettings", "Longitude"),
+        site_latitude=latitude,
+        site_longitude=longitude,
         site_elevation=_number(wire, "AstrometrySettings", "Elevation"),
         dome_close_on_unsafe=_flag(wire, "DomeSettings", "CloseOnUnsafe"),
         dome_refuse_unsafe_shutter_move=_flag(

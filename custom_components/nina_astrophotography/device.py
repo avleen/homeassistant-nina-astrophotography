@@ -148,16 +148,21 @@ def hub_device_info(
     configuration_url: str | None = None,
 ) -> DeviceInfo:
     """The service device every piece of equipment hangs off."""
-    return DeviceInfo(
+    info = DeviceInfo(
         identifiers=device_identifiers(entry_id),
         name=instance_name,
         manufacturer=MANUFACTURER,
         model="Advanced API",
         entry_type=DeviceEntryType.SERVICE,
-    ) | _present(
-        sw_version=version.nina_version,
-        configuration_url=configuration_url,
     )
+    # `update`, not `|`: from Home Assistant 2026.11 `DeviceInfo` is not a dict.
+    info.update(
+        _present(
+            sw_version=version.nina_version,
+            configuration_url=configuration_url,
+        )
+    )
+    return info
 
 
 def child_device_info(
@@ -177,16 +182,20 @@ def child_device_info(
     `suggested_area` is the hub's area, applied only when the device is
     created: `via_device` does not inherit an area.
     """
-    return DeviceInfo(
+    info = DeviceInfo(
         identifiers=device_identifiers(entry_id, kind),
         name=f"{instance_name} {KINDS[kind]}",
         manufacturer=MANUFACTURER,
         via_device_id=via_device_id,
-    ) | _present(
-        model=meta.name if meta else None,
-        sw_version=meta.driver_version if meta else None,
-        suggested_area=suggested_area,
     )
+    info.update(
+        _present(
+            model=meta.name if meta else None,
+            sw_version=meta.driver_version if meta else None,
+            suggested_area=suggested_area,
+        )
+    )
+    return info
 
 
 @callback

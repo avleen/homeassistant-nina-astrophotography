@@ -27,7 +27,6 @@ FOCUSER_POSITION = "sensor.n_i_n_a_focuser_position"
 SEQUENCE_PROGRESS = "sensor.n_i_n_a_sequence_progress"
 WAIT_ENDS_AT = "sensor.n_i_n_a_wait_ends_at"
 LAST_FRAME_AT = "sensor.n_i_n_a_last_frame_at"
-SITE_LATITUDE = "sensor.n_i_n_a_site_latitude"
 GUIDER_RMS = (
     "sensor.n_i_n_a_guider_rms_total",
     "sensor.n_i_n_a_guider_rms_ra",
@@ -243,6 +242,17 @@ async def test_the_last_autofocus_run_is_published_reading_by_reading(
     assert float(state_of(hass, entity_id).state) == pytest.approx(expected)
 
 
+@pytest.mark.synthetic
+async def test_a_focus_point_between_steps_is_published_where_the_focuser_went(
+    hass: HomeAssistant, config_entry, rig, set_up_at
+) -> None:
+    """2341.5 rounds half to even, as the autofocuser rounds it to move."""
+    await set_up_at(hass, config_entry, rig, "autofocus_focus_point_between_steps")
+    assert (
+        float(state_of(hass, "sensor.n_i_n_a_focuser_autofocus_position").state) == 2342
+    )
+
+
 async def test_the_last_autofocus_time_is_published_in_utc(
     hass: HomeAssistant, config_entry, rig, set_up_at
 ) -> None:
@@ -296,27 +306,121 @@ async def test_the_last_autofocus_publishes_the_fit_overlay(
 
 
 @pytest.mark.synthetic
-async def test_the_site_latitude_is_the_one_nina_is_configured_for(
+async def test_the_last_autofocus_publishes_a_hyperbola_a_card_can_evaluate(
     hass: HomeAssistant, config_entry, rig, set_up_at
 ) -> None:
-    """Where the RIG is, which for a hosted rig is not where Home Assistant is —
-    `nina-sky-map-card` projects its whole star field from this.
+    """A card evaluates the curve rather than parsing the equation string."""
+    await set_up_at(
+        hass, config_entry, rig, "autofocus_hyperbolic_with_a_flat_trend_line"
+    )
+    fits = state_of(hass, "sensor.n_i_n_a_focuser_last_autofocus").attributes["fits"]
+    (hyperbolic,) = (fit for fit in fits if fit["name"] == "Hyperbolic")
+
+    assert json.loads(json.dumps(hyperbolic["hyperbola"])) == {
+        "x0": 2336.0,
+        "y0": -1.0,
+        "a": 2.8,
+        "b": 48.0,
+        "c": 48.0,
+        "slope": 0.0,
+        "blend": None,
+        "blend_width": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("rig_state", "fitted_hfr"),
+    [
+        # The mean of the trend-line intersection and the quadratic minimum.
+        ("imaging_guiding", 1.0932570683996303),
+        # A HYPERBOLIC run's focus point is the hyperbola's minimum.
+        pytest.param(
+            "autofocus_hyperbolic_with_a_flat_trend_line",
+            1.8,
+            marks=pytest.mark.synthetic,
+        ),
+    ],
+    ids=["trend parabolic", "hyperbolic"],
+)
+async def test_the_last_autofocus_publishes_the_fitted_hfr_its_fitting_chose(
+    hass: HomeAssistant, config_entry, rig, set_up_at, rig_state: str, fitted_hfr: float
+) -> None:
+    """A card reads this attribute: the `autofocus_fitted_hfr` sensor ships
+    disabled, and `minima` carries curves the fitting ignores.
+    """
+    await set_up_at(hass, config_entry, rig, rig_state)
+    attributes = state_of(hass, "sensor.n_i_n_a_focuser_last_autofocus").attributes
+
+    assert attributes["fitted_hfr"] == pytest.approx(fitted_hfr)
+
+
+@pytest.mark.parametrize(
+    ("rig_state", "used"),
+    [
+        (
+            "imaging_guiding",
+            {"TrendLineIntersection": True, "QuadraticMinimum": True},
+        ),
+        pytest.param(
+            "autofocus_hyperbolic_with_a_flat_trend_line",
+            {"TrendLineIntersection": False, "HyperbolicMinimum": True},
+            marks=pytest.mark.synthetic,
+        ),
+    ],
+    ids=["trend parabolic", "hyperbolic"],
+)
+async def test_the_last_autofocus_says_which_minima_its_focus_point_used(
+    hass: HomeAssistant,
+    config_entry,
+    rig,
+    set_up_at,
+    rig_state: str,
+    used: dict[str, bool],
+) -> None:
+    """Hocus Focus reports the trend-line intersection on every run, and a
+    HYPERBOLIC fitting ignores it.
+    """
+    await set_up_at(hass, config_entry, rig, rig_state)
+    minima = state_of(hass, "sensor.n_i_n_a_focuser_last_autofocus").attributes[
+        "minima"
+    ]
+
+    assert {minimum["name"]: minimum["used"] for minimum in minima} == used
+
+
+@pytest.mark.synthetic
+@pytest.mark.parametrize(
+    ("entity", "reading"),
+    [
+        ("sensor.n_i_n_a_site_latitude", "31.5478"),
+        ("sensor.n_i_n_a_site_longitude", "-110.2977"),
+    ],
+    ids=["latitude", "longitude"],
+)
+async def test_the_site_is_the_one_nina_is_configured_for(
+    hass: HomeAssistant, config_entry, rig, set_up_at, entity, reading
+) -> None:
+    """Where the RIG is, which for a hosted rig is not where Home Assistant is:
+    the sky map card and the stall alert's sun both read it.
 
     Synthetic in `AstrometrySettings`: it is newer in the capture allowlist than
     the corpus is, so the committed projections carry no site.
     """
     await set_up_at(hass, config_entry, rig, "site_configured")
 
-    assert state_of(hass, SITE_LATITUDE).state == "31.5478"
+    assert state_of(hass, entity).state == reading
 
 
-async def test_a_profile_with_no_site_reports_no_latitude(
-    hass: HomeAssistant, loaded_entry
+@pytest.mark.parametrize(
+    "entity", ["sensor.n_i_n_a_site_latitude", "sensor.n_i_n_a_site_longitude"]
+)
+async def test_a_profile_with_no_site_reports_no_site(
+    hass: HomeAssistant, loaded_entry, entity
 ) -> None:
-    """A card falls back to Home Assistant's own location on `unknown`, so this
-    must not read as a number — 0 is the equator, not a missing site.
+    """Readers fall back to Home Assistant's own location on `unknown`, so this
+    must not read as a number — 0 is a real place, not a missing site.
     """
-    assert state_of(hass, SITE_LATITUDE).state == "unknown"
+    assert state_of(hass, entity).state == "unknown"
 
 
 async def test_the_autofocus_readings_exist_before_a_run_reports(

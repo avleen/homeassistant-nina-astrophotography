@@ -162,8 +162,18 @@ def _with_site(state: State, **settings: float) -> State:
     (§8.3), so no committed projection carries a site and the mapper reads none.
     A re-capture replaces this in place.
     """
+    return _with_profile(state, "AstrometrySettings", **settings)
+
+
+def _with_profile(state: State, section: str, **settings: float) -> State:
+    """A copy of `state` whose profile has `settings` set in `section`.
+
+    For moving a captured setting; the key set stays the wire's. `_with_site`
+    is the exception, its section being absent from every capture.
+    """
     envelope = state["/profile/show?active=true"]
-    response = {**envelope["Response"], "AstrometrySettings": settings}
+    response = envelope["Response"]
+    response = {**response, section: {**response.get(section, {}), **settings}}
     return {**state, "/profile/show?active=true": {**envelope, "Response": response}}
 
 
@@ -177,8 +187,54 @@ def _dimmable(channel: dict) -> dict:
     return {**channel, "Id": 2, "Name": "Dew Heater A", "Maximum": 100, "Value": 50}
 
 
-def _rejected_autofocus(name: str, *, r_squared: float) -> dict:
-    """The captured autofocus report with its curve fit degraded.
+def _hyperbolic_autofocus(name: str) -> dict:
+    """The captured autofocus report refitted HYPERBOLIC, its hyperbolic curve
+    scoring 0.988 beside a right trend line scoring 0.0.
+
+    The corpus holds only TRENDPARABOLIC runs, so the fitting, the hyperbolic
+    equation, both R² values and the focus point are derived. The equation is
+    in Hocus Focus's symmetric form, since the capture names it the
+    autofocuser, and the focus point sits at its minimum, where a HYPERBOLIC
+    run puts it.
+    `HyperbolicMinimum` replaces the captured `QuadraticMinimum` with that
+    invented vertex: Hocus Focus computes only the trend lines and the
+    hyperbola on a HYPERBOLIC run, so those are the two minima it reports. The
+    captured quadratic fit stays in `Fittings` all the same.
+    """
+    envelope = load_envelope(name)
+    response = envelope["Response"]
+    return {
+        **envelope,
+        "Response": {
+            **response,
+            "Fitting": "HYPERBOLIC",
+            "CalculatedFocusPoint": {
+                **response["CalculatedFocusPoint"],
+                "Position": 2336,
+                "Value": 1.8,
+            },
+            "Intersections": {
+                "TrendLineIntersection": response["Intersections"][
+                    "TrendLineIntersection"
+                ],
+                "HyperbolicMinimum": {"Position": 2336, "Value": 1.8, "Error": 0},
+            },
+            "Fittings": {
+                **response["Fittings"],
+                "Hyperbolic": "y = 2.8/48 * √((x - 2336)² + 48²) + -1",
+            },
+            "RSquares": {
+                **response["RSquares"],
+                "Hyperbolic": 0.988,
+                "RightTrend": 0.0,
+            },
+        },
+    }
+
+
+def _degraded_autofocus(name: str, *, r_squared: float) -> dict:
+    """The captured autofocus report with its curve fit degraded, whether or
+    not the profile's threshold rejects it.
 
     N.I.N.A. writes the report per ATTEMPT, before the verdict, so a run it
     REJECTED is on the wire looking exactly like a good one bar its R² (§4.4).
@@ -197,6 +253,40 @@ def _rejected_autofocus(name: str, *, r_squared: float) -> dict:
                 key: (value if value == "NaN" else r_squared)
                 for key, value in squares.items()
             },
+        },
+    }
+
+
+def _focused_at(envelope: dict, position: float) -> dict:
+    """An autofocus report with only its fitted focus point moved.
+
+    No capture holds a run whose fit landed outside its sweep, or between two
+    steps, so the position is derived; the fits and minima still place focus
+    where the capture did.
+    """
+    response = envelope["Response"]
+    return {
+        **envelope,
+        "Response": {
+            **response,
+            "CalculatedFocusPoint": {
+                **response["CalculatedFocusPoint"],
+                "Position": position,
+            },
+        },
+    }
+
+
+def _unscored(envelope: dict) -> dict:
+    """An autofocus report whose every curve reads `"NaN"` for its R², the
+    way the wire sends a fit that reported none. Synthetic in `RSquares`.
+    """
+    response = envelope["Response"]
+    return {
+        **envelope,
+        "Response": {
+            **response,
+            "RSquares": dict.fromkeys(response["RSquares"], "NaN"),
         },
     }
 
@@ -497,6 +587,12 @@ STATES: dict[str, State] = {
             "SkyBrightness": "NaN",
         },
     ),
+    # The physical station reading temperature and humidity — 26.3 °C at 75 %,
+    # captured beside its own 21.5 °C dew point — with DewPoint "NaN", as a
+    # station without a dew point sensor reports it.
+    "weather_station_without_dew_point": _with_readings(
+        _IMAGING, "WeatherData", DewPoint="NaN"
+    ),
     # The same rig with `?count=true` one frame ahead of `?all=true`, which is
     # what a frame saved between the two reads looks like. The count is a
     # scalar, so this varies the captured envelope's one number rather than
@@ -537,8 +633,66 @@ STATES: dict[str, State] = {
     # — the only evidence is the report's own R².
     "autofocus_rejected_on_r_squared": {
         **_IMAGING_GUIDING,
-        "/equipment/focuser/last-af": _rejected_autofocus(
+        "/equipment/focuser/last-af": _degraded_autofocus(
             "imaging_guiding_last_af.json", r_squared=0.42
+        ),
+    },
+    # A run whose fit scored below 0 under a profile threshold of 0, which
+    # turns N.I.N.A.'s R² check off. Synthetic in the R² and `RSquaredThreshold`.
+    "autofocus_fitted_badly_with_the_r_squared_check_off": _with_profile(
+        {
+            **_IMAGING_GUIDING,
+            "/equipment/focuser/last-af": _degraded_autofocus(
+                "imaging_guiding_last_af.json", r_squared=-0.3
+            ),
+        },
+        "FocuserSettings",
+        RSquaredThreshold=0,
+    ),
+    # Runs whose fit put focus one step past the sweep's last position, 2492.
+    # Synthetic in the focus point, and in the R² or the threshold where the
+    # name says so.
+    "autofocus_focus_outside_the_sweep": {
+        **_IMAGING_GUIDING,
+        "/equipment/focuser/last-af": _focused_at(
+            load_envelope("imaging_guiding_last_af.json"), 2527
+        ),
+    },
+    "autofocus_outside_the_sweep_with_no_r_squared": {
+        **_IMAGING_GUIDING,
+        "/equipment/focuser/last-af": _focused_at(
+            _unscored(load_envelope("imaging_guiding_last_af.json")), 2527
+        ),
+    },
+    # A fit that put focus between two steps, unrounded, as Hocus Focus writes
+    # a hyperbola's minimum. Synthetic in the focus point.
+    "autofocus_focus_point_between_steps": {
+        **_IMAGING_GUIDING,
+        "/equipment/focuser/last-af": _focused_at(
+            load_envelope("imaging_guiding_last_af.json"), 2341.5
+        ),
+    },
+    "autofocus_rejected_on_r_squared_outside_the_sweep": {
+        **_IMAGING_GUIDING,
+        "/equipment/focuser/last-af": _focused_at(
+            _degraded_autofocus("imaging_guiding_last_af.json", r_squared=0.42), 2527
+        ),
+    },
+    "autofocus_outside_the_sweep_with_the_r_squared_check_off": _with_profile(
+        {
+            **_IMAGING_GUIDING,
+            "/equipment/focuser/last-af": _focused_at(
+                load_envelope("imaging_guiding_last_af.json"), 2527
+            ),
+        },
+        "FocuserSettings",
+        RSquaredThreshold=0,
+    ),
+    # A HYPERBOLIC run that passed beside a trend line its fitting doesn't use.
+    "autofocus_hyperbolic_with_a_flat_trend_line": {
+        **_IMAGING_GUIDING,
+        "/equipment/focuser/last-af": _hyperbolic_autofocus(
+            "imaging_guiding_last_af.json"
         ),
     },
     # The observing site N.I.N.A. is configured for, which is what a sky chart

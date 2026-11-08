@@ -71,6 +71,8 @@ OPTIONAL: dict[str, dict[str, object]] = {
     "guiding_alert.yaml": {"run_autofocus": True},
     "imaging_stall_alert.yaml": {
         "rig_reachable": ["binary_sensor.rig_reachable"],
+        "site_latitude": ["sensor.rig_site_latitude"],
+        "site_longitude": ["sensor.rig_site_longitude"],
         "safety_unsafe": ["binary_sensor.rig_safety_monitor_unsafe"],
         "last_image_filter": ["sensor.rig_last_image_filter"],
         "guider_status": ["sensor.rig_guider_status"],
@@ -84,11 +86,16 @@ OPTIONAL: dict[str, dict[str, object]] = {
         "longest_exposure_seconds": 300,
         "grace_minutes": 45,
         "settle_minutes": 20,
-        # The one input that gates nothing structural: it is read inside a
-        # condition template, so both values build the same automation. False
-        # is still the value worth sending — it is the substitution the
-        # default never produces.
+        # This and the mute inputs gate nothing structural: they are read
+        # inside condition templates, so every value builds the same
+        # automation. These are still the values worth sending — the
+        # substitutions the defaults never produce.
         "night_only": False,
+        "mute_mode": "sun",
+        "mute_from": "21:00:00",
+        "mute_until": "06:00:00",
+        "mute_morning_altitude": -6,
+        "mute_evening_altitude": 0,
         "notify_target": ["notify.phone"],
         "escalate_minutes": 90,
         "escalations": 3,

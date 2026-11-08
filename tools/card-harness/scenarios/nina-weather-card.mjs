@@ -11,8 +11,8 @@
  * reads `unavailable`.
  *
  * Three channels this source reports as `"NaN"` have no entity anywhere in the
- * corpus: cloud cover, sky quality and star FWHM. Their cells therefore render
- * as `—` in every scenario below, and the sky-quality section — a bar, a label
+ * corpus: cloud cover, sky quality and star FWHM. Their cells are therefore left
+ * out of every scenario below, and the sky-quality section — a bar, a label
  * and a scale — never renders at all. Nothing here can cover it without
  * inventing a channel, which is what `render.html` against a live rig is for.
  */
@@ -151,6 +151,38 @@ export const scenarios = {
   // registry row and no state. The channels still say a station is feeding
   // them, so every reading renders; only the name falls back.
   unsourced: { hass: (dump) => rig(dump, UP).without("weather_source").build() },
+
+  // The sky brightness cell turned off, as for a station that measures only
+  // whole lux and so reads 0 all night. The other four sky cells stay.
+  sky_brightness_off: {
+    hass: (dump) => rig(dump, UP).build(),
+    config: { show_sky_brightness: false },
+  },
+
+  // The pressure entity disabled: its cell is left out, not dashed, and the
+  // other three atmosphere cells close up.
+  pressure_disabled: { hass: (dump) => rig(dump, UP).without("weather_pressure").build() },
+
+  // All three wind entities disabled: the whole wind section goes, rose and
+  // title included.
+  wind_disabled: {
+    hass: (dump) =>
+      rig(dump, UP)
+        .without("weather_wind_speed", "weather_wind_gust", "weather_wind_direction")
+        .build(),
+  },
+
+  // The source names its station, but no channel has an entity: a station's
+  // first poll all `"NaN"`, or every channel disabled. A placeholder stands in
+  // for the readings.
+  station_unread: {
+    hass: (dump) => {
+      const channels = Object.keys(dump[UP].states)
+        .filter((id) => id.startsWith("sensor.n_i_n_a_weather_") && id !== SOURCE)
+        .map((id) => id.slice("sensor.n_i_n_a_".length));
+      return rig(dump, UP).without(...channels).build();
+    },
+  },
 
   // `unsourced` on a poll where every channel came back `"NaN"`: each reads
   // `unknown`, which an available channel only does while its station is

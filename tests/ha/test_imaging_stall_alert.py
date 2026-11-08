@@ -16,8 +16,11 @@ never run under it.
 import asyncio
 from datetime import datetime, timedelta
 
+from astral import LocationInfo, SunDirection
+from astral.sun import time_at_elevation
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
+from homeassistant.util import dt as dt_util
 import pytest
 from pytest_homeassistant_custom_component.common import (
     async_fire_time_changed,
@@ -382,3 +385,295 @@ async def test_reminders_stop_at_the_configured_count(
 
     reminders = [c for c in sent if "still stalled" in c.data["title"]]
     assert len(reminders) == escalations
+
+
+def _local(offset_minutes: int) -> str:
+    """The wall-clock time `offset_minutes` from T0, in the test's time zone."""
+    moment = dt_util.as_local(T0) + timedelta(minutes=offset_minutes)
+    return moment.strftime("%H:%M:%S")
+
+
+async def go_down(hass: HomeAssistant, clock, when=T0) -> None:
+    """Lose the rig at `when`: the sequencer's row goes unavailable."""
+    clock.move_to(when)
+    hass.states.async_set("binary_sensor.rig_sequencer_running", "unavailable")
+    await hass.async_block_till_done()
+
+
+@pytest.mark.parametrize(
+    ("mode", "window", "alerts"),
+    [
+        ("fixed", (-60, 60), False),
+        ("fixed", (-60, -30), True),
+        ("fixed", (-30, -60), False),
+        ("fixed", (60, -60), True),
+        ("fixed", (0, 0), True),
+        ("off", (-60, 60), True),
+    ],
+    ids=["inside", "past", "wrapped-inside", "wrapped-outside", "empty", "off"],
+)
+async def test_quiet_hours_mute_an_unreachable_rig(
+    hass: HomeAssistant, watching, mode, window, alerts
+) -> None:
+    """The unreachable arm has no other gate, and a rig switched off by day is
+    unreachable on purpose.
+    """
+    start, end = window
+    clock = await watching(
+        mute_mode=mode, mute_from=_local(start), mute_until=_local(end)
+    )
+    await go_down(hass, clock)
+
+    await tick(hass, T0 + timedelta(minutes=3))
+
+    assert (alert(hass) is not None) is alerts
+
+
+async def test_quiet_hours_mute_a_quiet_rig(hass: HomeAssistant, watching) -> None:
+    """The window is a top-level condition, not a gate on one arm."""
+    clock = await watching(
+        mute_mode="fixed", mute_from=_local(-60), mute_until=_local(180)
+    )
+    await start_sequence(hass, clock)
+
+    clock.move_to(T0 + STALLED)
+    await tick(hass, T0 + STALLED)
+
+    assert alert(hass) is None
+
+
+async def test_a_rig_still_down_when_the_window_closes_is_reported(
+    hass: HomeAssistant, watching
+) -> None:
+    """The unreachable trigger fires once, inside the window; a rig that never
+    came back at dusk must still be reported that night.
+    """
+    clock = await watching(
+        mute_mode="fixed", mute_from=_local(-60), mute_until=_local(5)
+    )
+    await go_down(hass, clock)
+    await tick(hass, T0 + timedelta(minutes=3))
+    assert alert(hass) is None
+
+    clock.move_to(T0 + timedelta(minutes=6))
+    await tick(hass, T0 + timedelta(minutes=6))
+
+    assert alert(hass) is not None
+
+
+SITES = {
+    "san-diego": (32.87, -117.22),
+    "sydney": (-33.87, 151.21),
+    "frankfurt": (50.11, 8.68),
+}
+
+
+@pytest.mark.parametrize("site", SITES)
+@pytest.mark.parametrize(
+    ("altitude", "direction", "after", "alerts"),
+    [
+        (-12, SunDirection.RISING, -5, True),
+        (-12, SunDirection.RISING, 5, False),
+        (3, SunDirection.SETTING, -5, False),
+        (3, SunDirection.SETTING, 5, True),
+    ],
+    ids=["before-dawn", "after-dawn", "before-dusk", "after-dusk"],
+)
+async def test_sun_quiet_hours_follow_the_suns_altitude(
+    hass: HomeAssistant, watching, site, altitude, direction, after, alerts
+) -> None:
+    """Checked against astral's crossing times: a wrong term in the
+    hand-rolled solar position moves an edge by several minutes.
+    """
+    hass.config.latitude, hass.config.longitude = SITES[site]
+    assert await async_setup_component(hass, "zone", {})
+    observer = LocationInfo(latitude=SITES[site][0], longitude=SITES[site][1]).observer
+    crossing = time_at_elevation(observer, altitude, T0.date(), direction)
+    fires = crossing + timedelta(minutes=after)
+    clock = await watching(
+        mute_mode="sun", mute_morning_altitude=-12, mute_evening_altitude=3
+    )
+    await go_down(hass, clock, fires - timedelta(minutes=3))
+
+    await tick(hass, fires)
+
+    assert (alert(hass) is not None) is alerts
+
+
+async def test_sun_quiet_hours_without_a_location_mute_nothing(
+    hass: HomeAssistant, watching
+) -> None:
+    """At noon, which a known location would mute."""
+    noon = T0 - timedelta(hours=6)
+    clock = await watching(mute_mode="sun")
+    await go_down(hass, clock, noon - timedelta(minutes=3))
+
+    await tick(hass, noon)
+
+    assert alert(hass) is not None
+
+
+# How long the sequence runs before the gate under test lets the rig work.
+LET_WORK = timedelta(hours=1)
+
+
+@pytest.mark.parametrize(
+    ("mute_mode", "reopened", "named"),
+    [
+        ("off", (SAFETY, "on", "off"), "conditions turned safe"),
+        ("off", ("sun.sun", "above_horizon", "below_horizon"), "the sun set"),
+        ("fixed", None, "the quiet hours ended"),
+    ],
+    ids=["conditions turned safe", "the sun set", "the quiet hours ended"],
+)
+@pytest.mark.parametrize(("after", "alerts"), [(-1, False), (1, True)])
+async def test_the_quiet_clock_starts_when_the_last_gate_opens(
+    hass: HomeAssistant, watching, mute_mode, reopened, named, after, alerts
+) -> None:
+    """A gate mutes only while it is shut. A clock running from the sequence's
+    start would alert on the first tick after it opens, before the rig has had
+    a chance to cool, focus and take a frame.
+    """
+    window_ends = LET_WORK // timedelta(minutes=1)
+    clock = await watching(
+        mute_mode=mute_mode, mute_from=_local(-60), mute_until=_local(window_ends)
+    )
+    await start_sequence(hass, clock)
+    clock.move_to(T0 + LET_WORK)
+    if reopened:
+        entity, shut, opened = reopened
+        hass.states.async_set(entity, shut)
+        hass.states.async_set(entity, opened)
+    when = T0 + LET_WORK + timedelta(minutes=QUIET_MINUTES + after)
+
+    clock.move_to(when)
+    await tick(hass, when)
+
+    raised = alert(hass)
+    assert (raised is not None) is alerts
+    if raised:
+        assert f"since {named}" in raised["message"]
+
+
+@pytest.mark.parametrize("site", SITES)
+@pytest.mark.parametrize(("after", "alerts"), [(-2, False), (2, True)])
+async def test_the_quiet_clock_starts_when_the_sun_quiet_hours_end(
+    hass: HomeAssistant, watching, site, after, alerts
+) -> None:
+    """Checked against astral's crossing, as the window's own edges are. With
+    no safety monitor and `night_only` off, no other gate opens near it.
+    """
+    hass.config.latitude, hass.config.longitude = SITES[site]
+    assert await async_setup_component(hass, "zone", {})
+    observer = LocationInfo(latitude=SITES[site][0], longitude=SITES[site][1]).observer
+    dusk = time_at_elevation(observer, 3, T0.date(), SunDirection.SETTING)
+    clock = await watching(
+        mute_mode="sun", mute_evening_altitude=3, night_only=False, safety_unsafe=[]
+    )
+    await start_sequence(hass, clock, dusk - LET_WORK)
+    when = dusk + timedelta(minutes=QUIET_MINUTES + after)
+
+    clock.move_to(when)
+    await tick(hass, when)
+
+    assert (alert(hass) is not None) is alerts
+
+
+@pytest.mark.parametrize(
+    ("raised_at", "reported"),
+    [(T0 - timedelta(days=6), False), (T0 + timedelta(minutes=5), True)],
+    ids=["another night's", "tonight's"],
+)
+async def test_the_alert_names_only_tonights_error(
+    hass: HomeAssistant, watching, raised_at, reported
+) -> None:
+    """The error event holds its last value however old, and a week-old
+    plate-solve failure in a 3am alert reads as tonight's.
+    """
+    error = "event.rig_error"
+    clock = await watching(error_event=[error])
+    await start_sequence(hass, clock)
+    hass.states.async_set(
+        error, raised_at.isoformat(), {"event_type": "platesolve_failed"}
+    )
+
+    clock.move_to(T0 + STALLED)
+    await tick(hass, T0 + STALLED)
+
+    raised = alert(hass)
+    assert raised is not None
+    assert ("platesolve_failed" in raised["message"]) is reported
+
+
+# At T0, local noon at the rig and local midnight at Home Assistant: the two
+# gates can only agree with the rig if they read its site.
+RIG_AT_NOON = (-10.0, 165.0)
+HOME_AT_MIDNIGHT = (30.0, -15.0)
+SITE = {
+    "site_latitude": ["sensor.rig_site_latitude"],
+    "site_longitude": ["sensor.rig_site_longitude"],
+}
+
+
+async def place(hass: HomeAssistant, rig_site) -> None:
+    """Put Home Assistant at midnight and the rig's site sensors at `rig_site`."""
+    hass.config.latitude, hass.config.longitude = HOME_AT_MIDNIGHT
+    assert await async_setup_component(hass, "zone", {})
+    for entity, reading in zip(SITE.values(), rig_site, strict=True):
+        hass.states.async_set(entity[0], str(reading))
+
+
+@pytest.mark.parametrize(
+    ("rig_site", "alerts"),
+    [(RIG_AT_NOON, False), (("unknown", "unknown"), True)],
+    ids=["site-reported", "site-unknown"],
+)
+async def test_sun_quiet_hours_place_the_sun_at_the_rig(
+    hass: HomeAssistant, watching, rig_site, alerts
+) -> None:
+    """A site N.I.N.A. has not reported falls back to Home Assistant's."""
+    await place(hass, rig_site)
+    clock = await watching(mute_mode="sun", **SITE)
+    await go_down(hass, clock)
+
+    await tick(hass, T0 + timedelta(minutes=3))
+
+    assert (alert(hass) is not None) is alerts
+
+
+@pytest.mark.parametrize(
+    ("inputs", "alerts"), [(SITE, False), ({}, True)], ids=["wired", "unwired"]
+)
+async def test_night_only_reads_the_sun_at_the_rig(
+    hass: HomeAssistant, watching, inputs, alerts
+) -> None:
+    """`sun.sun` says night throughout; only the rig's own sky says day."""
+    await place(hass, RIG_AT_NOON)
+    clock = await watching(**inputs)
+    await start_sequence(hass, clock)
+
+    clock.move_to(T0 + STALLED)
+    await tick(hass, T0 + STALLED)
+
+    assert (alert(hass) is not None) is alerts
+
+
+@pytest.mark.parametrize("site", SITES)
+@pytest.mark.parametrize(("after", "alerts"), [(-5, False), (5, True)])
+async def test_the_quiet_clock_starts_at_sunset_at_the_rig(
+    hass: HomeAssistant, watching, site, after, alerts
+) -> None:
+    """Checked against astral's sunset there. `sun.sun` reads night throughout,
+    so a clock started by it would alert as soon as the rig's own sun set.
+    """
+    await place(hass, SITES[site])
+    observer = LocationInfo(latitude=SITES[site][0], longitude=SITES[site][1]).observer
+    sunset = time_at_elevation(observer, -0.833, T0.date(), SunDirection.SETTING)
+    clock = await watching(safety_unsafe=[], **SITE)
+    await start_sequence(hass, clock, sunset - LET_WORK)
+    when = sunset + timedelta(minutes=QUIET_MINUTES + after)
+
+    clock.move_to(when)
+    await tick(hass, when)
+
+    assert (alert(hass) is not None) is alerts

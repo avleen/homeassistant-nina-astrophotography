@@ -10,7 +10,9 @@
  * 122 frames the count sensor reports.
  *
  * Every captured light has a filter from one wheel of single letters, so the
- * filter scenarios relabel that night rather than invent one.
+ * filter scenarios relabel that night rather than invent one. Every captured
+ * camera delivers 16-bit data, so the bit-depth scenarios divide that night's
+ * ADU by a power of two, which is exact, rather than invent a camera.
  *
  * The newest run — the lights since the last target change sharing the newest
  * light's filter and exposure — scales the star and ADU charts and bounds the
@@ -26,7 +28,7 @@
  * before its first light.
  */
 
-import { rig } from "../hass.mjs";
+import { rig, unscaled } from "../hass.mjs";
 
 const NIGHT = "dawn_flats";
 const EXPOSURE = "sensor.n_i_n_a_last_image_exposure";
@@ -205,6 +207,13 @@ export const scenarios = {
         .build();
     },
   },
+
+  // The night from a 12- or 14-bit camera that does not scale to 16 bits. The
+  // chart draws a run by its span about its centre, so the pedestal, scaled
+  // with the sky, cannot show: the ops match `session`'s but for the ADU
+  // chart's newest-reading label.
+  unscaled_12_bit: { hass: (dump) => unscaled(dump, NIGHT, 16).build() },
+  unscaled_14_bit: { hass: (dump) => unscaled(dump, NIGHT, 4).build() },
 
   // No lights in the session, so no charts: the waiting panel under the
   // header's session totals.
