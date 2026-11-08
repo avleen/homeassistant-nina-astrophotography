@@ -1,6 +1,8 @@
 """wire → models. Every sentinel, timezone and quirk dies in this module."""
 
+from collections.abc import Callable
 from datetime import timedelta
+from operator import attrgetter
 
 from nina_astrophotography.api.models import AutoFocusReport
 from nina_astrophotography.api.v2.mapper import (
@@ -736,6 +738,91 @@ def test_a_focus_point_of_zero_is_no_measurement() -> None:
     assert _autofocus(wire).initial_hfr is None
 
 
+def _focused_at(position: float | str, **changes: object) -> dict:
+    """The captured report, its fitted focus point moved to `position`."""
+    wire = load("imaging_guiding_last_af.json")
+    return dict(
+        wire,
+        CalculatedFocusPoint={**wire["CalculatedFocusPoint"], "Position": position},
+        **changes,
+    )
+
+
+def _minimum_at(position: float) -> dict:
+    """The captured report, its quadratic minimum moved to `position`."""
+    wire = load("imaging_guiding_last_af.json")
+    minima = wire["Intersections"]
+    return dict(
+        wire,
+        Intersections={
+            **minima,
+            "QuadraticMinimum": {**minima["QuadraticMinimum"], "Position": position},
+        },
+    )
+
+
+def _quadratic_minimum(report: AutoFocusReport) -> int:
+    return next(m.position for m in report.minima if m.name == "QuadraticMinimum")
+
+
+@pytest.mark.synthetic
+@pytest.mark.parametrize(
+    ("wire", "read", "rounded"),
+    [
+        (_focused_at(2340.5), attrgetter("position"), 2340),
+        (_focused_at(2341.5), attrgetter("position"), 2342),
+        (_focused_at(2340.6), attrgetter("position"), 2341),
+        (_minimum_at(2341.5), _quadratic_minimum, 2342),
+    ],
+    ids=["half down", "half up", "past half", "a fit's minimum"],
+)
+def test_a_fitted_position_rounds_as_the_autofocuser_does(
+    wire: dict, read: Callable[[AutoFocusReport], int], rounded: int
+) -> None:
+    """N.I.N.A.'s fittings round their own positions, but Hocus Focus
+    reports a hyperbola's minimum unrounded and moves to `Math.Round` of it,
+    which rounds half to even.
+    """
+    assert read(_autofocus(wire)) == rounded
+
+
+@pytest.mark.synthetic
+@pytest.mark.parametrize(
+    ("autofocuser", "method", "position", "outside"),
+    [
+        ("Hocus Focus", "STARHFR", 2527, True),
+        ("Hocus Focus", "STARHFR", 2211, True),
+        # The sweep's ends are inside it.
+        ("Hocus Focus", "STARHFR", 2492, False),
+        ("Hocus Focus", "STARHFR", 2212, False),
+        # Judged once rounded.
+        ("Hocus Focus", "STARHFR", 2492.5, False),
+        ("Hocus Focus", "STARHFR", 2492.6, True),
+        # N.I.N.A. checks every method; Hocus Focus only STARHFR.
+        ("NINA", "CONTRASTDETECTION", 2527, True),
+        ("Hocus Focus", "CONTRASTDETECTION", 2527, False),
+    ],
+)
+def test_a_focus_point_outside_the_sweep_is_flagged(
+    autofocuser: str, method: str, position: float, outside: bool
+) -> None:
+    """No capture holds a run whose fit left its 2212–2492 sweep."""
+    wire = _focused_at(position, AutoFocuserName=autofocuser, Method=method)
+    assert _autofocus(wire).outside_sweep is outside
+
+
+@pytest.mark.synthetic
+@pytest.mark.parametrize(
+    "wire",
+    [_focused_at(2527, MeasurePoints=[]), _focused_at("NaN")],
+    ids=["no sweep", "no focus point"],
+)
+def test_a_report_missing_its_sweep_or_focus_point_is_not_outside_it(
+    wire: dict,
+) -> None:
+    assert _autofocus(wire).outside_sweep is False
+
+
 def test_the_autofocus_curve_ascends_in_focuser_position() -> None:
     """A plot needs monotonic x, and the report does not state its own order."""
     curve = _autofocus(load("imaging_guiding_last_af.json")).curve
@@ -798,6 +885,16 @@ def test_only_the_positions_that_measured_something_are_counted(
     paid for, failures included.
     """
     assert (failed_sweep_point.measured_points, len(failed_sweep_point.curve)) == (1, 2)
+
+
+@pytest.mark.synthetic
+def test_a_position_that_measured_nothing_bounds_the_sweep(
+    failed_sweep_point,
+) -> None:
+    """The focus point, 2340, lies inside 2317-2352 only because the starless
+    2317 counts: both autofocusers bound the sweep by every position visited.
+    """
+    assert failed_sweep_point.outside_sweep is False
 
 
 @pytest.mark.synthetic

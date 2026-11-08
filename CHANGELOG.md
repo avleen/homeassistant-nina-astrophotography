@@ -33,6 +33,20 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 
 ### Fixed
 
+- **An autofocus run whose focus position falls outside its sweep fails**
+  (#215). N.I.N.A. rejects such a run whatever its R² and returns the
+  focuser to where it started, so
+  `binary_sensor.<instance>_focuser_autofocus_failed` turns `on` with
+  `reason: out_of_range`. The sweep's first and last positions are inside
+  it, and Hocus Focus checks only `STARHFR` runs. A run failing the R² check
+  too reads `rejected`. The autofocus card says to start the run nearer
+  focus or widen the sweep.
+- **`sensor.<instance>_focuser_autofocus_position` reads the step the
+  focuser moved to** (#215). Hocus Focus writes a hyperbolic fit's focus
+  point unrounded, and the sensor rounds it half to even, as Hocus Focus
+  does before moving there: 2341.5 reads 2342, not 2341. A fit's minima in
+  the `minima` attribute of `sensor.<instance>_focuser_last_autofocus` are
+  rounded the same way.
 - **The image panel's ADU bar runs to the camera's full scale** (#213), read
   from the frames' max ADU as the frame statistics card reads it. A 12-bit
   camera's flat at half its full scale draws where a 16-bit camera's does,
@@ -46,8 +60,8 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
   `sensor.<instance>_last_image_hfr` carries its `max`.
 - **An R² threshold of 0 or below leaves an autofocus unjudged** (#203).
   N.I.N.A. checks R² only against a threshold above 0, so
-  `binary_sensor.<instance>_focuser_autofocus_failed` rejects no run on a
-  profile with the check off, even one whose fit scored below 0. Its
+  `binary_sensor.<instance>_focuser_autofocus_failed` rejects no run on its
+  R² on a profile with the check off, even one whose fit scored below 0. Its
   `r_squared_threshold` attribute is `null` there, and the autofocus card
   shows no pass or fail on the fit.
 - **An autofocus run is judged only on the curves its fitting uses** (#201).
