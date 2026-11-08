@@ -70,6 +70,7 @@ from .const import (
     SERVICE_SEQUENCE_START,
     SERVICE_SEQUENCE_STOP,
     TrackingMode,
+    normalize_host,
 )
 from .coordinator import NinaConfigEntry, NinaCoordinator, NinaData, NinaRuntimeData
 from .device import async_sync_devices, kind_of, refused_while_unsafe
@@ -248,6 +249,10 @@ async def async_migrate_entry(hass: HomeAssistant, entry: NinaConfigEntry) -> bo
     Minor 2 drops the poll interval, which is fixed, from `data` and
     `options` alike. An entry from before 2.0 has no instance name, and its
     title stands in.
+
+    Minor 3 drops the unique id, which was the address. The duplicate guard
+    compares host and port in `data` instead, so the host is normalised the
+    way the config flow stores it.
     """
     if entry.version == 1 and entry.minor_version < 2:
         data = {k: v for k, v in entry.data.items() if k != CONF_POLL_INTERVAL}
@@ -255,6 +260,13 @@ async def async_migrate_entry(hass: HomeAssistant, entry: NinaConfigEntry) -> bo
         data.setdefault(CONF_INSTANCE_NAME, entry.title)
         hass.config_entries.async_update_entry(
             entry, data=data, options=options, minor_version=2
+        )
+    if entry.version == 1 and entry.minor_version < 3:
+        hass.config_entries.async_update_entry(
+            entry,
+            data={**entry.data, CONF_HOST: normalize_host(entry.data[CONF_HOST])},
+            unique_id=None,
+            minor_version=3,
         )
     return True
 

@@ -5,6 +5,7 @@ from typing import Any
 
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult
+from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import voluptuous as vol
 
@@ -27,6 +28,7 @@ from .const import (
     DEFAULT_PORT,
     DEFAULT_ROLLOVER_HOUR,
     DOMAIN,
+    normalize_host,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -47,9 +49,8 @@ class NinaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for N.I.N.A. Astrophotography."""
 
     VERSION = 1
-    # 2: no poll interval, and an instance name on every entry; see
-    # `async_migrate_entry`.
-    MINOR_VERSION = 2
+    # `async_migrate_entry` brings an earlier minor version up to this one.
+    MINOR_VERSION = 3
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -57,16 +58,14 @@ class NinaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            # Hostnames are case-insensitive, so the duplicate guard normalises.
             user_input = {
                 **user_input,
-                CONF_HOST: user_input[CONF_HOST].strip().lower(),
+                CONF_HOST: normalize_host(user_input[CONF_HOST]),
             }
-            # Host and port: the API reports no stable id of its own.
-            await self.async_set_unique_id(
-                f"{user_input[CONF_HOST]}:{user_input[CONF_PORT]}"
-            )
-            self._abort_if_unique_id_configured()
+            # No unique id: the API reports no stable id of its own, and an
+            # address is not one.
+            if self._address_in_use(user_input[CONF_HOST], user_input[CONF_PORT]):
+                return self.async_abort(reason="already_configured")
             if self._name_in_use(user_input[CONF_INSTANCE_NAME]):
                 errors[CONF_INSTANCE_NAME] = "name_in_use"
             else:
@@ -97,6 +96,18 @@ class NinaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user", data_schema=STEP_USER_SCHEMA, errors=errors
         )
 
+    def _address_in_use(self, host: str, port: int) -> bool:
+        """Whether another entry already reads this host and port.
+
+        Each stored host is normalised here too: a disabled entry is never
+        migrated, so one from before 2.0 keeps the host as it was typed.
+        """
+        return any(
+            normalize_host(entry.data[CONF_HOST]) == host
+            and entry.data[CONF_PORT] == port
+            for entry in self._async_current_entries(include_ignore=False)
+        )
+
     def _name_in_use(self, name: str) -> bool:
         """Whether another entry already has this instance name.
 
@@ -109,6 +120,7 @@ class NinaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     @staticmethod
+    @callback
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
     ) -> NinaOptionsFlow:
