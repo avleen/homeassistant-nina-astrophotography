@@ -433,11 +433,11 @@
         },
         "temperature": {
           "name": "Target Temperature (°C)",
-          "description": "Target sensor temperature in degrees Celsius."
+          "description": "Target sensor temperature in degrees Celsius, from -50 to 50."
         },
         "minutes": {
           "name": "Ramp Time (minutes)",
-          "description": "Time over which to ramp to target temperature."
+          "description": "Minimum minutes over which to ramp to the target temperature, 0 or more. Omit to use the ramp N.I.N.A.'s own profile specifies for this camera."
         }
       }
     },
@@ -451,7 +451,7 @@
         },
         "minutes": {
           "name": "Ramp Time (minutes)",
-          "description": "Time over which to ramp back to ambient."
+          "description": "Minimum minutes over which to ramp back to ambient, 0 or more. Omit to use the ramp N.I.N.A.'s own profile specifies for this camera."
         }
       }
     },
@@ -465,11 +465,11 @@
         },
         "duration": {
           "name": "Exposure (seconds)",
-          "description": "Exposure duration in seconds."
+          "description": "Exposure duration in seconds, up to the camera's own maximum. 0 is sent to the camera driver as it is."
         },
         "gain": {
           "name": "Gain",
-          "description": "Camera gain (optional, uses current setting if omitted)."
+          "description": "Camera gain override (optional), from 1 up to the camera's own maximum. Omit to use the camera's default gain; the API cannot set 0."
         },
         "save": {
           "name": "Save to Disk",
@@ -549,7 +549,7 @@
         },
         "position": {
           "name": "Position (steps)",
-          "description": "Target focuser position in steps."
+          "description": "Absolute focuser position in steps, from 0 up to the focuser's own maximum."
         }
       }
     },
@@ -573,7 +573,7 @@
         },
         "filter_index": {
           "name": "Filter Index",
-          "description": "Zero-based index of the target filter."
+          "description": "Zero-based index of the target filter slot, one the filter wheel reports."
         }
       }
     },
@@ -685,6 +685,9 @@
     "entry_not_loaded": {
       "message": "N.I.N.A. instance {instance} is not loaded, so the action was not sent."
     },
+    "gain_not_settable": {
+      "message": "The API cannot set a gain of {value}: it applies only a gain of 1 or more, and leaves the camera at its default gain otherwise. The capture was not sent."
+    },
     "no_cooling_setpoint": {
       "message": "The cooler cannot be started: the camera reports no target temperature."
     },
@@ -697,8 +700,14 @@
     "out_of_range": {
       "message": "{field} must be {limits}: N.I.N.A. clamps {value} silently and reports success, so the action was not sent."
     },
+    "outside_device_range": {
+      "message": "{field} must be {limits} on this {device}, so {value} was not sent."
+    },
     "unknown_filter": {
       "message": "The filter wheel does not report a slot for \"{option}\", so the change was not sent."
+    },
+    "unknown_filter_slot": {
+      "message": "The filter wheel reports no slot {value}; its slots are {slots}. The change was not sent."
     },
     "unknown_target": {
       "message": "The target does not name a configured N.I.N.A. instance, so the action was not sent."

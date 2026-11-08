@@ -12,25 +12,27 @@ camera_cool:
           integration: nina_astrophotography
     temperature:
       name: Target Temperature (°C)
-      description: Target sensor temperature in degrees Celsius (e.g. -10).
+      description: Target sensor temperature in degrees Celsius, from -50 to 50.
       required: true
       example: -10
       selector:
         number:
-          min: -30
-          max: 30
+          min: -50
+          max: 50
           unit_of_measurement: "°C"
     minutes:
       name: Ramp Time
       description: >-
-        Minutes over which to ramp to the target temperature. Omit to use the
-        ramp N.I.N.A.'s own profile specifies for this camera.
+        Minimum minutes over which to ramp to the target temperature, 0 or
+        more. Omit to use the ramp N.I.N.A.'s own profile specifies for this
+        camera.
       example: 10
       selector:
         number:
-          min: 1
-          max: 60
+          min: 0
+          step: "any"
           unit_of_measurement: min
+          mode: box
 
 camera_warm:
   name: Warm Camera
@@ -47,14 +49,15 @@ camera_warm:
     minutes:
       name: Ramp Time
       description: >-
-        Minutes over which to ramp back to ambient. Omit to use the ramp
-        N.I.N.A.'s own profile specifies for this camera.
+        Minimum minutes over which to ramp back to ambient, 0 or more. Omit to
+        use the ramp N.I.N.A.'s own profile specifies for this camera.
       example: 10
       selector:
         number:
-          min: 1
-          max: 60
+          min: 0
+          step: "any"
           unit_of_measurement: min
+          mode: box
 
 camera_capture:
   name: Capture Image
@@ -70,23 +73,26 @@ camera_capture:
           integration: nina_astrophotography
     duration:
       name: Exposure
-      description: Exposure duration in seconds.
+      description: >-
+        Exposure duration in seconds, up to the camera's own maximum. 0 is
+        sent to the camera driver as it is.
       required: true
       example: 120
       selector:
         number:
-          min: 0.001
-          max: 3600
+          min: 0
+          step: "any"
           unit_of_measurement: s
           mode: box
     gain:
       name: Gain
-      description: Camera gain override (optional).
+      description: >-
+        Camera gain override (optional), from 1 up to the camera's own
+        maximum. Omit to use the camera's default gain; the API cannot set 0.
       example: 100
       selector:
         number:
-          min: 0
-          max: 5000
+          min: 1
           mode: box
     save:
       name: Save to Disk
@@ -203,13 +209,14 @@ focuser_move:
           integration: nina_astrophotography
     position:
       name: Position
-      description: Absolute focuser position in steps.
+      description: >-
+        Absolute focuser position in steps, from 0 up to the focuser's own
+        maximum.
       required: true
       example: 25000
       selector:
         number:
           min: 0
-          max: 200000
           mode: box
           unit_of_measurement: steps
 
@@ -240,13 +247,15 @@ filterwheel_change_filter:
           integration: nina_astrophotography
     filter_index:
       name: Filter Index
-      description: Zero-based index of the target filter slot.
+      description: >-
+        Zero-based index of the target filter slot, one the filter wheel
+        reports.
       required: true
       example: 0
       selector:
         number:
           min: 0
-          max: 20
+          mode: box
 
 guider_start:
   name: Start Guiding
