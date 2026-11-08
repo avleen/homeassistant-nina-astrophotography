@@ -11,6 +11,10 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 - **The integration names its category in the Marketplace** (#250):
   `computers_network`. `hacs.json` carries only the keys the
   Marketplace reads, `name` and `homeassistant`.
+- **The frame statistics card's HFR, star count and mean ADU graphs print
+  their numbers:** the high and low of the joined line on the left, and the
+  newest value on the right. The star count and mean ADU lines cover the
+  newest run, and HFR the whole night.
 
 ### Changed
 
