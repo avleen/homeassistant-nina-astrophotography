@@ -354,7 +354,7 @@ Things to know when reading them:
 |---|---|
 | `reason` | `hung`, `rejected`, `out_of_range`, or absent. A hung run usually means a sequence problem. A rejected one failed the R² check, and means the focus range or star detection needs adjusting. An out-of-range one put focus outside the positions it measured: start the run nearer focus, or widen the sweep with a larger step size or more steps. A run failing both the R² and the range check reads `rejected`, the check N.I.N.A. runs first. Only for `hung` do the other autofocus sensors show a different run from the one that failed. |
 | `r_squared` | the R² used for the decision: the worst among the judged curves |
-| `r_squared_threshold` | your profile's `RSquaredThreshold`, or `null` when it is 0 or below and the check is off |
+| `r_squared_threshold` | your profile's `RSquaredThreshold`, or `null` when it is 0 or below and the check is off, or before the profile has been read |
 | `refocus_temperature_delta` | the °C of focuser drift past which your sequence's "AF After Temperature Change" trigger refocuses, or `null` with no such trigger. With several, the smallest: which one is in scope cannot be told. The autofocus card flags drift against it. |
 
 If you check R² yourself, compare against this `r_squared` attribute, not
@@ -441,6 +441,13 @@ fitted_hfr: 1.0932570683996303
   have `judged: false`, and a low R² on them doesn't reject the run. A
   contrast-detection run, whose `fitting` is `GAUSSIAN`, has every fit
   `judged: false`.
+- `judged` comes from the report alone, so it doesn't know whether the
+  profile's R² check is on. When
+  `binary_sensor.<instance>_focuser_autofocus_failed` has
+  `r_squared_threshold: null`, either the check is off or the profile hasn't
+  been read yet. The two look the same, so the autofocus card marks every fit
+  `not judged`, whatever `judged` says. The minima keep their `used`, which
+  R² doesn't touch.
 - `minima` lists the minima the autofocus routine computed, and which ones
   depends on the routine. The example above is a Hocus Focus run. Hocus Focus
   fits trend lines on every run to decide when the sweep ends, so it lists
