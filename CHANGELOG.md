@@ -14,11 +14,16 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 
 ### Changed
 
+- **The README covers installing from Home Assistant's Marketplace**, with a
+  link that adds the repository (#249). It documents every setup field and
+  option, each action's fields with their defaults and ranges, how data
+  updates and how to poll at another cadence, the known limitations, and the
+  order to remove the integration in. It states the license as
+  GPL-3.0-or-later. The upgrade guide covers the sky brightness sensor's
+  long-term statistics.
 - **The quality-scale register matches Home Assistant's current rules**
   (#244). `dependency-transparency` is exempt, since the integration has no
-  external dependencies. `log-when-unavailable` is not yet met: an outage is
-  logged at `warning` rather than `info`, and the event socket logs every
-  failed reconnect. `reauthentication-flow`'s exemption holds for the
+  external dependencies. `reauthentication-flow`'s exemption holds for the
   supported 2.2.x Advanced API plugin. The design doc's §10 lists the same
   rules as `quality_scale.yaml`, and `CLAUDE.md` and the contributor docs
   match the code they describe.
@@ -96,6 +101,8 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
   `camera_cool` and `camera_warm`, and `focuser_move`'s `position`, are 0 or
   more. A device that is disconnected or reports no range leaves the value to
   N.I.N.A.
+- **The README's `nina_image_save` example works on flat, dark and bias
+  frames** (#249), whose `hfr` is `null`.
 
 ---
 
@@ -854,7 +861,7 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
   time after you organise the hub into an area stayed arealess forever. This
   only helps equipment observed for the first time from here on; anything
   already registered keeps its current area. See the entity-id-prefix caveat
-  this can produce in [Troubleshooting](#troubleshooting).
+  this can produce in [Troubleshooting](README.md#troubleshooting).
 - **The image panel card shows images again on an HTTPS dashboard.** It used
   to fetch straight from N.I.N.A.'s (HTTP-only) Advanced API from the
   browser, which an HTTPS-served Home Assistant blocks as mixed content — the

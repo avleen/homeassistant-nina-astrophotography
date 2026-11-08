@@ -55,11 +55,16 @@ Home Assistant 2026.9.0 or later is required.
 ## Other changes
 
 - Driver name and version moved from entity attributes to the device page.
-- The poll interval is capped at 60 seconds. An existing entry with a longer
-  interval keeps it until you next save the options.
+- The poll interval is fixed at 10 seconds, and a configured interval is
+  dropped. See [Data updates](../README.md#data-updates) for polling at another
+  cadence.
 - `sensor.<instance>_session_integration_time` is now in hours instead of
   minutes, and both it and `sensor.<instance>_session_image_count` changed
   state class. Their long-term statistics start over; the old history isn't
   carried across.
+- `sensor.<instance>_weather_sky_brightness` is in `lx` instead of `lux`,
+  which Home Assistant doesn't accept for illuminance. Seeing two units, the
+  recorder stops compiling the sensor's long-term statistics until you fix or
+  delete the old unit's statistics under **Developer tools → Statistics**.
 
 See [`CHANGELOG.md`](../CHANGELOG.md) for the full list.
