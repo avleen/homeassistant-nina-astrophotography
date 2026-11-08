@@ -15,6 +15,12 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 
 ### Fixed
 
+- **The frame statistics card's mean ADU chart shows a background climb on a
+  camera that does not scale to 16 bits** (#174). The chart's 10 ADU minimum
+  span is scaled to the camera's full scale, read from the frames' max ADU,
+  so a 12-bit camera's 1.5 ADU climb fills the chart as a 16-bit camera's
+  24 ADU one does. Each light in `recent_lights` on
+  `sensor.<instance>_last_image_hfr` carries its `max`.
 - **An R² threshold of 0 or below leaves an autofocus unjudged** (#203).
   N.I.N.A. checks R² only against a threshold above 0, so
   `binary_sensor.<instance>_focuser_autofocus_failed` rejects no run on a

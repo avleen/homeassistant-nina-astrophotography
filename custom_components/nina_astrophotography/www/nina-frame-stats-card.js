@@ -274,12 +274,28 @@ const TREND_EPSILON = 0.03;
 // The narrowest span the star and ADU charts draw a run over, so a steady run
 // does not blow its frame-to-frame scatter up to full height. Star detection
 // jitters by 5–10% between frames. A frame's mean ADU sits on the camera's
-// offset pedestal, so a span relative to it would mislead: its floor is
-// absolute, and 10 ADU assumes 16-bit-scaled data.
+// offset pedestal, so a span relative to it would mislead: its floor is 10 ADU
+// at 16 bits, scaled to the camera's full scale.
 const STARS_MIN_SPAN = 0.1;
 const ADU_MIN_SPAN = 10;
+const MIN_BITS = 12;
+const MAX_BITS = 16;
 // Headroom above and below a run, as a fraction of its span.
 const RUN_HEADROOM = 0.1;
+
+// ADU_MIN_SPAN scaled to the camera's full scale. A camera that does not scale
+// its data to 16 bits reports ADU up to 16 times smaller, and N.I.N.A.'s bit
+// depth can't say so: for ASCOM and DSLR cameras it is a profile setting the
+// user types. So the full scale is the night's brightest pixel rounded up to a
+// bit depth; a hot pixel or star core saturates in nearly every light. A night
+// with none underestimates it, and the chart draws its scatter taller.
+function aduFloor(maxima) {
+  const known = maxima.filter((v) => Number.isFinite(v) && v > 0);
+  if (!known.length) return ADU_MIN_SPAN;
+  const depth = Math.ceil(Math.log2(Math.max(...known) + 1));
+  const bits = Math.min(MAX_BITS, Math.max(MIN_BITS, depth));
+  return ADU_MIN_SPAN * 2 ** (bits - MAX_BITS);
+}
 
 function hfrTrend(recent, previous, delta) {
   if (recent === null || previous === null) return "unknown";
@@ -294,6 +310,7 @@ class NinaFrameStatsCard extends HTMLElement {
     this._hfr = [];
     this._stars = [];
     this._adu = [];
+    this._aduFloor = ADU_MIN_SPAN;
     this._filters = [];
     this._boundaries = [];
     this._run = [];
@@ -341,6 +358,7 @@ class NinaFrameStatsCard extends HTMLElement {
     this._hfr = lights.map((light) => light.hfr ?? null);
     this._stars = lights.map((light) => light.stars ?? null);
     this._adu = lights.map((light) => light.mean ?? null);
+    this._aduFloor = aduFloor(lights.map((light) => light.max));
     this._filters = lights.map((light) => light.filter ?? null);
     // A new target or exposure length moves star count and ADU by whole
     // factors — a galaxy field against a Milky Way one — which would
@@ -520,7 +538,7 @@ class NinaFrameStatsCard extends HTMLElement {
         this._drawSparkline("stars-chart", this._stars, theme.accent2, false, lightColours,
           (mean) => STARS_MIN_SPAN * mean);
         this._drawSparkline("adu-chart", this._adu, theme.warn, false, lightColours,
-          () => ADU_MIN_SPAN);
+          () => this._aduFloor);
       });
     }
   }

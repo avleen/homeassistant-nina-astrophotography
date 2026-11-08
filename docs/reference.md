@@ -486,6 +486,14 @@ card, an ApexCharts `data_generator`, or a template. For history, chart
   time, which a remote observatory is already sending elsewhere. Issue #178
   tracks doing it as an option.
 
+- `sensor.<instance>_last_image_hfr` has `recent_lights`: the session's
+  newest 60 lights, oldest first, each with its target, filter, exposure, HFR,
+  star count, and mean and max ADU. The frame statistics card draws its charts
+  from these, and reads the camera's full scale from the max: a camera that
+  does not scale its data to 16 bits saturates at or below 4095 or 16383.
+  N.I.N.A.'s bit depth is no help, since for ASCOM and DSLR cameras it is a
+  profile setting the user types in.
+
 ## Error events
 
 `event.<instance>_error` fires `platesolve_failed`, `camera_download_timeout`
