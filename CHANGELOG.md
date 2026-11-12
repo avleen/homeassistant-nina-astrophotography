@@ -6,6 +6,12 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 
 ## [Unreleased]
 
+### Added
+
+- **The observatory card shows the rotator's sky angle** (#239) once a plate
+  solve syncs the rotator, and its mechanical angle once
+  `number.<instance>_rotator_mechanical_position` is enabled.
+
 ### Fixed
 
 - **A wait instruction of the sequence's own counts as waiting** (#255).
@@ -27,6 +33,8 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
   `binary_sensor.<instance>_scheduler_waiting`. The imaging stall alert's
   input is labelled *Sequence waiting* and keeps its key, `scheduler_waiting`,
   so an automation built from it needs no change.
+- **`binary_sensor.<instance>_rotator_synced` ships enabled** (#239). On an
+  upgraded install, enable it.
 
 ## [2.5.1] - 2026-11-08
 
