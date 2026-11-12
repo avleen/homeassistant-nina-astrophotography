@@ -363,11 +363,32 @@ def test_the_recent_frames_ignore_the_session_window(night) -> None:
     `image.last_frame` renders long after the rollover is still last night's
     frame.
     """
-    assert recent_frames(night, "g1")[0].date == max(f.date for f in night)
+    assert recent_frames(night, "g1")[0].frame.date == max(f.date for f in night)
 
 
 def test_the_recent_frames_of_another_process_are_not_offered(night) -> None:
     assert recent_frames(night, "g2") == ()
+
+
+def _newest_first(frames: list[Frame]) -> list[Frame]:
+    return sorted(frames, key=lambda f: f.identity, reverse=True)
+
+
+def test_the_recent_frames_keep_the_newest_lights_past_a_flat_run(night) -> None:
+    """The dawn history ends on 67 flats, more than the newest frames hold."""
+    lights = _newest_first([f for f in night if f.image_type == "LIGHT"])
+    kept = [
+        r.frame for r in recent_frames(night, "g1") if r.frame.image_type == "LIGHT"
+    ]
+    assert kept == lights[:20]
+
+
+def test_a_recent_frames_age_counts_the_frames_saved_after_it(night) -> None:
+    """The image proxy addresses a frame by its age, so a light kept past a flat
+    run must carry where it sits among every frame, not among the ones kept.
+    """
+    newest_first = _newest_first(night)
+    assert all(newest_first[r.age] == r.frame for r in recent_frames(night, "g1"))
 
 
 def test_the_stack_is_the_pair_the_newest_update_named(night_events) -> None:

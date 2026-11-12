@@ -6,6 +6,15 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 
 ## [Unreleased]
 
+### Added
+
+- **The image panel shows lights only, at the press of a button.** "Lights
+  only", beside the recent frames, keeps the last sub on screen and in the
+  strip through a flat run, however long. Each browser remembers it, and the
+  card's `lights_only` option sets where a browser starts.
+  `recent_frames` now also carries the 20 newest lights behind the newest
+  frames, each with its `age`.
+
 ### Fixed
 
 - **A screen reader reaches the live stack card's Start/Stop as a control of

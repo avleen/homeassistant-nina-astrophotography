@@ -10,17 +10,23 @@
  * origin as Home Assistant itself:
  *
  *   GET /api/nina_astrophotography/image/{entity_id}/{index}?date=…   → one
- *     frame, JPEG, by history index (0 = newest of any type) and save time
+ *     frame, JPEG, by its `age` in the history (0 = newest of any type) and
+ *     save time
  *
  * Every image URL is signed just before use via the `auth/sign_path`
  * websocket command, so it can be set directly as `<img src>` — including
  * the thumbnail strip, which cannot carry an Authorization header.
  *
  * Everything describing a frame comes from the mean-ADU sensor's
- * `recent_frames` attribute — the newest frames of any type, already bounded
- * and ordered, each with its own readings — so the overlay, the stats row and
- * the ADU range describe the frame on screen, whichever it is. Only the
- * header's light count, integration time and exposing state are the session's.
+ * `recent_frames` attribute — the newest frames of any type, then the newest
+ * lights behind them, already bounded and ordered, each with its own readings
+ * — so the overlay, the stats row and the ADU range describe the frame on
+ * screen, whichever it is. Only the header's light count, integration time and
+ * exposing state are the session's.
+ *
+ * "Lights only" narrows the main image and the strip to lights, so a flat run
+ * leaves the last sub on screen. Each browser remembers the button per rig;
+ * `lights_only` is where a browser that never pressed it starts.
  *
  * The ADU range is those statistics, not a histogram: a histogram needs the
  * frame's pixels. Every `/image` render is stretched, `autoPrepare=false`
@@ -44,6 +50,7 @@
  *   quality: 85             # JPEG quality 1-100 (default 85)
  *   stretch: true           # use N.I.N.A.'s auto-stretch (default true)
  *   strip_count: 6          # number of thumbnails in the recent strip (default 6)
+ *   lights_only: false      # start on lights alone (default false)
  */
 
 import { DEFAULT_PREFIX, configForm } from "./nina-card-config.js";
@@ -73,6 +80,26 @@ const FALLBACK_PREVIEW_WIDTH = 1600;
 const ADU_GRIDLINES = [[100, "100"], [1000, "1k"], [10000, "10k"]];
 
 const COUNTDOWN_TICK_MS = 1000;
+
+// The browser's own choice, `null` where it never made one. Where storage is
+// refused, as in a private window, the card's copy lasts until a reload.
+function storedChoice(key) {
+  try {
+    const value = globalThis.localStorage?.getItem(key);
+    if (value === "1" || value === "0") return value === "1";
+  } catch {
+    // Storage refused.
+  }
+  return null;
+}
+
+function storeChoice(key, on) {
+  try {
+    globalThis.localStorage?.setItem(key, on ? "1" : "0");
+  } catch {
+    // Storage refused.
+  }
+}
 
 // `4:07`, or `1:04:07` from an hour up.
 function clock(seconds) {
@@ -258,7 +285,20 @@ const STYLE = `
     border-top: 1px solid var(--border);
     display: flex; flex-direction: column; gap: 5px;
   }
-  .strip-label { font-size: 0.6rem; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; color: var(--muted); }
+  .strip-head { display: flex; align-items: center; gap: 8px; }
+  .strip-label { flex: 1; font-size: 0.6rem; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; color: var(--muted); }
+  .lights-only {
+    font: inherit; font-size: 0.55rem; font-weight: 700; letter-spacing: .5px; text-transform: uppercase;
+    color: var(--muted); background: transparent; cursor: pointer;
+    border: 1px solid color-mix(in srgb, var(--ink) 20%, transparent);
+    border-radius: 999px; padding: 1px 8px;
+  }
+  .lights-only:hover { color: var(--text); }
+  .lights-only[aria-pressed="true"] {
+    color: var(--accent2); border-color: var(--accent2);
+    background: color-mix(in srgb, var(--accent2) 12%, transparent);
+  }
+  .lights-only:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .strip {
     display: flex; gap: 5px; overflow-x: auto;
     scrollbar-width: none;
@@ -362,12 +402,21 @@ class NinaImagePanelCard extends HTMLElement {
       quality: config.quality ?? DEFAULT_QUALITY,
       stretch: config.stretch ?? true,
       strip_count: config.strip_count ?? DEFAULT_STRIP_COUNT,
+      lights_only: config.lights_only ?? false,
       prefix: config.prefix || DEFAULT_PREFIX,
       device_id: config.device_id,
     };
     this._rig = new RigEntities(this._config.prefix, this._config.device_id);
     this._collapse.scope(this._config);
-    if (this._rendered) this._applyFolds();
+    const rig = this._config.device_id || this._config.prefix;
+    this._lightsOnlyKey = `nina-image-panel-card:${rig}:lights-only`;
+    const lightsOnly = storedChoice(this._lightsOnlyKey) ?? this._config.lights_only;
+    if (this._rendered) {
+      this._applyFolds();
+      if (lightsOnly !== this._lightsOnly) this._setLightsOnly(lightsOnly);
+    } else {
+      this._lightsOnly = lightsOnly;
+    }
     this._view.reset();
   }
 
@@ -482,14 +531,16 @@ class NinaImagePanelCard extends HTMLElement {
   // loaded the newest, which is what is loading.
   _frame() { return this._shown ?? this._recentFrames()[0] ?? {}; }
 
-  // Where the frame on screen sits in `recent_frames`: 0 the newest, -1 once
-  // newer frames have pushed it off the end.
+  // Where the frame on screen sits among the frames shown: 0 the newest, -1
+  // once newer frames have pushed it off the end. Counted among lights alone
+  // while only lights are shown.
   _index() {
     const date = this._frame().date;
     const frames = this._recentFrames();
     // An empty list says nothing of where the frame sits.
     if (!date || frames.length === 0) return 0;
-    return frames.findIndex((frame) => frame.date === date);
+    const index = frames.findIndex((frame) => frame.date === date);
+    return this._lightsOnly || index < 0 ? index : frames[index].age;
   }
 
   _attr(id, attr, fallback = null) {
@@ -497,15 +548,22 @@ class NinaImagePanelCard extends HTMLElement {
     return e?.attributes?.[attr] ?? fallback;
   }
 
-  // Newest first and bounded (session.py's `recent_frames`).
-  _recentFrames() { return this._attr(this._entityId(), "recent_frames", []); }
+  // Newest first and bounded (session.py's `recent_frames`): the newest frames
+  // of any type, then the newest lights.
+  _allFrames() { return this._attr(this._entityId(), "recent_frames", []); }
+
+  // The frames the card shows.
+  _recentFrames() {
+    const frames = this._allFrames();
+    return this._lightsOnly ? frames.filter((f) => f.image_type === "LIGHT") : frames;
+  }
 
   // The unsigned path: a stable, cache-key-free description of one frame. The
-  // index is where the frame sits now; its `date` lets the proxy find it past
+  // age is where the frame sits now; its `date` lets the proxy find it past
   // any frame the rig saved since, and refuse rather than serve another.
   _imagePath(frame, { thumbnail = false, width = null } = {}) {
     const cfg = this._config;
-    const index = this._recentFrames().findIndex((f) => f.date === frame.date);
+    const age = this._allFrames().find((f) => f.date === frame.date)?.age ?? frame.age ?? 0;
     const params = new URLSearchParams({
       quality: thumbnail ? "40" : String(cfg.quality),
       ...(cfg.stretch ? { autoPrepare: "true" } : {}),
@@ -513,7 +571,7 @@ class NinaImagePanelCard extends HTMLElement {
       ...(width ? { width: String(width) } : {}),
       ...(thumbnail ? { thumbnail: "true" } : {}),
     });
-    return `/api/nina_astrophotography/image/${this._entityId()}/${Math.max(index, 0)}?${params}`;
+    return `/api/nina_astrophotography/image/${this._entityId()}/${age}?${params}`;
   }
 
   // Device pixels across `css` CSS pixels, so the rig sends no more of a
@@ -572,7 +630,7 @@ class NinaImagePanelCard extends HTMLElement {
               <rect x="3" y="3" width="18" height="18" rx="3"/>
               <circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>
             </svg>
-            <div>No image captured yet</div>
+            <div id="no-image-title">No image captured yet</div>
             <div class="hint">Images will appear here as N.I.N.A. saves frames.</div>
           </div>
         </div>
@@ -598,7 +656,11 @@ class NinaImagePanelCard extends HTMLElement {
 
         ${cfg.show_strip ? `
           <div class="strip-wrap" id="strip-wrap">
-            ${this._collapse.heading("strip", "strip-label", "Recent frames")}
+            <div class="strip-head">
+              ${this._collapse.heading("strip", "strip-label", "Recent frames")}
+              <button type="button" class="lights-only" id="lights-only"
+                aria-pressed="${this._lightsOnly}">Lights only</button>
+            </div>
             <div class="strip" id="strip"></div>
           </div>
         ` : ""}
@@ -620,6 +682,33 @@ class NinaImagePanelCard extends HTMLElement {
       if (e.target !== this.shadowRoot.getElementById("modal-img")) this._closeModal();
     });
     this.shadowRoot.getElementById("modal-close").addEventListener("click", () => this._closeModal());
+    this.shadowRoot.getElementById("lights-only")?.addEventListener("click", () => {
+      storeChoice(this._lightsOnlyKey, !this._lightsOnly);
+      this._setLightsOnly(!this._lightsOnly);
+    });
+    this._updateNoImage();
+  }
+
+  // The main image moves to the newest frame now shown, unless it already is
+  // that frame, or the viewer keeps a frame on screen and it is still shown.
+  _setLightsOnly(on) {
+    this._lightsOnly = on;
+    this.shadowRoot?.getElementById("lights-only")?.setAttribute("aria-pressed", String(on));
+    this._updateNoImage();
+    if (!this._hass) return;
+    const frames = this._recentFrames();
+    const newest = frames[0];
+    this._newest = newest?.date;
+    const date = this._shown?.date;
+    const kept = !this._config.refresh_on_save && frames.some((f) => f.date === date);
+    if (newest?.date !== date && !kept) this._load(newest);
+    this._stripKey = null;
+    this._update();
+  }
+
+  _updateNoImage() {
+    const title = this.shadowRoot?.getElementById("no-image-title");
+    if (title) title.textContent = this._lightsOnly ? "No light captured yet" : "No image captured yet";
   }
 
   // One main load at a time: a frame asked for meanwhile replaces any still
@@ -719,9 +808,11 @@ class NinaImagePanelCard extends HTMLElement {
     strip.innerHTML = "";
     frames.forEach((frame, i) => {
       const tile = kept.get(frame.date) ?? this._tile(frame);
-      tile.setAttribute("aria-label", [
-        i === 0 ? "Latest image" : `Frame -${i}`, tagFor(frame), frame.filter,
-      ].filter(Boolean).join(", "));
+      const place = this._lightsOnly
+        ? (i === 0 ? "Latest light" : `Light -${i}`)
+        : (frame.age === 0 ? "Latest image" : `Frame -${frame.age}`);
+      tile.setAttribute("aria-label", [place, tagFor(frame), frame.filter]
+        .filter(Boolean).join(", "));
       this._tiles.set(frame.date, tile);
       strip.appendChild(tile);
     });
@@ -823,7 +914,7 @@ class NinaImagePanelCard extends HTMLElement {
     // outlast a calibration run.
     const lights = this._attr(this._eid("sensor", "last_image_hfr"), "recent_lights", []);
     const fullScale = aduFullScale(
-      [frame, ...this._recentFrames(), ...lights].map((f) => f.max));
+      [frame, ...this._allFrames(), ...lights].map((f) => f.max));
     // In 16-bit units, so a frame sits where the same exposure would on a
     // camera that scales its data: a log axis from 0 is not scale-invariant.
     const per16 = 2 ** 16 / (fullScale + 1);
@@ -999,8 +1090,10 @@ class NinaImagePanelCard extends HTMLElement {
     this._syncCountdown(live && this.isConnected);
 
     if (title) {
-      title.textContent = index === 0 ? "Latest Image"
-        : index > 0 ? `Frame -${index}` : "Earlier frame";
+      const [latest, each, earlier] = this._lightsOnly
+        ? ["Latest Light", "Light", "Earlier light"]
+        : ["Latest Image", "Frame", "Earlier frame"];
+      title.textContent = index === 0 ? latest : index > 0 ? `${each} -${index}` : earlier;
     }
     if (sub) {
       const parts = [];
@@ -1058,6 +1151,14 @@ class NinaImagePanelCard extends HTMLElement {
         helper: "Up to 20, the frames the integration keeps.",
         default: DEFAULT_STRIP_COUNT,
         selector: { number: { min: 1, max: 20, mode: "box" } },
+      },
+      {
+        name: "lights_only",
+        label: "Lights only",
+        helper: "Start with the image and the strip on lights alone. The card's own "
+          + "Lights only button overrides this in each browser that presses it.",
+        default: false,
+        selector: { boolean: {} },
       },
       {
         name: "quality",

@@ -10,8 +10,8 @@ tag, never by clearing.
 """
 
 from collections.abc import Callable, Container, Iterable, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta
-import heapq
 from math import fsum
 from operator import attrgetter
 from statistics import fmean
@@ -288,13 +288,37 @@ def stacks(
 
 
 _RECENT_FRAMES_LIMIT = 20
-"""Covers a card's thumbnail strip."""
+"""Covers a card's thumbnail strip, of every type or of lights alone."""
 
 
-def recent_frames(frames: Iterable[Frame], generation: str | None) -> tuple[Frame, ...]:
-    """The newest frames this process saved, of any type, newest first."""
-    kept = (f for f in frames if f.generation == generation)
-    return tuple(heapq.nlargest(_RECENT_FRAMES_LIMIT, kept, key=_IDENTITY))
+@dataclass(frozen=True, slots=True)
+class RecentFrame:
+    frame: Frame
+    age: int
+    """How many frames this process saved after it: N.I.N.A.'s history index,
+    counted from the newest, which is how the image proxy fetches it."""
+
+
+def recent_frames(
+    frames: Iterable[Frame], generation: str | None
+) -> tuple[RecentFrame, ...]:
+    """The newest frames this process saved, of any type, and behind them the
+    newest lights, newest first: a flat run longer than the strip would
+    otherwise leave a lights-only strip empty.
+    """
+    newest_first = sorted(
+        (f for f in frames if f.generation == generation), key=_IDENTITY, reverse=True
+    )
+    recent: list[RecentFrame] = []
+    lights = 0
+    for age, frame in enumerate(newest_first):
+        if lights >= _RECENT_FRAMES_LIMIT and age >= _RECENT_FRAMES_LIMIT:
+            break
+        light = frame.image_type == _LIGHT
+        if age < _RECENT_FRAMES_LIMIT or (light and lights < _RECENT_FRAMES_LIMIT):
+            recent.append(RecentFrame(frame, age))
+        lights += light
+    return tuple(recent)
 
 
 def latest_target(events: Iterable[NinaEvent], generation: str | None) -> str | None:
