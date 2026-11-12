@@ -696,8 +696,10 @@ class NinaImagePanelCard extends HTMLElement {
 
   // The main image moves to the newest frame now shown, unless it already is
   // that frame, or, with `refresh_on_save` off, the frame on screen is still
-  // among those shown. A load in flight or skipped while folded may be a flat,
-  // so it is always replaced.
+  // among those shown. A frame of the kind no longer shown leaves the screen
+  // at once, so the header and readings describe the newest while it loads.
+  // A load in flight or skipped while folded may be a flat, so it is always
+  // replaced.
   _setLightsOnly(on) {
     this._lightsOnly = on;
     this.shadowRoot?.getElementById("lights-only")?.setAttribute("aria-pressed", String(on));
@@ -706,10 +708,19 @@ class NinaImagePanelCard extends HTMLElement {
     const frames = this._recentFrames();
     const newest = frames[0];
     this._newest = newest?.date;
+    const dropped = this._shown && !frames.some((f) => f.date === this._shown.date);
+    if (dropped) {
+      this._shown = null;
+      this._hasImage = false;
+      const img = this.shadowRoot?.getElementById("main-img");
+      if (img) img.style.display = "none";
+      this.shadowRoot?.getElementById("spinner")?.classList.add("active");
+    }
     const date = this._shown?.date;
     const pending = this._loading || this._missed;
     const kept = !this._config.refresh_on_save && frames.some((f) => f.date === date);
-    if (pending || (newest?.date !== date && !kept)) this._load(newest);
+    // With no frame to load, the load fails into the empty placeholder.
+    if (dropped || pending || (newest?.date !== date && !kept)) this._load(newest);
     this._stripKey = null;
     this._update();
   }
@@ -773,9 +784,11 @@ class NinaImagePanelCard extends HTMLElement {
         probe.onerror = () => reject(new Error("image failed to load"));
         probe.src = url;
       });
-      // Only a picked frame goes on screen once the card no longer shows its
-      // kind, as a flat that finishes loading after Lights only is pressed.
-      if (!picked && !this._recentFrames().some((f) => f.date === frame.date)) {
+      // An unpicked frame stays off screen when the card no longer shows its
+      // kind, as a flat finishing after Lights only is pressed, or when a
+      // pick waits behind it, which would otherwise flash it up first.
+      const hidden = !this._recentFrames().some((f) => f.date === frame.date);
+      if (!picked && (hidden || this._queued?.picked)) {
         settle();
         return;
       }
