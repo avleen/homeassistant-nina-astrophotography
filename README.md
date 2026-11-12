@@ -13,10 +13,10 @@ It provides:
   session
 - buttons and actions to cool, slew, park, focus and run sequences
 - Home Assistant events for everything N.I.N.A. reports
-- six dashboard cards
+- seven dashboard cards
 - six automation blueprints
 
-![The six dashboard cards on a live rig: the observatory and autofocus cards, the weather and sky map cards, and the latest image and frame statistics cards](https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/dashboard.png)
+![Six of the dashboard cards on a live rig: the observatory and autofocus cards, the weather and sky map cards, and the latest image and frame statistics cards](https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/dashboard.png)
 
 This is a maintained fork of
 [C3X0Astro/homeassistant-nina-astrophotography](https://github.com/C3X0Astro/homeassistant-nina-astrophotography),
@@ -182,7 +182,7 @@ available for your own cards.
 
 ## Dashboard cards
 
-The integration installs six cards and registers them with Home Assistant
+The integration installs seven cards and registers them with Home Assistant
 automatically. To add one:
 
 1. Open a dashboard and click **Edit dashboard** (the pencil icon).
@@ -202,6 +202,7 @@ type: custom:nina-observatory-card
 | `custom:nina-frame-stats-card` | HFR, star count and ADU trends for the session's frames, and a per-filter breakdown | — |
 | `custom:nina-autofocus-card` | The last autofocus run: measured points, fitted curves, final position, and whether it passed your R² threshold | `temperature_delta`: flag when the focuser has drifted this many °C since the run (default: your sequence's "AF After Temperature Change" trigger, else 2) |
 | `custom:nina-image-panel-card` | The latest frame, recent frames, their statistics, and a countdown for the sub being exposed | `refresh_on_save`, `stretch`, `show_histogram`, `show_strip` (all default `true`); `strip_count` (default 6, max 20); `quality` (JPEG, default 85) |
+| `custom:nina-livestack-card` | The Livestack plugin's stacks this session: pick a target and filter from chips showing each stack's frame count, start or stop stacking, and open a stack full screen to zoom and pan. Needs the Livestack plugin | `follow_latest`: show whichever stack updated last, or keep the one shown until you pick another (default `true`); `show_controls`: the start/stop button (default `true`); `quality` (JPEG, default 85) |
 | `custom:nina-sky-map-card` | A star chart with the telescope's pointing, recent positions and the meridian | `trail_length` (default 60); `map_size` in px (default 320); `latitude` to override the site |
 | `custom:nina-weather-card` | Safety status, weather and sky quality | Its warning and danger limits, in °C and m/s whatever unit a reading is shown in: `dew_margin` (default 3); `temperature_high` and `temperature_low` (25, −10); `wind_warn` and `wind_danger` (8, 12); `humidity_warn`/`_danger` (85, 95) and `cloud_warn`/`_danger` (60, 85) in %; `seeing_warn`/`_danger` (3, 5) in arcsec. `show_sky_brightness: false` leaves out the sky brightness cell, for a station that measures only whole lux and reads 0 all night. A reading whose entity is disabled, or that the station never reports, has no cell |
 
@@ -210,6 +211,8 @@ type: custom:nina-observatory-card
 | <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/observatory.png" alt="Observatory card" width="260"> | <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/image-panel.png" alt="Latest image card" width="260"> | <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/sky-map.png" alt="Sky map card" width="260"> |
 | **Weather** | **Autofocus** | **Frame statistics** |
 | <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/weather.png" alt="Weather card" width="260"> | <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/autofocus.png" alt="Autofocus card" width="260"> | <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/frame-stats.png" alt="Frame statistics card" width="260"> |
+| **Live stack** | | |
+| <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/livestack.png" alt="Live stack card: Sh2 132's R stack at 7 frames, with chips for Latest, G 13 and R 7" width="260"> | | |
 
 With a dome, the observatory card adds a Dome chip and Open or Close Dome:
 
@@ -223,7 +226,8 @@ to add the mechanical angle. On an upgraded install, also enable
 Tap or click a card's header to collapse the card, or a section's heading,
 such as **ADU range** or **Wind**, to collapse that section. A collapsed
 heading points right; tap it again to expand it. A collapsed card says
-**Collapsed** under its header. The sky map collapses only as a whole.
+**Collapsed** under its header. The sky map and the live stack collapse only
+as a whole.
 
 What you collapse is remembered by the browser, not by your Home Assistant
 user. A phone and a wall tablet can differ, everyone using a shared tablet
@@ -237,6 +241,9 @@ A collapsed card still shows what needs attention:
   or stopped guiding. Stop Sequence, Park and Close Dome stay, each while it
   applies, and a collapsed **Controls** section keeps them too.
 - **Autofocus**: a failed run.
+- **Live stack**: whether stacking is running or N.I.N.A. is unreachable, and
+  Start/Stop. It asks N.I.N.A. for no stack while collapsed, and on expanding
+  loads the one it would show.
 
 A collapsed heading shows an orange or red dot while what it hides is in a
 warning or danger state, such as wind over your limit, and the strip under a
@@ -262,7 +269,7 @@ temperature entities.
 
 If your dashboard resources are managed in YAML (`resource_mode: yaml`, or
 `mode: yaml` without `resource_mode`), the integration can't register the
-cards. It logs the six entries to add; each looks like this:
+cards. It logs the seven entries to add; each looks like this:
 
 ```yaml
 lovelace:
@@ -522,8 +529,8 @@ behind, pointing at a route nothing serves.
 
 1. **Delete each entry** under **Settings → Devices & Services → N.I.N.A.
    Astrophotography → ⋮ → Delete**. This removes its devices and entities.
-   Deleting the last entry also removes the six card resources it registered.
-   If you manage dashboard resources in YAML, remove the six
+   Deleting the last entry also removes the seven card resources it registered.
+   If you manage dashboard resources in YAML, remove the seven
    `/nina_astrophotography_static/` entries yourself.
 2. **Remove the cards** from your dashboards. A card left behind shows
    "Custom element doesn't exist".

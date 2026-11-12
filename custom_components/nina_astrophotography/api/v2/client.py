@@ -372,17 +372,38 @@ class NinaClientV2:
         raise NinaNoImageError(f"no frame saved at {date.isoformat()}")
 
     async def get_livestack_image_bytes(
-        self, target: str, filter_name: str, *, quality: int = IMAGE_QUALITY
+        self,
+        target: str,
+        filter_name: str,
+        *,
+        quality: int = IMAGE_QUALITY,
+        width: int | None = None,
     ) -> bytes:
-        """Fetch the accumulated stack for one target and filter.
+        """Fetch the accumulated stack for one target and filter, already
+        stretched by the plugin.
 
         Both are path segments and may carry spaces or ampersands, so they are
-        quoted.
+        quoted. `width` scales the stack down to that many pixels across; the
+        route clamps the scale to 0.1–1, so it never enlarges a stack nor
+        shrinks one below a tenth of its width.
+
+        `quote` leaves `.` alone, and the URL resolves a `.` or `..` segment
+        into another route, `/livestack/stop` among them: no stack is fetched
+        under such a name.
         """
+        if {target, filter_name} & {"", ".", ".."}:
+            raise NinaNoImageError(
+                f"No stack is addressable as {target!r}/{filter_name!r}"
+            )
         path = (
             f"/livestack/image/{quote(target, safe='')}/{quote(filter_name, safe='')}"
         )
-        return await self._image_bytes(path, {"stream": "true", "quality": quality})
+        params: dict[str, Any] = {"stream": "true", "quality": quality}
+        if width is not None:
+            # Scaled by the width alone, as `/image/{index}` is.
+            params["resize"] = "true"
+            params["size"] = f"{width}x{width}"
+        return await self._image_bytes(path, params)
 
     async def _image_bytes(self, path: str, params: dict[str, Any]) -> bytes:
         """The shared body of the image routes: content type separates a
