@@ -28,7 +28,8 @@ const NIGHT = "dawn_flats";
 
 // The night one frame earlier: its newest `recent_frames` entry not yet
 // saved, which `after` then hands over as the save, and every other entry one
-// frame younger.
+// frame younger. The rig would also still list the flat now 21st; nothing here
+// reads it.
 const MEAN_ADU = "sensor.n_i_n_a_last_image_mean_adu";
 const before = (dump) => {
   const row = dump[NIGHT].states[MEAN_ADU];
@@ -139,7 +140,7 @@ export const scenarios = {
   // lights, each fetched at its age behind the flats.
   lights_only: { hass: (dump) => rig(dump, NIGHT).build(), config: { lights_only: true } },
 
-  // A flat saved while only lights are shown: nothing new to load or draw.
+  // A flat saved while only lights are shown: no frame or thumbnail is fetched.
   lights_only_saved: {
     hass: (dump) => before(dump).build(),
     after: (dump) => [rig(dump, NIGHT).build()],

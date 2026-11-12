@@ -295,30 +295,27 @@ _RECENT_FRAMES_LIMIT = 20
 class RecentFrame:
     frame: Frame
     age: int
-    """How many frames this process saved after it: N.I.N.A.'s history index,
-    counted from the newest, which is how the image proxy fetches it."""
+    """How many frames this process saved after it, 0 the newest. The image
+    proxy takes it and turns it into N.I.N.A.'s oldest-first index."""
 
 
 def recent_frames(
     frames: Iterable[Frame], generation: str | None
 ) -> tuple[RecentFrame, ...]:
-    """The newest frames this process saved, of any type, and behind them the
-    newest lights, newest first: a flat run longer than the strip would
-    otherwise leave a lights-only strip empty.
+    """The 20 newest frames this process saved, of any type, then whichever of
+    the 20 newest lights are older than those, newest first. Without the
+    second part, a flat run longer than the strip leaves a lights-only strip
+    empty.
     """
     newest_first = sorted(
         (f for f in frames if f.generation == generation), key=_IDENTITY, reverse=True
     )
-    recent: list[RecentFrame] = []
-    lights = 0
-    for age, frame in enumerate(newest_first):
-        if lights >= _RECENT_FRAMES_LIMIT and age >= _RECENT_FRAMES_LIMIT:
-            break
-        light = frame.image_type == _LIGHT
-        if age < _RECENT_FRAMES_LIMIT or (light and lights < _RECENT_FRAMES_LIMIT):
-            recent.append(RecentFrame(frame, age))
-        lights += light
-    return tuple(recent)
+    aged = [RecentFrame(frame, age) for age, frame in enumerate(newest_first)]
+    lights = [r for r in aged if r.frame.image_type == _LIGHT][:_RECENT_FRAMES_LIMIT]
+    return (
+        *aged[:_RECENT_FRAMES_LIMIT],
+        *(r for r in lights if r.age >= _RECENT_FRAMES_LIMIT),
+    )
 
 
 def latest_target(events: Iterable[NinaEvent], generation: str | None) -> str | None:

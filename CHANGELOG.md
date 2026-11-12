@@ -8,12 +8,12 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 
 ### Added
 
-- **The image panel shows lights only, at the press of a button.** "Lights
-  only", beside the recent frames, keeps the last sub on screen and in the
-  strip through a flat run, however long. Each browser remembers it, and the
-  card's `lights_only` option sets where a browser starts.
-  `recent_frames` now also carries the 20 newest lights behind the newest
-  frames, each with its `age`.
+- **The image panel has a Lights only button** beside the recent frames. It
+  limits the main image and the strip to lights, so the last sub stays on
+  screen through a flat run of any length. Each browser remembers the choice
+  per rig; the card's `lights_only` option sets it for a browser that has not
+  pressed the button. `recent_frames` also holds the 20 newest lights however
+  many frames followed them, and gives every entry its `age`.
 
 ### Fixed
 
