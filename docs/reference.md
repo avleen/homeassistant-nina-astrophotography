@@ -600,12 +600,12 @@ card, an ApexCharts `data_generator`, or a template. For history, chart
   mount flipped.
 
 - `sensor.<instance>_last_image_mean_adu` has `recent_frames`: the 20 newest
-  frames of every type, then the 20 newest lights behind them, newest first,
-  each with its target, filter, exposure, HFR, star count, guide RMS and
-  N.I.N.A.'s min, median, mean and max ADU, and its `age`: how many frames
-  N.I.N.A. saved after it, which is how the image proxy fetches it. The extra
-  lights are what the image panel's Lights only button shows after a flat run
-  longer than the strip. The
+  frames of every type, then whichever of the 20 newest lights are older than
+  those, newest first. Each entry has its target, filter, exposure, HFR, star
+  count, guide RMS, N.I.N.A.'s min, median, mean and max ADU, and its `age`:
+  how many frames N.I.N.A. saved after it, which the image proxy fetches it
+  by. The older lights are what the image panel's Lights only button shows
+  after a flat run longer than the strip. The
   image panel card draws its ADU range from these, on an axis to the camera's
   full scale, which it also reads from `recent_lights`. They are statistics,
   not a histogram like the one in N.I.N.A.'s Statistics panel: the Advanced

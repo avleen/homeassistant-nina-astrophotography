@@ -85,10 +85,9 @@ async def test_the_breakdowns_are_attributes_not_entities(
 async def test_recent_frames_are_the_newest_frames_then_the_newest_lights(
     hass: HomeAssistant, loaded_entry: MockConfigEntry, advance
 ) -> None:
-    """Unlike the sensor's own LIGHT-only state, `recent_frames` is every type,
-    so a strip must label each: filter alone cannot tell a flat from a light.
-    The night ends on 67 flats after its lights, so a strip showing only lights
-    needs the 20 behind them, each at the age the image proxy fetches it by.
+    """The night ends on 67 flats, more than the newest frames hold, so a
+    lights-only strip needs the lights behind them, at the age the image proxy
+    fetches each by.
     """
     await advance("dawn_flats")
     recent = state_of(hass, LAST_IMAGE_MEAN_ADU).attributes["recent_frames"]

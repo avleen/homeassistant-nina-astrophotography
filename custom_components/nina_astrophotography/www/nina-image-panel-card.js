@@ -9,8 +9,8 @@
  * blocked as mixed content. Instead the integration proxies them, same
  * origin as Home Assistant itself:
  *
- *   GET /api/nina_astrophotography/image/{entity_id}/{index}?date=…   → one
- *     frame, JPEG, by its `age` in the history (0 = newest of any type) and
+ *   GET /api/nina_astrophotography/image/{entity_id}/{age}?date=…   → one
+ *     frame, JPEG, by its `recent_frames` age (0 = newest of any type) and
  *     save time
  *
  * Every image URL is signed just before use via the `auth/sign_path`
@@ -18,15 +18,15 @@
  * the thumbnail strip, which cannot carry an Authorization header.
  *
  * Everything describing a frame comes from the mean-ADU sensor's
- * `recent_frames` attribute — the newest frames of any type, then the newest
- * lights behind them, already bounded and ordered, each with its own readings
- * — so the overlay, the stats row and the ADU range describe the frame on
- * screen, whichever it is. Only the header's light count, integration time and
+ * `recent_frames` attribute — the newest frames of any type, then older
+ * lights, already bounded and ordered, each with its own readings — so the
+ * overlay, the stats row and the ADU range describe the frame on screen,
+ * whichever it is. Only the header's light count, integration time and
  * exposing state are the session's.
  *
- * "Lights only" narrows the main image and the strip to lights, so a flat run
+ * "Lights only" limits the main image and the strip to lights, so a flat run
  * leaves the last sub on screen. Each browser remembers the button per rig;
- * `lights_only` is where a browser that never pressed it starts.
+ * `lights_only` applies where the button was never pressed.
  *
  * The ADU range is those statistics, not a histogram: a histogram needs the
  * frame's pixels. Every `/image` render is stretched, `autoPrepare=false`
@@ -36,7 +36,7 @@
  *
  * Each N.I.N.A. render is a full FITS load and stretch on the imaging PC, so
  * the panel asks for as few as it can: one main load at a time, the newest
- * frame only when `recent_frames` gains one, a thumbnail only for a frame the
+ * frame shown only when a save adds one, a thumbnail only for a frame the
  * strip has not shown before, and the preview no wider than it is drawn.
  *
  * Card config — one rig needs none: the card finds its own sensors in the
@@ -82,7 +82,7 @@ const ADU_GRIDLINES = [[100, "100"], [1000, "1k"], [10000, "10k"]];
 const COUNTDOWN_TICK_MS = 1000;
 
 // The browser's own choice, `null` where it never made one. Where storage is
-// refused, as in a private window, the card's copy lasts until a reload.
+// refused, as when site data is blocked, the card's copy lasts until a reload.
 function storedChoice(key) {
   try {
     const value = globalThis.localStorage?.getItem(key);
@@ -402,7 +402,8 @@ class NinaImagePanelCard extends HTMLElement {
       quality: config.quality ?? DEFAULT_QUALITY,
       stretch: config.stretch ?? true,
       strip_count: config.strip_count ?? DEFAULT_STRIP_COUNT,
-      lights_only: config.lights_only ?? false,
+      // Rendered into markup: only a literal `true` counts.
+      lights_only: config.lights_only === true,
       prefix: config.prefix || DEFAULT_PREFIX,
       device_id: config.device_id,
     };
@@ -455,7 +456,8 @@ class NinaImagePanelCard extends HTMLElement {
   _updateImages() {
     // The newest frame is loaded on the first render, whenever a config or
     // registry change points the card at another entity (which may be another
-    // rig's), and with `refresh_on_save` whenever the rig saves another. Read
+    // rig's), and with `refresh_on_save` whenever the rig saves another of the
+    // kind shown. Read
     // off the attribute rather than `nina_image_save`, so the frame arrives
     // with its readings, and from this rig alone.
     const newest = this._recentFrames()[0];
@@ -531,16 +533,17 @@ class NinaImagePanelCard extends HTMLElement {
   // loaded the newest, which is what is loading.
   _frame() { return this._shown ?? this._recentFrames()[0] ?? {}; }
 
-  // Where the frame on screen sits among the frames shown: 0 the newest, -1
-  // once newer frames have pushed it off the end. Counted among lights alone
-  // while only lights are shown.
+  // How many newer frames there are than the one on screen: its `age`, or
+  // while only lights are shown, how many newer lights. -1 once it has left
+  // `recent_frames`.
   _index() {
     const date = this._frame().date;
     const frames = this._recentFrames();
     // An empty list says nothing of where the frame sits.
     if (!date || frames.length === 0) return 0;
     const index = frames.findIndex((frame) => frame.date === date);
-    return this._lightsOnly || index < 0 ? index : frames[index].age;
+    if (index < 0 || this._lightsOnly) return index;
+    return frames[index].age;
   }
 
   _attr(id, attr, fallback = null) {
@@ -552,15 +555,17 @@ class NinaImagePanelCard extends HTMLElement {
   // of any type, then the newest lights.
   _allFrames() { return this._attr(this._entityId(), "recent_frames", []); }
 
-  // The frames the card shows.
+  // All of `recent_frames`, or its lights alone.
   _recentFrames() {
     const frames = this._allFrames();
     return this._lightsOnly ? frames.filter((f) => f.image_type === "LIGHT") : frames;
   }
 
   // The unsigned path: a stable, cache-key-free description of one frame. The
-  // age is where the frame sits now; its `date` lets the proxy find it past
-  // any frame the rig saved since, and refuse rather than serve another.
+  // age is the frame's current one, or for a frame that has left the list the
+  // last it was listed with, which is too low; its `date` lets the proxy find
+  // it past any frame the rig saved since, and refuse rather than serve
+  // another.
   _imagePath(frame, { thumbnail = false, width = null } = {}) {
     const cfg = this._config;
     const age = this._allFrames().find((f) => f.date === frame.date)?.age ?? frame.age ?? 0;
@@ -690,7 +695,9 @@ class NinaImagePanelCard extends HTMLElement {
   }
 
   // The main image moves to the newest frame now shown, unless it already is
-  // that frame, or the viewer keeps a frame on screen and it is still shown.
+  // that frame, or, with `refresh_on_save` off, the frame on screen is still
+  // among those shown. A load in flight or skipped while folded may be a flat,
+  // so it is always replaced.
   _setLightsOnly(on) {
     this._lightsOnly = on;
     this.shadowRoot?.getElementById("lights-only")?.setAttribute("aria-pressed", String(on));
@@ -700,8 +707,9 @@ class NinaImagePanelCard extends HTMLElement {
     const newest = frames[0];
     this._newest = newest?.date;
     const date = this._shown?.date;
+    const pending = this._loading || this._missed;
     const kept = !this._config.refresh_on_save && frames.some((f) => f.date === date);
-    if (newest?.date !== date && !kept) this._load(newest);
+    if (pending || (newest?.date !== date && !kept)) this._load(newest);
     this._stripKey = null;
     this._update();
   }
@@ -765,6 +773,12 @@ class NinaImagePanelCard extends HTMLElement {
         probe.onerror = () => reject(new Error("image failed to load"));
         probe.src = url;
       });
+      // Only a picked frame goes on screen once the card no longer shows its
+      // kind, as a flat that finishes loading after Lights only is pressed.
+      if (!picked && !this._recentFrames().some((f) => f.date === frame.date)) {
+        settle();
+        return;
+      }
       img.src = url;
       // Only now: a failed or pending load leaves the previous frame on screen,
       // and everything describing it must stay on it too.
@@ -806,11 +820,11 @@ class NinaImagePanelCard extends HTMLElement {
     const kept = this._tiles;
     this._tiles = new Map();
     strip.innerHTML = "";
+    const [latest, each] = this._lightsOnly ? ["Latest light", "Light"] : ["Latest image", "Frame"];
     frames.forEach((frame, i) => {
       const tile = kept.get(frame.date) ?? this._tile(frame);
-      const place = this._lightsOnly
-        ? (i === 0 ? "Latest light" : `Light -${i}`)
-        : (frame.age === 0 ? "Latest image" : `Frame -${frame.age}`);
+      const position = this._lightsOnly ? i : frame.age;
+      const place = position === 0 ? latest : `${each} -${position}`;
       tile.setAttribute("aria-label", [place, tagFor(frame), frame.filter]
         .filter(Boolean).join(", "));
       this._tiles.set(frame.date, tile);
@@ -1148,7 +1162,7 @@ class NinaImagePanelCard extends HTMLElement {
       {
         name: "strip_count",
         label: "Number of recent frames",
-        helper: "Up to 20, the frames the integration keeps.",
+        helper: "Up to 20, of every type or of lights alone.",
         default: DEFAULT_STRIP_COUNT,
         selector: { number: { min: 1, max: 20, mode: "box" } },
       },

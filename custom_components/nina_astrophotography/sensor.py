@@ -214,7 +214,8 @@ _BY_FILTER = _breakdown("by_filter")
 
 
 def _recent_frame(recent: RecentFrame) -> Mapping[str, Any]:
-    """The fields are hand-picked: this is the card's contract, not `Frame`'s.
+    """One `recent_frames` entry. The fields are hand-picked: this is the
+    card's contract, not `Frame`'s.
     Each frame carries its own readings, which the `last_image_*` sensors hold
     only for the newest light, and the `age` the image proxy fetches it by.
     """
