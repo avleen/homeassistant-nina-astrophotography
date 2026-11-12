@@ -315,6 +315,10 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
   is in a meridian flip, including the wait before the slew, when it turns
   tracking off and the countdown reads `unknown`. Its `slews_at` attribute
   estimates when the slew starts (#164).
+- **The frame statistics card's HFR, star count and mean ADU graphs print their
+  numbers:** the high and low of the joined line on the left, and the newest
+  value on the right. The star count and mean ADU lines cover the newest run,
+  and HFR the whole night.
 
 ### Changed
 
