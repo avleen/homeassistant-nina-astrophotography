@@ -682,6 +682,21 @@ def test_a_site_of_zero_zero_is_no_site(site, mapped) -> None:
     assert (profile.site_latitude, profile.site_longitude) == mapped
 
 
+def test_a_running_exposure_reports_when_it_ends() -> None:
+    camera = map_equipment_info(load("imaging_guiding_equipment_info.json")).camera
+    assert camera is not None
+    assert camera.exposure_end == datetime.fromisoformat(
+        "2026-09-05T01:52:02.0595448-05:00"
+    )
+
+
+def test_an_idle_camera_has_no_exposure_end() -> None:
+    """The wire keeps the last exposure's end while `IsExposing` is false."""
+    camera = map_equipment_info(load("dawn_equipment_info.json")).camera
+    assert camera is not None
+    assert camera.exposure_end is None
+
+
 @pytest.mark.synthetic
 @pytest.mark.parametrize(
     ("wire", "mapped"),

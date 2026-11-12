@@ -294,6 +294,12 @@
     "platform": "nina_astrophotography",
     "translation_key": "camera_cooler_power"
    },
+   "sensor.n_i_n_a_camera_exposure_end": {
+    "device_id": "camera",
+    "entity_id": "sensor.n_i_n_a_camera_exposure_end",
+    "platform": "nina_astrophotography",
+    "translation_key": "camera_exposure_end"
+   },
    "sensor.n_i_n_a_camera_gain": {
     "device_id": "camera",
     "entity_id": "sensor.n_i_n_a_camera_gain",
@@ -913,6 +919,13 @@
      "unit_of_measurement": "%"
     },
     "state": "0.0"
+   },
+   "sensor.n_i_n_a_camera_exposure_end": {
+    "attributes": {
+     "device_class": "timestamp",
+     "friendly_name": "N.I.N.A. Camera Exposure end"
+    },
+    "state": "unknown"
    },
    "sensor.n_i_n_a_camera_gain": {
     "attributes": {
@@ -2947,6 +2960,12 @@
     "platform": "nina_astrophotography",
     "translation_key": "camera_cooler_power"
    },
+   "sensor.n_i_n_a_camera_exposure_end": {
+    "device_id": "camera",
+    "entity_id": "sensor.n_i_n_a_camera_exposure_end",
+    "platform": "nina_astrophotography",
+    "translation_key": "camera_exposure_end"
+   },
    "sensor.n_i_n_a_camera_gain": {
     "device_id": "camera",
     "entity_id": "sensor.n_i_n_a_camera_gain",
@@ -3571,6 +3590,13 @@
      "unit_of_measurement": "%"
     },
     "state": "66.0"
+   },
+   "sensor.n_i_n_a_camera_exposure_end": {
+    "attributes": {
+     "device_class": "timestamp",
+     "friendly_name": "N.I.N.A. Camera Exposure end"
+    },
+    "state": "2026-09-05T06:52:02+00:00"
    },
    "sensor.n_i_n_a_camera_gain": {
     "attributes": {
@@ -4726,6 +4752,12 @@
     "platform": "nina_astrophotography",
     "translation_key": "camera_cooler_power"
    },
+   "sensor.n_i_n_a_camera_exposure_end": {
+    "device_id": "camera",
+    "entity_id": "sensor.n_i_n_a_camera_exposure_end",
+    "platform": "nina_astrophotography",
+    "translation_key": "camera_exposure_end"
+   },
    "sensor.n_i_n_a_camera_gain": {
     "device_id": "camera",
     "entity_id": "sensor.n_i_n_a_camera_gain",
@@ -5333,6 +5365,13 @@
      "friendly_name": "N.I.N.A. Camera Cooler power",
      "state_class": "measurement",
      "unit_of_measurement": "%"
+    },
+    "state": "unavailable"
+   },
+   "sensor.n_i_n_a_camera_exposure_end": {
+    "attributes": {
+     "device_class": "timestamp",
+     "friendly_name": "N.I.N.A. Camera Exposure end"
     },
     "state": "unavailable"
    },
@@ -7949,6 +7988,12 @@
     "platform": "nina_astrophotography",
     "translation_key": "camera_cooler_power"
    },
+   "sensor.n_i_n_a_camera_exposure_end": {
+    "device_id": "camera",
+    "entity_id": "sensor.n_i_n_a_camera_exposure_end",
+    "platform": "nina_astrophotography",
+    "translation_key": "camera_exposure_end"
+   },
    "sensor.n_i_n_a_camera_gain": {
     "device_id": "camera",
     "entity_id": "sensor.n_i_n_a_camera_gain",
@@ -8721,6 +8766,13 @@
      "friendly_name": "N.I.N.A. Camera Cooler power",
      "state_class": "measurement",
      "unit_of_measurement": "%"
+    },
+    "state": "unknown"
+   },
+   "sensor.n_i_n_a_camera_exposure_end": {
+    "attributes": {
+     "device_class": "timestamp",
+     "friendly_name": "N.I.N.A. Camera Exposure end"
     },
     "state": "unknown"
    },
@@ -9652,6 +9704,12 @@
     "platform": "nina_astrophotography",
     "translation_key": "camera_cooler_power"
    },
+   "sensor.n_i_n_a_camera_exposure_end": {
+    "device_id": "camera",
+    "entity_id": "sensor.n_i_n_a_camera_exposure_end",
+    "platform": "nina_astrophotography",
+    "translation_key": "camera_exposure_end"
+   },
    "sensor.n_i_n_a_camera_gain": {
     "device_id": "camera",
     "entity_id": "sensor.n_i_n_a_camera_gain",
@@ -10424,6 +10482,13 @@
      "friendly_name": "N.I.N.A. Camera Cooler power",
      "state_class": "measurement",
      "unit_of_measurement": "%"
+    },
+    "state": "unknown"
+   },
+   "sensor.n_i_n_a_camera_exposure_end": {
+    "attributes": {
+     "device_class": "timestamp",
+     "friendly_name": "N.I.N.A. Camera Exposure end"
     },
     "state": "unknown"
    },
@@ -11355,6 +11420,12 @@
     "platform": "nina_astrophotography",
     "translation_key": "camera_cooler_power"
    },
+   "sensor.n_i_n_a_camera_exposure_end": {
+    "device_id": "camera",
+    "entity_id": "sensor.n_i_n_a_camera_exposure_end",
+    "platform": "nina_astrophotography",
+    "translation_key": "camera_exposure_end"
+   },
    "sensor.n_i_n_a_camera_gain": {
     "device_id": "camera",
     "entity_id": "sensor.n_i_n_a_camera_gain",
@@ -12113,6 +12184,13 @@
      "friendly_name": "N.I.N.A. Camera Cooler power",
      "state_class": "measurement",
      "unit_of_measurement": "%"
+    },
+    "state": "unavailable"
+   },
+   "sensor.n_i_n_a_camera_exposure_end": {
+    "attributes": {
+     "device_class": "timestamp",
+     "friendly_name": "N.I.N.A. Camera Exposure end"
     },
     "state": "unavailable"
    },
@@ -12955,6 +13033,12 @@
     "platform": "nina_astrophotography",
     "translation_key": "camera_cooler_power"
    },
+   "sensor.n_i_n_a_camera_exposure_end": {
+    "device_id": "camera",
+    "entity_id": "sensor.n_i_n_a_camera_exposure_end",
+    "platform": "nina_astrophotography",
+    "translation_key": "camera_exposure_end"
+   },
    "sensor.n_i_n_a_camera_gain": {
     "device_id": "camera",
     "entity_id": "sensor.n_i_n_a_camera_gain",
@@ -13579,6 +13663,13 @@
      "unit_of_measurement": "%"
     },
     "state": "66.0"
+   },
+   "sensor.n_i_n_a_camera_exposure_end": {
+    "attributes": {
+     "device_class": "timestamp",
+     "friendly_name": "N.I.N.A. Camera Exposure end"
+    },
+    "state": "2026-09-05T06:52:02+00:00"
    },
    "sensor.n_i_n_a_camera_gain": {
     "attributes": {
@@ -14734,6 +14825,12 @@
     "platform": "nina_astrophotography",
     "translation_key": "camera_cooler_power"
    },
+   "sensor.n_i_n_a_camera_exposure_end": {
+    "device_id": "camera",
+    "entity_id": "sensor.n_i_n_a_camera_exposure_end",
+    "platform": "nina_astrophotography",
+    "translation_key": "camera_exposure_end"
+   },
    "sensor.n_i_n_a_camera_gain": {
     "device_id": "camera",
     "entity_id": "sensor.n_i_n_a_camera_gain",
@@ -15358,6 +15455,13 @@
      "unit_of_measurement": "%"
     },
     "state": "66.0"
+   },
+   "sensor.n_i_n_a_camera_exposure_end": {
+    "attributes": {
+     "device_class": "timestamp",
+     "friendly_name": "N.I.N.A. Camera Exposure end"
+    },
+    "state": "2026-09-05T06:52:02+00:00"
    },
    "sensor.n_i_n_a_camera_gain": {
     "attributes": {
