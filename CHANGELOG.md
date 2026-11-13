@@ -9,9 +9,10 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 ### Added
 
 - **The frame statistics card's HFR, star count and mean ADU graphs print the
-  high and low of their line** on the left (#271), and the newest value, to fixed
-  places, on the right. The star count and mean ADU lines cover the newest
-  run, and HFR the whole night.
+  high and low of their line** on the left (#271), and the newest value on the
+  right: HFR to two decimals, stars and ADU as whole numbers. The star count
+  and mean ADU lines cover the newest lights of one target, filter and
+  exposure, and the HFR line every light the graph shows.
 
 ### Fixed
 

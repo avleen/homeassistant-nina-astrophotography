@@ -531,8 +531,8 @@ class NinaFrameStatsCard extends HTMLElement {
     }
   }
 
-  // Prints the high and low of the line it draws on the left, and its newest
-  // value on the right, to `digits` places.
+  // Prints, to `digits` places, the high and low of the joined line in the
+  // left margin and its newest value in the right.
   //
   // Given `minSpan`, a function of the run's mean, the chart is scaled to the
   // newest run and the rest of the night drawn faded behind it: another
@@ -557,22 +557,25 @@ class NinaFrameStatsCard extends HTMLElement {
     const known = (indices) => indices.filter((i) => data[i] !== null && data[i] !== undefined);
     const all = data.map((_, i) => i);
     const run = minSpan !== null && known(this._run).length >= 2 ? this._run : null;
-    const inRun = new Set(run ?? all);
+    const path = run ?? all;
+    const inRun = new Set(path);
+    // The joined line, which the scale fits and the numbers describe.
+    const line = known(path);
+    const drawn = line.map((i) => data[i]);
+    const high = Math.max(...drawn);
+    const low = Math.min(...drawn);
     let minVal, maxVal;
     if (minSpan === null) {
-      minVal = Math.min(...valid) * 0.95;
-      maxVal = Math.max(...valid) * 1.05;
+      minVal = low * 0.95;
+      maxVal = high * 1.05;
     } else {
-      const scaled = known(run ?? all).map((i) => data[i]);
-      const lo = Math.min(...scaled);
-      const hi = Math.max(...scaled);
       // A run of zero stars has no span at all, relative or not.
-      const span = Math.max(hi - lo, minSpan(this._mean(scaled))) || 1;
-      minVal = (lo + hi) / 2 - span * (0.5 + RUN_HEADROOM);
-      maxVal = (lo + hi) / 2 + span * (0.5 + RUN_HEADROOM);
+      const span = Math.max(high - low, minSpan(this._mean(drawn))) || 1;
+      minVal = (low + high) / 2 - span * (0.5 + RUN_HEADROOM);
+      maxVal = (low + high) / 2 + span * (0.5 + RUN_HEADROOM);
     }
     const range = maxVal - minVal || 1;
-    // The side margins hold the numbers: five digits of ADU at 10 px.
+    // The side margins hold the numbers, wide enough for five digits of ADU.
     const pad = { l: 34, r: 36, t: 6, b: 4 };
     const plotW = W - pad.l - pad.r;
     const plotH = H - pad.t - pad.b;
@@ -624,8 +627,6 @@ class NinaFrameStatsCard extends HTMLElement {
       ctx.restore();
     }
 
-    const path = run ?? all;
-    const line = known(path);
     ctx.beginPath();
     line.forEach((i, k) => {
       if (k === 0) ctx.moveTo(xOf(i), yOf(data[i]));
@@ -694,27 +695,22 @@ class NinaFrameStatsCard extends HTMLElement {
       }
     }
 
-    // The numbers describe the joined line, which is what the scale fits; the
-    // faded lights behind it can sit far outside.
-    // The high and low sit at the margin's ends, not level with their points:
-    // on a flat night those are within a line of text of each other.
-    const drawn = line.map((i) => data[i]);
+    // The high and low describe the joined line only: the faded lights behind
+    // it can sit far outside. They sit at the margin's ends, not level with
+    // their points, which on a flat night are within a line of text.
+    const fmt = (v) => v.toFixed(digits);
     ctx.font = "9px sans-serif";
     ctx.fillStyle = theme.ink(0.55);
     ctx.textAlign = "right";
-    const high = Math.max(...drawn);
-    const low = Math.min(...drawn);
-    ctx.fillText(high.toFixed(digits), pad.l - 5, pad.t + 7);
-    if (low.toFixed(digits) !== high.toFixed(digits)) {
-      ctx.fillText(low.toFixed(digits), pad.l - 5, H - pad.b);
-    }
+    ctx.fillText(fmt(high), pad.l - 5, pad.t + 7);
+    if (fmt(low) !== fmt(high)) ctx.fillText(fmt(low), pad.l - 5, H - pad.b);
 
     // Beside the newest frame that measured anything, kept on the canvas.
     const newest = line[line.length - 1];
     ctx.font = "bold 10px sans-serif";
     ctx.fillStyle = theme.ink(0.85);
     ctx.textAlign = "left";
-    ctx.fillText(data[newest].toFixed(digits), W - pad.r + 6,
+    ctx.fillText(fmt(data[newest]), W - pad.r + 6,
       Math.min(Math.max(yOf(data[newest]) + 3, 9), H - 2));
   }
 
