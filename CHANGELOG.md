@@ -9,9 +9,10 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 ### Added
 
 - **The frame statistics card's HFR, star count and mean ADU graphs print the
-  high and low of their line** on the left (#271), and the newest value, to fixed
-  places, on the right. The star count and mean ADU lines cover the newest
-  run, and HFR the whole night.
+  high and low of their line** on the left (#271), and the newest value on the
+  right: HFR to two decimals, stars and ADU as whole numbers. The star count
+  and mean ADU lines cover the newest lights of one target, filter and
+  exposure, and the HFR line every light the graph shows.
 - **The image panel has a Lights only button** beside the recent frames (#270). It
   limits the main image and the strip to lights, so the last sub stays on
   screen through a flat run of any length. Each browser remembers the choice
@@ -35,7 +36,6 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 - **The card harness logs each image a card asks for** (#264), and `Rig.add`
   gives a scenario a row from another integration.
 
----
 ### Fixed
 
 - **A screen reader reaches the live stack card's Start/Stop as a control of
