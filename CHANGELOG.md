@@ -12,6 +12,15 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
   high and low of their line** on the left (#271), and the newest value, to fixed
   places, on the right. The star count and mean ADU lines cover the newest
   run, and HFR the whole night.
+- **`custom:nina-site-camera-card`** shows a pier, all-sky or observatory
+  camera in the same frame as the other cards (#264), from any camera or image
+  entities. Two or more get chips to choose between them, a tap opens the
+  entity's more-info dialog, and a camera's `url` shows as an **Open** link.
+
+### Changed
+
+- **The card harness logs each image a card asks for** (#264), and `Rig.add`
+  gives a scenario a row from another integration.
 
 ### Fixed
 
