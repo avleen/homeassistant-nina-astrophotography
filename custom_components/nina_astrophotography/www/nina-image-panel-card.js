@@ -761,9 +761,10 @@ class NinaImagePanelCard extends HTMLElement {
     const spinner = this.shadowRoot?.getElementById("spinner");
     const noImg  = this.shadowRoot?.getElementById("no-image");
     if (!img) return;
-    // A picked frame still waiting keeps its spinner.
+    // A frame still waiting keeps the spinner if it was picked, or if nothing
+    // is on screen, as when Lights only drops a flat.
     const settle = () => {
-      if (this._queued?.picked) return;
+      if (this._queued && (this._queued.picked || !this._shown)) return;
       img.classList.remove("loading");
       spinner?.classList.remove("active");
     };
