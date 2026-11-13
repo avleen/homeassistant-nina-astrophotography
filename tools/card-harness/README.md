@@ -105,7 +105,7 @@ Write `scenarios/<card name>.mjs` exporting `scenarios`, keyed by name:
   events: (dump) => [{ type: "nina_image_save", data: { … } }],  // optional
   after: (dump) => [rig(dump, "nina_unreachable").build()],  // optional
   folded: ["card"],  // optional, sections folded as a viewer would
-  pinned: "G",  // optional, the frame statistics card's chip a viewer pressed
+  pinned: "R",  // optional, the frame statistics card's chip a viewer pressed
 }
 ```
 

@@ -13,10 +13,11 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
   places, on the right. The star count and mean ADU lines cover the newest
   run, and HFR the whole night.
 - **A filter chip on the frame statistics card charts that filter alone.**
-  Pressing one draws its lights from the recent series, evenly spaced, and
-  points the HFR trend at its run; pressing it again follows the newest light.
-  The browser remembers the choice per rig. A filter with fewer than two of
-  the recent lights cannot be pressed.
+  Pressing one draws that filter's recent lights, evenly spaced, and points the
+  HFR trend and rolling average at its run; the chart titles name it. Pressing
+  it again follows the newest light. The browser remembers the choice per rig,
+  and while the filter has fewer than two recent HFR readings, as at the start
+  of a night, the charts show every filter until it has.
 
 ### Fixed
 

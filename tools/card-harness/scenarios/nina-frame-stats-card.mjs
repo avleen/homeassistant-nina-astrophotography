@@ -19,9 +19,13 @@
  * trend. The night truncated at earlier lights reaches a run of one and a run
  * read across interleaved filters.
  *
+ * A pin reaches a filter charted alone across a target boundary and across
+ * interleaved filters, and a pin waiting on a filter with too few lights.
+ *
  * Not reached: a gap in a series, since no captured light lacks a reading,
  * nor a trend that reads Improving or Degrading, since the newest ten S frames
- * hold steady.
+ * hold steady, nor a pinned filter returning to a target after another.
+ * A pin is preset, never pressed: the click is a browser's to reach.
  *
  * `site_configured` holds no session, because it is dumped on a later day than
  * its night. That is the empty card, and it is also what a new night shows
@@ -217,16 +221,17 @@ export const scenarios = {
 
   // R pinned: its five Wizard Nebula lights and four Dark Shark ones, one
   // target boundary between them, and the star and ADU charts scaled to the
-  // Dark Shark four. The trend reads R's run, not the newest S.
+  // Dark Shark four. The trend box names R's run rather than the newest S,
+  // and four lights are too few for a trend.
   pinned: { hass: (dump) => rig(dump, NIGHT).build(), pinned: "R" },
 
-  // Midway through the Dark Shark's pairs, the newest an L, with B pinned:
-  // its seven lights joined without the L between them.
+  // `interleaved`'s night with B pinned: its seven lights as one evenly spaced
+  // line, the L lights between them gone, and too few for a trend.
   pinned_interleaved: { hass: (dump) => asOf(dump, 27).build(), pinned: "B" },
 
-  // O pinned, with one O light in the night: too few to chart, so the pin is
-  // let go and the ops match `session`'s, and O's chip cannot be pressed.
-  pinned_too_few: { hass: (dump) => rig(dump, NIGHT).build(), pinned: "O" },
+  // O pinned, with one O light in the night: too few to chart, so the pin
+  // waits, its chip pressed but dashed, and the ops match `session`'s.
+  pinned_waiting: { hass: (dump) => rig(dump, NIGHT).build(), pinned: "O" },
 
   // No lights in the session, so no charts: the waiting panel under the
   // header's session totals.
