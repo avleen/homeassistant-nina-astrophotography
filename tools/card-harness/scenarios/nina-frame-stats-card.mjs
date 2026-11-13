@@ -215,6 +215,19 @@ export const scenarios = {
   unscaled_12_bit: { hass: (dump) => unscaled(dump, NIGHT, 16).build() },
   unscaled_14_bit: { hass: (dump) => unscaled(dump, NIGHT, 4).build() },
 
+  // R pinned: its five Wizard Nebula lights and four Dark Shark ones, one
+  // target boundary between them, and the star and ADU charts scaled to the
+  // Dark Shark four. The trend reads R's run, not the newest S.
+  pinned: { hass: (dump) => rig(dump, NIGHT).build(), pinned: "R" },
+
+  // Midway through the Dark Shark's pairs, the newest an L, with B pinned:
+  // its seven lights joined without the L between them.
+  pinned_interleaved: { hass: (dump) => asOf(dump, 27).build(), pinned: "B" },
+
+  // O pinned, with one O light in the night: too few to chart, so the pin is
+  // let go and the ops match `session`'s, and O's chip cannot be pressed.
+  pinned_too_few: { hass: (dump) => rig(dump, NIGHT).build(), pinned: "O" },
+
   // No lights in the session, so no charts: the waiting panel under the
   // header's session totals.
   waiting: { hass: (dump) => rig(dump, "site_configured").build() },

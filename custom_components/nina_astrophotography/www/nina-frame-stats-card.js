@@ -256,9 +256,12 @@ const STYLE = `
   .filter-chip {
     display: flex; align-items: center; gap: 5px;
     border-radius: 20px; padding: 4px 10px;
-    font-size: 0.7rem; font-weight: 600;
+    font: inherit; font-size: 0.7rem; font-weight: 600;
+    color: inherit; cursor: pointer;
     border: 1px solid transparent;
   }
+  .filter-chip:disabled { cursor: default; opacity: 0.45; }
+  .filter-bar.pinned .filter-chip[aria-pressed="false"]:enabled { opacity: 0.6; }
   .filter-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 
   /* ── No data ── */
@@ -283,6 +286,30 @@ const ADU_MIN_SPAN = 10;
 // Headroom above and below a run, as a fraction of its span.
 const RUN_HEADROOM = 0.1;
 
+// The pinned filter's name, remembered per browser and rig. Where storage is
+// refused, as in a private window, the pin lasts until the page reloads.
+function storedPin(key) {
+  try {
+    return globalThis.localStorage?.getItem(key) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function storePin(key, name) {
+  try {
+    if (name === null) globalThis.localStorage?.removeItem(key);
+    else globalThis.localStorage?.setItem(key, name);
+  } catch {
+    // Storage refused: the card's copy holds it for this page.
+  }
+}
+
+// Whether `lights` hold the two of filter `name` a chart needs to draw a line.
+function chartable(lights, name) {
+  return lights.filter((light) => light.filter === name).length >= 2;
+}
+
 function hfrTrend(recent, previous, delta) {
   if (recent === null || previous === null) return "unknown";
   if (Math.abs(delta) < TREND_EPSILON * recent) return "stable";
@@ -294,6 +321,14 @@ class NinaFrameStatsCard extends HTMLElement {
     super();
     this.attachShadow({ mode: "open" });
     this._collapse = new Collapse(this, "nina-frame-stats-card", () => this._render());
+    this._lights = [];
+    this._pinned = null;
+    this._chipNames = [];
+    this.shadowRoot.addEventListener("click", (event) => {
+      const chip = event.target?.closest?.("[data-filter]");
+      const name = this._chipNames[Number(chip?.dataset.filter)];
+      if (chip && !chip.disabled && name !== undefined) this._pin(name);
+    });
     this._hfr = [];
     this._stars = [];
     this._adu = [];
@@ -309,6 +344,18 @@ class NinaFrameStatsCard extends HTMLElement {
     this._rig = new RigEntities(
       this._config.prefix || DEFAULT_PREFIX, this._config.device_id);
     this._collapse.scope(this._config);
+    const rig = this._config.device_id || this._config.prefix || DEFAULT_PREFIX;
+    this._pinKey = `nina-frame-stats-card:${rig}:filter`;
+    this._pinned = storedPin(this._pinKey);
+  }
+
+  // A second click on the pinned chip lets the charts follow the newest light
+  // again.
+  _pin(name) {
+    this._pinned = name === this._pinned ? null : name;
+    storePin(this._pinKey, this._pinned);
+    this._select();
+    this._render();
   }
 
   set hass(hass) {
@@ -342,7 +389,22 @@ class NinaFrameStatsCard extends HTMLElement {
   _updateData() {
     const entity = this._hass?.states[this._eid("sensor", "last_image_hfr")];
     if (entity?.state === "unavailable") return;
-    const lights = entity?.attributes.recent_lights ?? [];
+    this._lights = entity?.attributes.recent_lights ?? [];
+    this._select();
+  }
+
+  // The charts hold the pinned filter's lights from the series, or every
+  // light when none is pinned. A filter with too few lights there to chart is
+  // let go, so a chip never reads pressed over charts that do not show it; a
+  // night with no lights yet keeps the pin.
+  _select() {
+    const all = this._lights;
+    if (all.length && !chartable(all, this._pinned)) {
+      if (this._pinned !== null) storePin(this._pinKey, null);
+      this._pinned = null;
+    }
+    const lights = this._pinned === null
+      ? all : all.filter((light) => light.filter === this._pinned);
     this._hfr = lights.map((light) => light.hfr ?? null);
     this._stars = lights.map((light) => light.stars ?? null);
     this._adu = lights.map((light) => light.mean ?? null);
@@ -381,6 +443,8 @@ class NinaFrameStatsCard extends HTMLElement {
   _render() {
     const h = this._hass;
     if (!h) return;
+    // A chip keeps focus through the re-render a click or an update causes.
+    const focusedChip = this._chipNames[this.shadowRoot.activeElement?.dataset?.filter];
 
     // The count sensor's state includes flats; everything else here is lights only.
     const lightCount   = shown(this._attr(this._eid("sensor", "session_image_count"), "light_count"));
@@ -436,13 +500,22 @@ class NinaFrameStatsCard extends HTMLElement {
     const ownColours = chipless && this._filters.every((name) => name === null);
     const lightColours = this._filters.map((name) =>
       (ownColours ? null : name === null ? NO_FILTER : colours.get(name)));
-    const filterChipsHtml = filterEntries.map(([name, row]) => {
+    // The count is the session's, and the series only its newest lights.
+    this._chipNames = filterEntries.map(([name]) => name);
+    const filterChipsHtml = filterEntries.map(([name, row], i) => {
       const colour = shade(colours.get(name), theme);
-      return `<div class="filter-chip" style="background:${colour}22;border-color:${colour}55">
-        <div class="filter-dot" style="background:${colour}"></div>
+      const pressed = name === this._pinned;
+      const pinnable = chartable(this._lights, name);
+      const title = pressed ? "Chart every filter"
+        : pinnable ? `Chart ${name} alone` : `Too few recent ${name} lights to chart`;
+      return `<button type="button" class="filter-chip" data-filter="${i}" aria-pressed="${pressed}"
+          title="${safe(title)}"${pinnable ? "" : " disabled"}
+          style="background:${colour}${pressed ? "55" : "22"};border-color:${colour}${pressed ? "" : "55"}">
+        <span class="filter-dot" style="background:${colour}"></span>
         <span>${safe(name)}: ${row?.count ?? 0}</span>
-      </div>`;
+      </button>`;
     }).join("");
+    const pinnedTo = this._pinned === null ? "" : ` · ${safe(this._pinned)}`;
 
     const fold = this._collapse;
     const chart = (section, label, content) => `
@@ -503,14 +576,14 @@ class NinaFrameStatsCard extends HTMLElement {
               </div>
             </div>
 
-            ${chart("hfr", "HFR per frame", `<canvas id="hfr-chart" height="64"></canvas>`)}
+            ${chart("hfr", `HFR per frame${pinnedTo}`, `<canvas id="hfr-chart" height="64"></canvas>`)}
 
-            ${chart("stars", "Star count per frame", `<canvas id="stars-chart" height="48"></canvas>`)}
+            ${chart("stars", `Star count per frame${pinnedTo}`, `<canvas id="stars-chart" height="48"></canvas>`)}
 
-            ${chart("adu", "Mean ADU per frame", `<canvas id="adu-chart" height="48"></canvas>`)}
+            ${chart("adu", `Mean ADU per frame${pinnedTo}`, `<canvas id="adu-chart" height="48"></canvas>`)}
 
             ${!chipless
-              ? chart("filters", "Frames per filter", `<div class="filter-bar">${filterChipsHtml}</div>`)
+              ? chart("filters", "Frames per filter", `<div class="filter-bar${pinnedTo ? " pinned" : ""}">${filterChipsHtml}</div>`)
               : ""}
           `}
         </div>` : ""}
@@ -518,6 +591,10 @@ class NinaFrameStatsCard extends HTMLElement {
     `;
 
     fold.keepFocus(() => { this.shadowRoot.innerHTML = html; });
+    if (focusedChip !== undefined && !this.shadowRoot.activeElement) {
+      const i = this._chipNames.indexOf(focusedChip);
+      this.shadowRoot.querySelector(`[data-filter="${i}"]`)?.focus({ preventScroll: true });
+    }
 
     // A folded chart has no canvas, which each draw skips.
     if (hasData && fold.open("card")) {
