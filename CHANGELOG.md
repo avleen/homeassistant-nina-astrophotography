@@ -14,7 +14,17 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
   per rig; the card's `lights_only` option sets it for a browser that has not
   pressed the button. `recent_frames` also holds the 20 newest lights however
   many frames followed them, and gives every entry its `age`.
+- **`custom:nina-site-camera-card`** shows a pier, all-sky or observatory
+  camera in the same frame as the other cards (#264), from any camera or image
+  entities. Two or more get chips to choose between them, a tap opens the
+  entity's more-info dialog, and a camera's `url` shows as an **Open** link.
 
+### Changed
+
+- **The card harness logs each image a card asks for** (#264), and `Rig.add`
+  gives a scenario a row from another integration.
+
+---
 ### Fixed
 
 - **A screen reader reaches the live stack card's Start/Stop as a control of
