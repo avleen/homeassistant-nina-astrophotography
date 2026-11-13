@@ -8,7 +8,7 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 
 ### Added
 
-- **The image panel has a Lights only button** beside the recent frames. It
+- **The image panel has a Lights only button** beside the recent frames (#270). It
   limits the main image and the strip to lights, so the last sub stays on
   screen through a flat run of any length. Each browser remembers the choice
   per rig; the card's `lights_only` option sets it for a browser that has not
