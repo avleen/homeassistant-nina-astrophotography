@@ -12,6 +12,12 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
   high and low of their line** on the left (#271), and the newest value, to fixed
   places, on the right. The star count and mean ADU lines cover the newest
   run, and HFR the whole night.
+- **The image panel has a Lights only button** beside the recent frames (#270). It
+  limits the main image and the strip to lights, so the last sub stays on
+  screen through a flat run of any length. Each browser remembers the choice
+  per rig; the card's `lights_only` option sets it for a browser that has not
+  pressed the button. `recent_frames` also holds the 20 newest lights however
+  many frames followed them, and gives every entry its `age`.
 
 ### Fixed
 

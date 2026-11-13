@@ -11,10 +11,10 @@
  * signs: the entity the proxy resolves a rig by, the frame's date, and which
  * frames a new save makes it fetch.
  *
- * `dawn_flats` is dumped from inside its own night, and all twenty
+ * `dawn_flats` is dumped from inside its own night, and its newest twenty
  * `recent_frames` are its dawn flats: the strip's six thumbnails are tagged
  * FLAT, and the readings are a flat's — ADU and a short exposure, no HFR, no
- * stars.
+ * stars. The twenty lights behind them are what "Lights only" shows.
  *
  * `site_configured` is dumped on a later day than its night, so it has image
  * history but no session: a strip of lights with their own readings, no
@@ -27,13 +27,17 @@ import { linkScenarios, rig, unscaled } from "../hass.mjs";
 const NIGHT = "dawn_flats";
 
 // The night one frame earlier: its newest `recent_frames` entry not yet
-// saved, which `after` then hands over as the save.
+// saved, which `after` then hands over as the save, and every other entry one
+// frame younger. The rig would also still list the flat now 21st; nothing here
+// reads it.
 const MEAN_ADU = "sensor.n_i_n_a_last_image_mean_adu";
 const before = (dump) => {
   const row = dump[NIGHT].states[MEAN_ADU];
   return rig(dump, NIGHT).override(MEAN_ADU, row.state, {
     ...row.attributes,
-    recent_frames: row.attributes.recent_frames.slice(1),
+    recent_frames: row.attributes.recent_frames
+      .slice(1)
+      .map((frame) => ({ ...frame, age: frame.age - 1 })),
   });
 };
 
@@ -131,4 +135,15 @@ export const scenarios = {
 
   // The strip folded to its heading: the frame loads, no thumbnail does.
   folded_strip: { hass: (dump) => rig(dump, NIGHT).build(), folded: ["strip"] },
+
+  // The dawn flats passed over: the newest light on screen, and the strip its
+  // lights, each fetched at its age behind the flats.
+  lights_only: { hass: (dump) => rig(dump, NIGHT).build(), config: { lights_only: true } },
+
+  // A flat saved while only lights are shown: no frame or thumbnail is fetched.
+  lights_only_saved: {
+    hass: (dump) => before(dump).build(),
+    after: (dump) => [rig(dump, NIGHT).build()],
+    config: { lights_only: true },
+  },
 };
