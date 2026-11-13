@@ -61,9 +61,9 @@
       window.__errors = [];
       addEventListener("error", (event) => window.__errors.push(String(event.message)));
 
-      // Folds a click left behind would carry into the next load.
+      // Folds and pins a click left behind would carry into the next load.
       for (const key of Object.keys(localStorage)) {
-        if (key.startsWith("nina-collapse:")) localStorage.removeItem(key);
+        if (key.startsWith("nina-collapse:") || key.endsWith(":filter")) localStorage.removeItem(key);
       }
 
       const only = params.get("scenario");
@@ -77,6 +77,7 @@
           const element = document.createElement(card);
           element.setConfig(scenario.config ?? {});
           element._collapse?.preset(...(scenario.folded ?? []));
+          if (scenario.pinned) element._pinned = scenario.pinned;
           slot.appendChild(element);
           const hass = scenario.hass(dump);
           // `auth/sign_path`, answered with the path unsigned: the image panel

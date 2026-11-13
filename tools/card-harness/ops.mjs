@@ -70,6 +70,7 @@ if (!Card) {
 const instance = new Card();
 instance.setConfig(scenario.config ?? {});
 instance._collapse?.preset(...(scenario.folded ?? []));
+if (scenario.pinned) instance._pinned = scenario.pinned;
 const hass = scenario.hass(dump);
 // The image panel signs each image path before loading it. The path names the
 // entity the proxy resolves a rig by, so the request is the record; the answer

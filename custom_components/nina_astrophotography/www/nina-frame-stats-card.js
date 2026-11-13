@@ -252,13 +252,19 @@ const STYLE = `
   canvas { width: 100%; border-radius: 6px; display: block; }
 
   /* ── Filter bar ── */
-  .filter-bar { display: flex; flex-wrap: wrap; gap: 6px; }
+  .filter-bar { display: flex; flex-wrap: wrap; gap: 8px; }
   .filter-chip {
     display: flex; align-items: center; gap: 5px;
-    border-radius: 20px; padding: 4px 10px;
-    font-size: 0.7rem; font-weight: 600;
+    border-radius: 20px; padding: 6px 12px; min-height: 28px;
+    font: inherit; font-size: 0.7rem; font-weight: 600;
+    color: inherit; cursor: pointer;
     border: 1px solid transparent;
   }
+  .filter-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .filter-chip.aside { color: var(--muted); }
+  .filter-chip[aria-disabled="true"] { cursor: default; color: var(--muted); border-style: dashed; }
+  .filter-chip.waiting { border-style: dashed; }
+  .filter-hint { font-size: 0.62rem; color: var(--muted); margin-top: 2px; }
   .filter-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 
   /* ── No data ── */
@@ -283,6 +289,36 @@ const ADU_MIN_SPAN = 10;
 // Headroom above and below a run, as a fraction of its span.
 const RUN_HEADROOM = 0.1;
 
+// The pinned filter's name, remembered per browser and rig. Where storage is
+// refused, as in a private window, the pin lasts until the page reloads.
+const pins = new Map();
+
+function storedPin(key) {
+  try {
+    const name = globalThis.localStorage?.getItem(key);
+    if (name !== null && name !== undefined) return name;
+  } catch {
+    // Storage refused: fall through to memory.
+  }
+  return pins.get(key) ?? null;
+}
+
+function storePin(key, name) {
+  pins.set(key, name);
+  try {
+    if (name === null) globalThis.localStorage?.removeItem(key);
+    else globalThis.localStorage?.setItem(key, name);
+  } catch {
+    // Storage refused: memory holds it for this page.
+  }
+}
+
+// Whether `lights` hold at least two HFR readings through filter `name`, the
+// fewest the HFR chart draws a line through.
+function chartable(lights, name) {
+  return lights.filter((light) => light.filter === name && light.hfr != null).length >= 2;
+}
+
 function hfrTrend(recent, previous, delta) {
   if (recent === null || previous === null) return "unknown";
   if (Math.abs(delta) < TREND_EPSILON * recent) return "stable";
@@ -294,6 +330,18 @@ class NinaFrameStatsCard extends HTMLElement {
     super();
     this.attachShadow({ mode: "open" });
     this._collapse = new Collapse(this, "nina-frame-stats-card", () => this._render());
+    this._lights = [];
+    this._pinned = null;
+    this._charted = null;
+    this._seen = null;
+    // A chip's `data-filter` is its index here, so no filter name is read back
+    // out of markup.
+    this._chipNames = [];
+    this.shadowRoot.addEventListener("click", (event) => {
+      const chip = event.target?.closest?.("[data-filter]");
+      const name = this._chipNames[Number(chip?.dataset.filter)];
+      if (chip?.getAttribute("aria-disabled") !== "true" && name !== undefined) this._pin(name);
+    });
     this._hfr = [];
     this._stars = [];
     this._adu = [];
@@ -309,14 +357,54 @@ class NinaFrameStatsCard extends HTMLElement {
     this._rig = new RigEntities(
       this._config.prefix || DEFAULT_PREFIX, this._config.device_id);
     this._collapse.scope(this._config);
+    const rig = this._config.device_id || this._config.prefix || DEFAULT_PREFIX;
+    const pinKey = `nina-frame-stats-card:${rig}:filter`;
+    if (pinKey !== this._pinKey) {
+      this._pinKey = pinKey;
+      this._pinned = storedPin(pinKey);
+    }
+    this._seen = null;
   }
 
+  // Only a click changes the pin. A second click on the pinned chip lets the
+  // charts follow the newest light again.
+  _pin(name) {
+    this._pinned = name === this._pinned ? null : name;
+    storePin(this._pinKey, this._pinned);
+    this._select();
+    this._render();
+  }
+
+  // Home Assistant hands every card a new `hass` on any state change in the
+  // instance, often several a second. Re-rendering for each would replace a
+  // chip between press and release and drop the tap, so the card renders only
+  // when a row it reads, the registry or the theme has changed.
   set hass(hass) {
     this._hass = hass;
     this._rig.refresh(hass);
+    const retheme = applyTheme(this);
+    const seen = this._inputs();
+    if (!retheme && this._seen?.length === seen.length
+        && seen.every((value, i) => value === this._seen[i])) return;
+    this._seen = seen;
     this._updateData();
-    applyTheme(this);
     this._render();
+  }
+
+  // Every id the card reads, with its row: the same objects while nothing changed.
+  _inputs() {
+    const ids = [
+      this._eid("sensor", "session_image_count"),
+      this._eid("sensor", "session_integration_time"),
+      this._eid("sensor", "last_image_hfr"),
+      this._eid("sensor", "last_image_star_count"),
+      this._eid("sensor", "last_image_filter"),
+      this._eid("sensor", "last_image_exposure"),
+      this._eid("sensor", "session_avg_hfr"),
+      this._eid("sensor", "session_best_hfr"),
+      this._eid("select", "filter", "filter_wheel_filter"),
+    ];
+    return [this._hass.entities, ...ids.flatMap((id) => [id, this._hass.states[id]])];
   }
 
   // Falls back to a prefixed `slug` when nothing resolves. A hub sensor's
@@ -342,7 +430,28 @@ class NinaFrameStatsCard extends HTMLElement {
   _updateData() {
     const entity = this._hass?.states[this._eid("sensor", "last_image_hfr")];
     if (entity?.state === "unavailable") return;
-    const lights = entity?.attributes.recent_lights ?? [];
+    this._lights = entity?.attributes.recent_lights ?? [];
+    this._select();
+  }
+
+  // The charts hold the pinned filter's lights from the series, or every
+  // light. A pin waits, charting every light, while its filter has no chip or
+  // too few readings to chart — a new night's first light, or a filter the
+  // series has rolled past — and takes effect again when it has.
+  _select() {
+    const all = this._lights;
+    const byFilter = this._attr(this._eid("sensor", "session_avg_hfr"), "by_filter", {}) || {};
+    this._charted = this._pinned !== null && Object.hasOwn(byFilter, this._pinned)
+      && chartable(all, this._pinned) ? this._pinned : null;
+    // Each stay at a target, counted over every light, so a pinned filter
+    // that left a target and came back still starts a new run there.
+    let visit = 0;
+    const visits = all.map((light, i) =>
+      (i > 0 && light.target !== all[i - 1].target ? ++visit : visit));
+    const shownAt = all.flatMap((light, i) =>
+      (this._charted === null || light.filter === this._charted ? [i] : []));
+    const lights = shownAt.map((i) => all[i]);
+    const visitOf = shownAt.map((i) => visits[i]);
     this._hfr = lights.map((light) => light.hfr ?? null);
     this._stars = lights.map((light) => light.stars ?? null);
     this._adu = lights.map((light) => light.mean ?? null);
@@ -354,7 +463,7 @@ class NinaFrameStatsCard extends HTMLElement {
     // factors — a galaxy field against a Milky Way one — which would
     // otherwise read as clouds rolling in.
     this._boundaries = lights.flatMap((light, i) =>
-      i > 0 && (light.target !== lights[i - 1].target
+      i > 0 && (visitOf[i] !== visitOf[i - 1]
                 || light.exposure !== lights[i - 1].exposure) ? [i] : []);
     // The newest light's run: the lights since the last target change that
     // share its filter and exposure. Filters are often interleaved, by Target
@@ -363,7 +472,7 @@ class NinaFrameStatsCard extends HTMLElement {
     // another altitude under another sky, so its run starts again.
     const newest = lights[lights.length - 1];
     let start = lights.length - 1;
-    while (start > 0 && lights[start - 1].target === newest.target) start--;
+    while (start > 0 && visitOf[start - 1] === visitOf[start]) start--;
     this._run = lights.flatMap((light, i) =>
       i >= start && light.filter === newest.filter
         && light.exposure === newest.exposure ? [i] : []);
@@ -381,6 +490,8 @@ class NinaFrameStatsCard extends HTMLElement {
   _render() {
     const h = this._hass;
     if (!h) return;
+    // A chip keeps focus through the re-render a click or an update causes.
+    const focusedChip = this._chipNames[this.shadowRoot.activeElement?.dataset?.filter];
 
     // The count sensor's state includes flats; everything else here is lights only.
     const lightCount   = shown(this._attr(this._eid("sensor", "session_image_count"), "light_count"));
@@ -436,13 +547,36 @@ class NinaFrameStatsCard extends HTMLElement {
     const ownColours = chipless && this._filters.every((name) => name === null);
     const lightColours = this._filters.map((name) =>
       (ownColours ? null : name === null ? NO_FILTER : colours.get(name)));
-    const filterChipsHtml = filterEntries.map(([name, row]) => {
+    this._chipNames = filterEntries.map(([name]) => name);
+    const pinned = this._charted;
+    let unchartable = false;
+    const filterChipsHtml = filterEntries.map(([name, row], i) => {
       const colour = shade(colours.get(name), theme);
-      return `<div class="filter-chip" style="background:${colour}22;border-color:${colour}55">
-        <div class="filter-dot" style="background:${colour}"></div>
+      const pressed = name === this._pinned;
+      // A chip counts the session's lights, the charts only the newest the
+      // integration publishes, so a chip can count many and still have too
+      // few to chart. A waiting pin stays pressable, so it can be let go.
+      const off = !pressed && !chartable(this._lights, name);
+      unchartable ||= off;
+      const aside = !pressed && pinned !== null;
+      const [wash, edge] = off ? ["00", "55"] : pressed ? ["55", ""] : aside ? ["11", "33"] : ["22", "55"];
+      const classes = ["filter-chip", aside && !off && "aside",
+        pressed && pinned === null && "waiting"].filter(Boolean).join(" ");
+      return `<button type="button" class="${classes}" data-filter="${i}" aria-pressed="${pressed}"
+          aria-disabled="${off}" style="background:${colour}${wash};border-color:${colour}${edge}">
+        <span class="filter-dot" style="background:${colour}"></span>
         <span>${safe(name)}: ${row?.count ?? 0}</span>
-      </div>`;
+      </button>`;
     }).join("");
+    const pinnedTo = pinned === null ? "" : ` · ${safe(pinned)}`;
+    // Said on the card, since a phone shows no tooltip.
+    const hint = [
+      pinned !== null ? `Charting ${safe(pinned)} alone · tap it again for every filter`
+        : this._pinned !== null && this._chipNames.includes(this._pinned)
+          ? `${safe(this._pinned)} is pinned · every filter is charted until two of its recent lights have an HFR`
+          : "Tap a filter to chart it alone",
+      unchartable ? "dashed: too few recent lights to chart" : "",
+    ].filter(Boolean).join(" · ");
 
     const fold = this._collapse;
     const chart = (section, label, content) => `
@@ -472,15 +606,15 @@ class NinaFrameStatsCard extends HTMLElement {
             </div>
           ` : `
             <div class="stat-row">
-              <div class="stat-box trend-${trend}">
+              <div class="stat-box${pinned === null ? ` trend-${trend}` : ""}">
                 <div class="label">Last HFR</div>
                 <div class="value">${parseFloat(lastHfr) ? parseFloat(lastHfr).toFixed(2) : "—"} <span style="font-size:0.7rem;font-weight:400;color:var(--muted)">px</span></div>
-                <div class="sub">Rolling avg: ${parseFloat(rollingHfr) ? parseFloat(rollingHfr).toFixed(2) : "—"} px</div>
+                <div class="sub">Rolling avg${pinnedTo}: ${parseFloat(rollingHfr) ? parseFloat(rollingHfr).toFixed(2) : "—"} px</div>
               </div>
               <div class="stat-box">
                 <div class="label">Stars</div>
                 <div class="value">${lastStars}</div>
-                <div class="sub">Last frame</div>
+                <div class="sub">Last frame${pinned === null ? "" : ` · ${lastFilter}`}</div>
               </div>
               <div class="stat-box">
                 <div class="label">Exposure</div>
@@ -503,14 +637,15 @@ class NinaFrameStatsCard extends HTMLElement {
               </div>
             </div>
 
-            ${chart("hfr", "HFR per frame", `<canvas id="hfr-chart" height="64"></canvas>`)}
+            ${chart("hfr", `HFR per frame${pinnedTo}`, `<canvas id="hfr-chart" height="64"></canvas>`)}
 
-            ${chart("stars", "Star count per frame", `<canvas id="stars-chart" height="48"></canvas>`)}
+            ${chart("stars", `Star count per frame${pinnedTo}`, `<canvas id="stars-chart" height="48"></canvas>`)}
 
-            ${chart("adu", "Mean ADU per frame", `<canvas id="adu-chart" height="48"></canvas>`)}
+            ${chart("adu", `Mean ADU per frame${pinnedTo}`, `<canvas id="adu-chart" height="48"></canvas>`)}
 
             ${!chipless
-              ? chart("filters", "Frames per filter", `<div class="filter-bar">${filterChipsHtml}</div>`)
+              ? chart("filters", "Frames per filter", `<div class="filter-bar" role="group" aria-label="Chart one filter" aria-describedby="filter-hint">${filterChipsHtml}</div>
+                 <div class="filter-hint" id="filter-hint">${hint}</div>`)
               : ""}
           `}
         </div>` : ""}
@@ -518,6 +653,10 @@ class NinaFrameStatsCard extends HTMLElement {
     `;
 
     fold.keepFocus(() => { this.shadowRoot.innerHTML = html; });
+    if (focusedChip !== undefined && !this.shadowRoot.activeElement) {
+      const i = this._chipNames.indexOf(focusedChip);
+      this.shadowRoot.querySelector(`[data-filter="${i}"]`)?.focus({ preventScroll: true });
+    }
 
     // A folded chart has no canvas, which each draw skips.
     if (hasData && fold.open("card")) {

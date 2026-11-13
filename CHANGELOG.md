@@ -18,6 +18,12 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
   per rig; the card's `lights_only` option sets it for a browser that has not
   pressed the button. `recent_frames` also holds the 20 newest lights however
   many frames followed them, and gives every entry its `age`.
+- **A filter chip on the frame statistics card charts that filter alone.**
+  Pressing one draws that filter's recent lights, evenly spaced, and points the
+  HFR trend and rolling average at its run; the chart titles name it. Pressing
+  it again follows the newest light. The browser remembers the choice per rig,
+  and while the filter has fewer than two recent HFR readings, as at the start
+  of a night, the charts show every filter until it has.
 
 ### Fixed
 
