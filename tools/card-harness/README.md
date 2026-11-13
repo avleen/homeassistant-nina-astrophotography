@@ -1,6 +1,6 @@
 # Card harness
 
-The seven Lovelace cards run in a browser. Neither test suite renders one, so
+The eight Lovelace cards run in a browser. Neither test suite renders one, so
 everything below `setConfig`/`set hass` — the shadow DOM, the canvases, every
 branch that decides what to draw — is reached by nothing in CI. This is how you
 reach it by hand.
@@ -106,6 +106,8 @@ Write `scenarios/<card name>.mjs` exporting `scenarios`, keyed by name:
   after: (dump) => [rig(dump, "nina_unreachable").build()],  // optional
   folded: ["card"],  // optional, sections folded as a viewer would
   pinned: "R",  // optional, the frame statistics card's chip a viewer pressed
+  images: "hold",  // optional: images load only when `act` says
+  act: ({ load, log }) => ({ "pressed": (card) => … }),  // optional
 }
 ```
 
@@ -114,6 +116,9 @@ browser's storage; `"card"` is the whole card. `pinned` does the same for the
 frame statistics card's filter chips. `render.html` clears any fold or pin a
 click left in storage when it loads, so one session's clicks do not carry into
 the next screenshot.
+
+`Rig.add` is for a row from another integration, which no rig state can hold:
+the site camera card's camera entity.
 
 `after` is later `hass` objects, handed over in turn after the first render —
 for a card whose output depends on what it showed before, such as the image
@@ -128,6 +133,14 @@ the integration keeps the last data through it, so a card never sees it.
 `events` are bus events `ops.mjs` fires at whatever the card subscribed to,
 once the first render has settled; each is logged, so the lines after it are
 what it set off. `render.html` fires none.
+
+`act` is what a viewer does once the states are in: named steps, each a
+function of the card, run in order and logged as `act <name>`. An element's
+`click()` runs the card's own click handlers. Every image fails at once unless
+`images` is `"hold"`; then each stays in flight until a step calls `load()`, so
+a scenario can act while one is loading. `log` lets a step record what is on
+screen at that point, which the final markup cannot show. `render.html` runs
+no steps.
 
 A card paints its canvas on an animation frame, which node never fires, so
 `ops.mjs` runs the ones the render queued. `draw` replaces that for a card the

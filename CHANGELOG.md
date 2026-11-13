@@ -16,15 +16,26 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
   limits the main image and the strip to lights, so the last sub stays on
   screen through a flat run of any length. Each browser remembers the choice
   per rig; the card's `lights_only` option sets it for a browser that has not
-  pressed the button. `recent_frames` also holds the 20 newest lights however
-  many frames followed them, and gives every entry its `age`.
+  pressed the button. `sensor.<instance>_last_image_mean_adu`'s
+  `recent_frames` also holds the 20 newest lights however many frames
+  followed them, and gives every entry its `age`.
 - **A filter chip on the frame statistics card charts that filter alone.**
   Pressing one draws that filter's recent lights, evenly spaced, and points the
   HFR trend and rolling average at its run; the chart titles name it. Pressing
   it again follows the newest light. The browser remembers the choice per rig,
   and while the filter has fewer than two recent HFR readings, as at the start
   of a night, the charts show every filter until it has.
+- **`custom:nina-site-camera-card`** shows a pier, all-sky or observatory
+  camera in the same frame as the other cards (#264), from any camera or image
+  entities. Two or more get chips to choose between them, a tap opens the
+  entity's more-info dialog, and a camera's `url` shows as an **Open** link.
 
+### Changed
+
+- **The card harness logs each image a card asks for** (#264), and `Rig.add`
+  gives a scenario a row from another integration.
+
+---
 ### Fixed
 
 - **A screen reader reaches the live stack card's Start/Stop as a control of

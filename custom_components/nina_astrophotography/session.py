@@ -304,8 +304,8 @@ def recent_frames(
 ) -> tuple[RecentFrame, ...]:
     """The 20 newest frames this process saved, of any type, then whichever of
     the 20 newest lights are older than those, newest first. Without the
-    second part, a flat run longer than the strip leaves a lights-only strip
-    empty.
+    second part, twenty calibration frames in a row leave Lights only with no
+    light to show.
     """
     newest_first = sorted(
         (f for f in frames if f.generation == generation), key=_IDENTITY, reverse=True

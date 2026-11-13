@@ -28,8 +28,8 @@ const NIGHT = "dawn_flats";
 
 // The night one frame earlier: its newest `recent_frames` entry not yet
 // saved, which `after` then hands over as the save, and every other entry one
-// frame younger. The rig would also still list the flat now 21st; nothing here
-// reads it.
+// frame younger. A real `recent_frames` would also hold the flat that is 21st
+// after the save; nothing here reads it.
 const MEAN_ADU = "sensor.n_i_n_a_last_image_mean_adu";
 const before = (dump) => {
   const row = dump[NIGHT].states[MEAN_ADU];
@@ -146,4 +146,66 @@ export const scenarios = {
     after: (dump) => [rig(dump, NIGHT).build()],
     config: { lights_only: true },
   },
+
+  // The button pressed over a flat: the newest light is fetched.
+  lights_only_pressed: {
+    hass: (dump) => rig(dump, NIGHT).build(),
+    act: () => ({ press: pressLightsOnly }),
+  },
+
+  // Pressed over a flat while a newer flat is still loading: the newer flat
+  // never reaches the screen, and the spinner stays until the light does.
+  lights_only_pressed_mid_load: {
+    hass: (dump) => before(dump).build(),
+    after: (dump) => [rig(dump, NIGHT).build()],
+    images: "hold",
+    act: ({ load, log }) => {
+      const look = (card) => log.push(screen(card));
+      return {
+        "older flat loads": load,
+        "Lights only pressed": pressLightsOnly,
+        "on screen": look,
+        "newer flat loads": load,
+        "still on screen": look,
+        "light loads": load,
+        "finally on screen": look,
+      };
+    },
+  },
+
+  // Pressed while the newest frame, a light, is still loading: that load stands,
+  // and nothing is fetched twice.
+  lights_only_pressed_mid_light_load: {
+    hass: (dump) => rig(dump, "site_configured").build(),
+    images: "hold",
+    act: ({ load }) => ({ "Lights only pressed": pressLightsOnly, "light loads": load }),
+  },
+
+  // Only calibration frames listed: the panel says no light has been taken.
+  // `recent_frames` would hold the night's lights; they are removed to reach it.
+  lights_only_no_lights: {
+    hass: (dump) => {
+      const row = dump[NIGHT].states[MEAN_ADU];
+      const frames = row.attributes.recent_frames.filter((f) => f.image_type !== "LIGHT");
+      return rig(dump, NIGHT)
+        .override(MEAN_ADU, row.state, { ...row.attributes, recent_frames: frames })
+        .build();
+    },
+    config: { lights_only: true },
+  },
 };
+
+function pressLightsOnly(card) {
+  card.shadowRoot.getElementById("lights-only").click();
+}
+
+// The main image's frame, by the date in its path, and whether the spinner is up.
+function screen(card) {
+  const node = (id) => card.shadowRoot.getElementById(id);
+  const img = node("main-img");
+  const date = img.style.display === "none"
+    ? null
+    : new URL(img.src ?? "", "http://x").searchParams.get("date");
+  const spinning = node("spinner").classList.contains("active");
+  return `screen ${date ?? "none"}${spinning ? ", spinner" : ""}`;
+}
