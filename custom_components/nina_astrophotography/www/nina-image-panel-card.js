@@ -18,8 +18,8 @@
  * the thumbnail strip, which cannot carry an Authorization header.
  *
  * Everything describing a frame comes from the mean-ADU sensor's
- * `recent_frames` attribute — the newest frames of any type, then older
- * lights, already bounded and ordered, each with its own readings — so the
+ * `recent_frames` attribute — the newest frames of any type, then the
+ * newest lights, already bounded and ordered, each with its own readings — so the
  * overlay, the stats row and the ADU range describe the frame on screen,
  * whichever it is. Only the header's light count, integration time and
  * exposing state are the session's.
@@ -36,7 +36,7 @@
  *
  * Each N.I.N.A. render is a full FITS load and stretch on the imaging PC, so
  * the panel asks for as few as it can: one main load at a time, the newest
- * frame shown only when a save adds one, a thumbnail only for a frame the
+ * frame only when a save adds one of the kind shown, a thumbnail only for a frame the
  * strip has not shown before, and the preview no wider than it is drawn.
  *
  * Card config — one rig needs none: the card finds its own sensors in the
@@ -56,7 +56,7 @@
 import { DEFAULT_PREFIX, configForm } from "./nina-card-config.js";
 import { CHEVRON, COLLAPSE_STYLE, Collapse } from "./nina-collapse.js";
 import { LinkView, RigEntities } from "./nina-entity-resolver.js";
-import { aduFullScale, quantityIn, shown } from "./nina-units.js";
+import { aduFullScale, quantityIn, safe, shown } from "./nina-units.js";
 import { ON_IMAGE, THEME, applyTheme, palette } from "./nina-theme.js";
 
 const VERSION = "2.6.0";
@@ -363,7 +363,7 @@ class NinaImagePanelCard extends HTMLElement {
     this._shown = null;   // the `recent_frames` entry on screen, once one loads
     this._missed = null;  // a load the folded card did not make
     this._newest = undefined;
-    this._loading = false;
+    this._loading = null; // the load in flight, as {frame, picked}
     this._queued = null;
     this._hasImage = false;
     this._rendered = false;
@@ -401,13 +401,16 @@ class NinaImagePanelCard extends HTMLElement {
       show_histogram: config.show_histogram ?? true,
       quality: config.quality ?? DEFAULT_QUALITY,
       stretch: config.stretch ?? true,
-      strip_count: config.strip_count ?? DEFAULT_STRIP_COUNT,
+      // `recent_frames` holds at most twenty of either kind.
+      strip_count: Math.min(config.strip_count ?? DEFAULT_STRIP_COUNT, 20),
       // Rendered into markup: only a literal `true` counts.
       lights_only: config.lights_only === true,
       prefix: config.prefix || DEFAULT_PREFIX,
       device_id: config.device_id,
     };
     this._rig = new RigEntities(this._config.prefix, this._config.device_id);
+    // `_setLightsOnly` below reads the entities the new rig resolves.
+    if (this._live) this._rig.refresh(this._live);
     this._collapse.scope(this._config);
     const rig = this._config.device_id || this._config.prefix;
     this._lightsOnlyKey = `nina-image-panel-card:${rig}:lights-only`;
@@ -457,9 +460,8 @@ class NinaImagePanelCard extends HTMLElement {
     // The newest frame is loaded on the first render, whenever a config or
     // registry change points the card at another entity (which may be another
     // rig's), and with `refresh_on_save` whenever the rig saves another of the
-    // kind shown. Read
-    // off the attribute rather than `nina_image_save`, so the frame arrives
-    // with its readings, and from this rig alone.
+    // kind shown. Read off the attribute rather than `nina_image_save`, so the
+    // frame arrives with its readings, and from this rig alone.
     const newest = this._recentFrames()[0];
     const imageEntity = this._entityId();
     if (imageEntity !== this._imageEntity) {
@@ -533,8 +535,8 @@ class NinaImagePanelCard extends HTMLElement {
   // loaded the newest, which is what is loading.
   _frame() { return this._shown ?? this._recentFrames()[0] ?? {}; }
 
-  // How many newer frames there are than the one on screen: its `age`, or
-  // while only lights are shown, how many newer lights. -1 once it has left
+  // How many frames are newer than the one on screen: its `age`, or, while
+  // only lights are shown, how many lights are. -1 once it has left
   // `recent_frames`.
   _index() {
     const date = this._frame().date;
@@ -542,9 +544,12 @@ class NinaImagePanelCard extends HTMLElement {
     // An empty list says nothing of where the frame sits.
     if (!date || frames.length === 0) return 0;
     const index = frames.findIndex((frame) => frame.date === date);
-    if (index < 0 || this._lightsOnly) return index;
-    return frames[index].age;
+    return index < 0 ? index : this._position(frames[index], index);
   }
+
+  // How many newer frames of the kind shown: `i` is the frame's place in
+  // `_recentFrames()`.
+  _position(frame, i) { return this._lightsOnly ? i : frame.age; }
 
   _attr(id, attr, fallback = null) {
     const e = this._hass?.states?.[id];
@@ -563,8 +568,8 @@ class NinaImagePanelCard extends HTMLElement {
 
   // The unsigned path: a stable, cache-key-free description of one frame. The
   // age is the frame's current one, or for a frame that has left the list the
-  // last it was listed with, which is too low; its `date` lets the proxy find
-  // it past any frame the rig saved since, and refuse rather than serve
+  // last it was listed with, which may be too low; the proxy finds the frame
+  // by its `date` up to ten frames older, and refuses rather than serve
   // another.
   _imagePath(frame, { thumbnail = false, width = null } = {}) {
     const cfg = this._config;
@@ -688,18 +693,18 @@ class NinaImagePanelCard extends HTMLElement {
     });
     this.shadowRoot.getElementById("modal-close").addEventListener("click", () => this._closeModal());
     this.shadowRoot.getElementById("lights-only")?.addEventListener("click", () => {
-      storeChoice(this._lightsOnlyKey, !this._lightsOnly);
-      this._setLightsOnly(!this._lightsOnly);
+      const on = !this._lightsOnly;
+      storeChoice(this._lightsOnlyKey, on);
+      this._setLightsOnly(on);
     });
     this._updateNoImage();
   }
 
-  // The main image moves to the newest frame now shown, unless it already is
-  // that frame, or, with `refresh_on_save` off, the frame on screen is still
-  // among those shown. A frame of the kind no longer shown leaves the screen
-  // at once, so the header and readings describe the newest while it loads.
-  // A load in flight or skipped while folded may be a flat, so it is always
-  // replaced.
+  // A frame of the kind no longer shown leaves the screen at once, so the
+  // header and readings describe the newest while it loads; one still loading
+  // is dropped as it lands. The main image then moves to the newest frame now
+  // shown, unless it is already on or loading a shown frame it keeps: the
+  // newest, or with `refresh_on_save` off any.
   _setLightsOnly(on) {
     this._lightsOnly = on;
     this.shadowRoot?.getElementById("lights-only")?.setAttribute("aria-pressed", String(on));
@@ -708,19 +713,19 @@ class NinaImagePanelCard extends HTMLElement {
     const frames = this._recentFrames();
     const newest = frames[0];
     this._newest = newest?.date;
-    const dropped = this._shown && !frames.some((f) => f.date === this._shown.date);
-    if (dropped) {
+    const listed = (frame) => !!frame && frames.some((f) => f.date === frame.date);
+    if (this._shown && !listed(this._shown)) {
       this._shown = null;
       this._hasImage = false;
       const img = this.shadowRoot?.getElementById("main-img");
       if (img) img.style.display = "none";
       this.shadowRoot?.getElementById("spinner")?.classList.add("active");
     }
-    const date = this._shown?.date;
-    const pending = this._loading || this._missed;
-    const kept = !this._config.refresh_on_save && frames.some((f) => f.date === date);
+    const heading = [this._queued, this._loading, this._missed]
+      .map((load) => load?.frame).find(listed) ?? this._shown;
+    const kept = heading && (heading.date === newest?.date || !this._config.refresh_on_save);
     // With no frame to load, the load fails into the empty placeholder.
-    if (dropped || pending || (newest?.date !== date && !kept)) this._load(newest);
+    if (!kept) this._load(newest);
     this._stripKey = null;
     this._update();
   }
@@ -747,9 +752,9 @@ class NinaImagePanelCard extends HTMLElement {
       this._queued = { frame, picked };
       return;
     }
-    this._loading = true;
+    this._loading = { frame, picked };
     this._loadImage(frame, picked).catch(() => {}).finally(() => {
-      this._loading = false;
+      this._loading = null;
       const next = this._queued;
       this._queued = null;
       if (next) this._load(next.frame, next.picked);
@@ -785,11 +790,11 @@ class NinaImagePanelCard extends HTMLElement {
         probe.onerror = () => reject(new Error("image failed to load"));
         probe.src = url;
       });
-      // An unpicked frame stays off screen when the card no longer shows its
-      // kind, as a flat finishing after Lights only is pressed, or when a
-      // pick waits behind it, which would otherwise flash it up first.
+      // A frame stays off screen when the card no longer shows its kind, as a
+      // flat finishing after Lights only is pressed, and an unpicked one when
+      // a pick waits behind it, which would otherwise flash it up first.
       const hidden = !this._recentFrames().some((f) => f.date === frame.date);
-      if (!picked && (hidden || this._queued?.picked)) {
+      if (hidden || (!picked && this._queued?.picked)) {
         settle();
         return;
       }
@@ -837,7 +842,7 @@ class NinaImagePanelCard extends HTMLElement {
     const [latest, each] = this._lightsOnly ? ["Latest light", "Light"] : ["Latest image", "Frame"];
     frames.forEach((frame, i) => {
       const tile = kept.get(frame.date) ?? this._tile(frame);
-      const position = this._lightsOnly ? i : frame.age;
+      const position = this._position(frame, i);
       const place = position === 0 ? latest : `${each} -${position}`;
       tile.setAttribute("aria-label", [place, tagFor(frame), frame.filter]
         .filter(Boolean).join(", "));
@@ -996,7 +1001,7 @@ class NinaImagePanelCard extends HTMLElement {
 
     const pills = [];
     if (frame.filter) {
-      pills.push(`<span class="stat-pill"><span class="dot"></span>${frame.filter}</span>`);
+      pills.push(`<span class="stat-pill"><span class="dot"></span>${safe(frame.filter)}</span>`);
     }
     if (hfr > 0) {
       const cls = hfr > 3 ? "warn" : "";
@@ -1010,7 +1015,7 @@ class NinaImagePanelCard extends HTMLElement {
     }
 
     const targetHtml = frame.target
-      ? `<span class="target" style="font-size:0.65rem;color:rgba(255,255,255,0.5);white-space:nowrap;overflow:hidden;max-width:120px;text-overflow:ellipsis">${frame.target}</span>`
+      ? `<span class="target" style="font-size:0.65rem;color:rgba(255,255,255,0.5);white-space:nowrap;overflow:hidden;max-width:120px;text-overflow:ellipsis">${safe(frame.target)}</span>`
       : "";
 
     overlay.innerHTML = `<div class="overlay-left">${pills.join("")}</div>${targetHtml}`;

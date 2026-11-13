@@ -53,7 +53,10 @@ if (!scenario) {
   process.exit(2);
 }
 
-const { log, element, html, nodes, frame } = install(scenario.viewport);
+const { log, element, html, nodes, frame, load } = install({
+  ...scenario.viewport,
+  images: scenario.images,
+});
 
 // The card registers its element as a side effect of being imported, and logs
 // its version banner doing it. Stdout is the record, so the banner goes aside.
@@ -112,6 +115,15 @@ for (const next of scenario.after?.(dump) ?? []) {
   log.push("hass");
   instance.hass = { ...next, callWS: hass.callWS, connection: hass.connection };
   await new Promise((resolve) => setTimeout(resolve));
+}
+
+// What a viewer does once the states are in: each step is a function of the
+// card, logged by its name, so the lines after it are what it set off. A step
+// can start a load that queues another, so each gets a few ticks to settle.
+for (const [step, act] of Object.entries(scenario.act?.({ load, log }) ?? {})) {
+  log.push(`act ${step}`);
+  act(instance);
+  for (let tick = 0; tick < 5; tick++) await new Promise((resolve) => setTimeout(resolve));
 }
 
 if (flags.includes("--html")) {

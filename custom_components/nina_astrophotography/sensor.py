@@ -239,8 +239,8 @@ def _recent_frame(recent: RecentFrame) -> Mapping[str, Any]:
 
 
 def _recent_frames(data: NinaData) -> tuple[Mapping[str, Any], ...]:
-    """Recent frames of every type, then recent lights, newest first, for the
-    image panel card.
+    """The newest frames of any type, then the newest lights, newest first, for
+    the image panel card.
     """
     return tuple(map(_recent_frame, data.recent_frames))
 

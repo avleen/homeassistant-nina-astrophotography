@@ -604,10 +604,10 @@ card, an ApexCharts `data_generator`, or a template. For history, chart
   those, newest first. Each entry has its target, filter, exposure, HFR, star
   count, guide RMS, N.I.N.A.'s min, median, mean and max ADU, and its `age`:
   how many frames N.I.N.A. saved after it, which the image proxy fetches it
-  by. The older lights are what the image panel's Lights only button shows
-  after a flat run longer than the strip. The
-  image panel card draws its ADU range from these, on an axis to the camera's
-  full scale, which it also reads from `recent_lights`. They are statistics,
+  by. Without the older lights, twenty calibration frames in a row would
+  leave the image panel's Lights only button no light to show. The image
+  panel card draws its ADU range from these, on an axis to the camera's full
+  scale, which it also reads from `recent_lights`. They are statistics,
   not a histogram like the one in N.I.N.A.'s Statistics panel: the Advanced
   API publishes none. Building one means fetching the whole raw frame a second
   time, which a remote observatory is already sending elsewhere. Issue #178
