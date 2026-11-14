@@ -25,8 +25,8 @@
  * exposing state are the session's.
  *
  * "Lights only" limits the main image and the strip to lights, so a flat run
- * leaves the last sub on screen. Each browser remembers the button per rig;
- * `lights_only` applies where the button was never pressed.
+ * leaves the last sub on screen. `lights_only` sets it, and a browser that
+ * presses the button away from that remembers its own choice per rig.
  *
  * The ADU range is those statistics, not a histogram: a histogram needs the
  * frame's pixels. Every `/image` render is stretched, `autoPrepare=false`
@@ -81,23 +81,31 @@ const ADU_GRIDLINES = [[100, "100"], [1000, "1k"], [10000, "10k"]];
 
 const COUNTDOWN_TICK_MS = 1000;
 
-// The browser's own choice, `null` where it never made one. Where storage is
-// refused, as when site data is blocked, the card's copy lasts until a reload.
+// Where storage is refused, as when site data is blocked, a choice lasts
+// until a reload.
+const memory = new Map();
+
+// The browser's own choice, `null` where it has none.
 function storedChoice(key) {
   try {
     const value = globalThis.localStorage?.getItem(key);
     if (value === "1" || value === "0") return value === "1";
   } catch {
-    // Storage refused.
+    // Storage refused: fall through to memory.
   }
-  return null;
+  return memory.get(key) ?? null;
 }
 
-function storeChoice(key, on) {
+// `on` is kept only while it differs from `configured`: a browser back on the
+// card's own setting follows it again, wherever the config moves it.
+function storeChoice(key, on, configured) {
+  if (on === configured) memory.delete(key);
+  else memory.set(key, on);
   try {
-    globalThis.localStorage?.setItem(key, on ? "1" : "0");
+    if (on === configured) globalThis.localStorage?.removeItem(key);
+    else globalThis.localStorage?.setItem(key, on ? "1" : "0");
   } catch {
-    // Storage refused.
+    // Storage refused: memory holds it for this page.
   }
 }
 
@@ -365,6 +373,7 @@ class NinaImagePanelCard extends HTMLElement {
     this._newest = undefined;
     this._loading = null; // the load in flight, as {frame, picked}
     this._queued = null;
+    this._kindPending = false;  // Lights only pressed with `recent_frames` empty
     this._hasImage = false;
     this._rendered = false;
     this._stripKey = null;
@@ -414,7 +423,10 @@ class NinaImagePanelCard extends HTMLElement {
     this._collapse.scope(this._config);
     const rig = this._config.device_id || this._config.prefix;
     this._lightsOnlyKey = `nina-image-panel-card:${rig}:lights-only`;
-    const lightsOnly = storedChoice(this._lightsOnlyKey) ?? this._config.lights_only;
+    // The strip carries the button, so without it a stored choice could not
+    // be undone.
+    const stored = this._config.show_strip ? storedChoice(this._lightsOnlyKey) : null;
+    const lightsOnly = stored ?? this._config.lights_only;
     if (this._rendered) {
       this._applyFolds();
       if (lightsOnly !== this._lightsOnly) this._setLightsOnly(lightsOnly);
@@ -468,8 +480,11 @@ class NinaImagePanelCard extends HTMLElement {
       this._imageEntity = imageEntity;
       // A load another rig's fold cut off is not this one's to retry.
       this._missed = null;
+      this._kindPending = false;
       this._newest = newest?.date;
       this._load(newest);
+    } else if (this._kindPending) {
+      this._showKind();
     } else if (newest && newest.date !== this._newest) {
       // An emptied list is not a save, so the same newest coming back loads
       // nothing.
@@ -562,9 +577,12 @@ class NinaImagePanelCard extends HTMLElement {
 
   // All of `recent_frames`, or its lights alone.
   _recentFrames() {
-    const frames = this._allFrames();
-    return this._lightsOnly ? frames.filter((f) => f.image_type === "LIGHT") : frames;
+    return this._allFrames().filter((frame) => this._showsKind(frame));
   }
+
+  // Judged by the frame itself: `recent_frames` empties while the sensor is
+  // unavailable, and a frame on screen or loading outlives its place in it.
+  _showsKind(frame) { return !this._lightsOnly || frame.image_type === "LIGHT"; }
 
   // The unsigned path: a stable, cache-key-free description of one frame. The
   // age is the frame's current one, or for a frame that has left the list the
@@ -694,10 +712,20 @@ class NinaImagePanelCard extends HTMLElement {
     this.shadowRoot.getElementById("modal-close").addEventListener("click", () => this._closeModal());
     this.shadowRoot.getElementById("lights-only")?.addEventListener("click", () => {
       const on = !this._lightsOnly;
-      storeChoice(this._lightsOnlyKey, on);
+      storeChoice(this._lightsOnlyKey, on, this._config.lights_only);
       this._setLightsOnly(on);
     });
     this._updateNoImage();
+  }
+
+  _setLightsOnly(on) {
+    this._lightsOnly = on;
+    this.shadowRoot?.getElementById("lights-only")?.setAttribute("aria-pressed", String(on));
+    this._updateNoImage();
+    if (!this._hass) return;
+    this._showKind();
+    this._stripKey = null;
+    this._update();
   }
 
   // A frame of the kind no longer shown leaves the screen at once, so the
@@ -705,16 +733,15 @@ class NinaImagePanelCard extends HTMLElement {
   // is dropped as it lands. The main image then moves to the newest frame now
   // shown, unless it is already on or loading a shown frame it keeps: the
   // newest, or with `refresh_on_save` off any.
-  _setLightsOnly(on) {
-    this._lightsOnly = on;
-    this.shadowRoot?.getElementById("lights-only")?.setAttribute("aria-pressed", String(on));
-    this._updateNoImage();
-    if (!this._hass) return;
-    const frames = this._recentFrames();
-    const newest = frames[0];
+  _showKind() {
+    // An emptied list says nothing of what the newest is: the frame on screen
+    // stays until the list is back.
+    this._kindPending = this._allFrames().length === 0;
+    if (this._kindPending) return;
+    const newest = this._recentFrames()[0];
     this._newest = newest?.date;
-    const listed = (frame) => !!frame && frames.some((f) => f.date === frame.date);
-    if (this._shown && !listed(this._shown)) {
+    const shows = (frame) => !!frame && this._showsKind(frame);
+    if (this._shown && !shows(this._shown)) {
       this._shown = null;
       this._hasImage = false;
       const img = this.shadowRoot?.getElementById("main-img");
@@ -722,12 +749,10 @@ class NinaImagePanelCard extends HTMLElement {
       this.shadowRoot?.getElementById("spinner")?.classList.add("active");
     }
     const heading = [this._queued, this._loading, this._missed]
-      .map((load) => load?.frame).find(listed) ?? this._shown;
+      .map((load) => load?.frame).find(shows) ?? this._shown;
     const kept = heading && (heading.date === newest?.date || !this._config.refresh_on_save);
     // With no frame to load, the load fails into the empty placeholder.
     if (!kept) this._load(newest);
-    this._stripKey = null;
-    this._update();
   }
 
   _updateNoImage() {
@@ -793,8 +818,7 @@ class NinaImagePanelCard extends HTMLElement {
       // A frame stays off screen when the card no longer shows its kind, as a
       // flat finishing after Lights only is pressed, and an unpicked one when
       // a pick waits behind it, which would otherwise flash it up first.
-      const hidden = !this._recentFrames().some((f) => f.date === frame.date);
-      if (hidden || (!picked && this._queued?.picked)) {
+      if (!this._showsKind(frame) || (!picked && this._queued?.picked)) {
         settle();
         return;
       }
@@ -1188,8 +1212,8 @@ class NinaImagePanelCard extends HTMLElement {
       {
         name: "lights_only",
         label: "Lights only",
-        helper: "Start with the image and the strip on lights alone. The card's own "
-          + "Lights only button overrides this in each browser that presses it.",
+        helper: "Start with the image and the strip on lights alone. A browser that "
+          + "presses the card's Lights only button away from this keeps its own choice.",
         default: false,
         selector: { boolean: {} },
       },

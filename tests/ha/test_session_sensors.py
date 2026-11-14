@@ -97,6 +97,28 @@ async def test_recent_frames_are_the_newest_frames_then_the_newest_lights(
     ]
 
 
+@pytest.mark.parametrize(
+    ("state", "lights"),
+    [("imaging_guiding", 20), ("scheduler_waiting_lost_lock", 8)],
+)
+async def test_recent_frames_list_a_light_among_the_newest_frames_once(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    rig,
+    set_up_at,
+    state: str,
+    lights: int,
+) -> None:
+    """With no calibration run behind them, the newest lights are the newest
+    frames, and a light listed as both would be two tiles in the strip.
+    """
+    await set_up_at(hass, config_entry, rig, state)
+    recent = state_of(hass, LAST_IMAGE_MEAN_ADU).attributes["recent_frames"]
+    assert [(f["image_type"], f["age"]) for f in recent] == [
+        ("LIGHT", age) for age in range(lights)
+    ]
+
+
 def _number(state: str):
     return pytest.approx(float(state))
 

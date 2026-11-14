@@ -4,7 +4,7 @@ Every generated input is real wire data — hypothesis samples the corpus rather
 than inventing frames, so a passing property says something about N.I.N.A.
 """
 
-from hypothesis import HealthCheck, given, settings, strategies as st
+from hypothesis import HealthCheck, example, given, settings, strategies as st
 from nina_astrophotography.api.v2.mapper import map_frame
 from nina_astrophotography.session import fold, recent_frames
 
@@ -51,10 +51,16 @@ def _some(frames: list) -> st.SearchStrategy:
 # Drawn apart: every light predates every flat, so only a sample with fewer
 # than 20 flats puts lights among the newest 20, and only one with more than
 # 20 lights leaves some out.
-@given(
-    _some([f for f in FRAMES if f.image_type == "LIGHT"]),
-    _some([f for f in FRAMES if f.image_type != "LIGHT"]),
-)
+LIGHTS = [f for f in FRAMES if f.image_type == "LIGHT"]
+FLATS = [f for f in FRAMES if f.image_type != "LIGHT"]
+
+
+@given(_some(LIGHTS), _some(FLATS))
+# The edges of the newest 20, which a draw reaches only by chance.
+@example(LIGHTS[-25:], FLATS[:19])  # lights at ages 19 and 20
+@example(LIGHTS, FLATS[:20])  # every light behind exactly 20 flats
+@example(LIGHTS[:20], [])  # exactly 20 frames
+@example([], [])
 def test_recent_frames_are_the_newest_twenty_and_the_newest_twenty_lights(
     lights, flats
 ) -> None:
