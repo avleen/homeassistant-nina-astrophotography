@@ -1,0 +1,70 @@
+blueprint:
+  name: "N.I.N.A. – Flat Cover Closed on Lights"
+  description: >
+    Notifies when a light frame is saved with the flat panel's cover closed.
+    A light behind a closed cover is blank, and so is every one after it until
+    the cover opens: a sequence that closes the cover for flats and never
+    reopens it, or a cover closed by hand mid-run, can cost the rest of the
+    night.
+
+    Flats and darks run with the cover closed, so they never alert, and
+    neither does a cover closed after the night's last light, even when that
+    light is saved after the cover closes. Only a light exposed after the
+    cover was seen closed does. It relies on the driver reporting the cover
+    `Closed`: a cover reading unknown or in error cannot alert.
+
+    A panel switched off or disconnected while imaging, so it cannot light,
+    reports no cover, and this stays quiet. When it reconnects for the flats,
+    the lights already taken do not alert: only a light after it reads closed
+    again does.
+  domain: automation
+  author: dgivens
+  homeassistant:
+    min_version: "2024.10.0"
+  input:
+    rig:
+      name: Rig
+      icon: mdi:telescope
+      input:
+        behind_cover:
+          name: Light frames behind closed cover
+          description: >
+            The flat panel's "Light frames behind closed cover" sensor. It
+            exists only on a panel with a cover.
+          selector:
+            entity:
+              integration: nina_astrophotography
+              domain: binary_sensor
+              device_class: problem
+
+    settings:
+      name: Settings
+      icon: mdi:cog
+      input:
+        notify_target:
+          name: Notify
+          selector:
+            entity:
+              domain: notify
+              multiple: true
+
+mode: single
+max_exceeded: silent
+
+triggers:
+  # From `unavailable` too: a light saved while N.I.N.A. was unreachable is
+  # first published as that. The cost is a repeat after an outage while the
+  # problem persists.
+  - trigger: state
+    entity_id: !input behind_cover
+    to: "on"
+
+actions:
+  - action: notify.send_message
+    target:
+      entity_id: !input notify_target
+    data:
+      title: "⚠️ Flat cover closed on lights"
+      message: >
+        N.I.N.A. saved a light frame with the flat panel's cover closed. Every
+        light is blank until the cover opens.

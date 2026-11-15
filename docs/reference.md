@@ -82,7 +82,7 @@ the readings your source actually provides.
 | Filter Wheel | filter (`select`); moving (`binary_sensor`) |
 | Guider | RMS total, RA and declination, status; guider (`switch`); clear calibration (`button`) |
 | Rotator | position, mechanical position (`number`); reverse (`switch`); moving, synced (`binary_sensor`) |
-| Flat Panel | cover state; brightness (`number`); light (`light`); cover (`switch`) |
+| Flat Panel | cover state; brightness (`number`); light (`light`); cover (`switch`); light frames behind closed cover (`binary_sensor`) |
 | Weather | temperature, humidity, dew point, pressure, wind speed/direction/gust, rain rate, sky brightness, sky temperature, cloud cover, sky quality, star FWHM |
 | Safety Monitor | unsafe, connected (`binary_sensor`) |
 | Dome | shutter status; azimuth (`number`); following (`switch`); at park, at home, slewing, synchronized (`binary_sensor`); open, close, park, home (`button`) |
@@ -328,6 +328,17 @@ How a flat run shows up elsewhere:
   `unavailable` until it connects again. While N.I.N.A. is using the panel,
   don't let a scene or automation change its light or brightness; it will
   spoil the flats.
+- `binary_sensor.<instance>_flat_panel_light_frames_behind_closed_cover` is
+  `on` while the newest frame is a light exposed after the cover was seen
+  closed; flats and darks never turn it on, and nor does a light exposed
+  before N.I.N.A. reported the cover closed but saved after. It goes `off`
+  when the cover opens or a frame of another type follows, and after a Home
+  Assistant restart until the next light. It relies on the driver reporting
+  the cover `Closed`: a cover reading `Unknown` or `Error` cannot turn it on.
+  A panel switched off or disconnected while imaging reports no cover, so the
+  sensor is `unavailable` and cannot warn; when the panel reconnects reading
+  closed, the lights taken before then do not turn it on, and only a light
+  after that does.
 - `number.<instance>_flat_panel_brightness` sets only the brightness, in the
   panel's own units. On an ASCOM or Alpaca panel that also lights it at any
   level above 0, and 0 darkens it. After the number is set to 0, or N.I.N.A.

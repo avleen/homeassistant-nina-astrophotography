@@ -9,12 +9,14 @@ from datetime import datetime, timedelta, timezone
 
 from nina_astrophotography.api.models import (
     EquipmentSnapshot,
+    Frame,
     NinaEvent,
     SequenceWait,
     SequenceWaitKind,
 )
-from nina_astrophotography.api.v2.mapper import map_equipment_info
+from nina_astrophotography.api.v2.mapper import map_equipment_info, map_frame
 from nina_astrophotography.polling import (
+    CoverClosedLatch,
     EventLedger,
     GuiderStopLatch,
     ReseedGuard,
@@ -320,6 +322,68 @@ def test_a_stop_holds_until_a_later_poll_sees_the_guider_running_past_it(
     for state, pending in polled:
         latch.observe(state, pending)
     assert latch.stopped(stop) is stopped
+
+
+_DAWN = [map_frame(f, "g") for f in load("dawn_image_history_with_flats.json")]
+_LIGHTS = [f for f in _DAWN if f.image_type == "LIGHT"]
+# The night's last two lights, then the first flat after them.
+_LIGHT, _LAST_LIGHT = _LIGHTS[-2:]
+_FLAT = next(f for f in _DAWN if f.image_type == "FLAT" and f.date > _LAST_LIGHT.date)
+
+
+_LAST_START = _LAST_LIGHT.date - timedelta(seconds=_LAST_LIGHT.exposure_time or 0)
+
+
+@pytest.mark.parametrize(
+    ("polled", "flagged"),
+    [
+        ([("Closed", _LIGHT), ("Closed", _LAST_LIGHT)], True),
+        ([("Closed", None), ("Closed", _LIGHT)], True),
+        # The night's close, after its last light.
+        ([("Open", _LIGHT), ("Closed", _LAST_LIGHT)], False),
+        ([("Closed", _LAST_LIGHT), ("Closed", _FLAT)], False),
+        ([("Open", _LIGHT), ("Open", _LAST_LIGHT)], False),
+        ([("Closed", _LIGHT), ("Closed", _LAST_LIGHT), ("Open", _LAST_LIGHT)], False),
+        # A panel that drops out may have been opened by hand.
+        (
+            [("Closed", _LIGHT), ("Unknown", _LAST_LIGHT), ("Closed", _LAST_LIGHT)],
+            False,
+        ),
+    ],
+    ids=[
+        "light after the close",
+        "first light after the close",
+        "closed after the last light",
+        "flat after the close",
+        "cover open",
+        "cover reopened",
+        "panel dropped out",
+    ],
+)
+def test_a_light_counts_only_once_the_cover_was_seen_closed(
+    polled: list[tuple[str, Frame | None]], flagged: bool
+) -> None:
+    latch = CoverClosedLatch()
+    for cover_state, newest in polled:
+        latch.observe(cover_state, newest)
+    assert latch.light_behind_cover(polled[-1][1], None) is flagged
+
+
+@pytest.mark.parametrize(
+    ("closed_at", "flagged"),
+    [
+        # Saved after the poll saw the cover closed, but exposed before.
+        (_LAST_START + timedelta(seconds=1), False),
+        (_LAST_START - timedelta(seconds=1), True),
+    ],
+    ids=["exposed before the reported close", "exposed after it"],
+)
+def test_a_light_exposed_before_the_reported_close_is_not_flagged(
+    closed_at: datetime, flagged: bool
+) -> None:
+    latch = CoverClosedLatch()
+    latch.observe("Closed", _LIGHT)
+    assert latch.light_behind_cover(_LAST_LIGHT, closed_at) is flagged
 
 
 _EVENING = datetime(2026, 11, 11, 18, 0, tzinfo=timezone(timedelta(hours=-6)))
