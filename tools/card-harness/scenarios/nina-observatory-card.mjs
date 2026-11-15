@@ -47,6 +47,34 @@ const cover = (dump, sensor, sw) =>
 const partWayFor = (dump, ago) =>
   cover(dump, "NeitherOpenNorClosed", "unknown").changedAt(new Date(Date.now() - ago));
 
+// The flats rig `r` with its panel's light on at half its range.
+const lit = (dump, r) => r
+  .override(FLAT_LIGHT, "on", {
+    ...dump[FLATS].states[FLAT_LIGHT].attributes, brightness: 128, color_mode: "brightness",
+  })
+  .override(FLAT_LEVEL, "2048.0");
+
+// The panel's driver down under a live hub. The cover's state stays up only
+// while it holds a fault the panel reported before it went: `held`.
+const panelDown = (dump, held = "unavailable") => {
+  const r = rig(dump, FLATS).override(COVER_STATE, held);
+  for (const id of [COVER, FLAT_LIGHT, FLAT_LEVEL]) r.override(id, "unavailable");
+  return r;
+};
+
+// What the cover's buttons read at this step.
+const coverButtons = (log, card) => log.push(`buttons ${
+  card.shadowRoot.innerHTML.match(/<button[^>]*id="btn-cover[^"]*"[^>]*>[^<]*/g).join(" | ")}`);
+// Presses a cover button, logging what the card asks and confirming it.
+const pressCover = (log, card, id) => {
+  window.confirm = (ask) => {
+    log.push(`confirm ${ask}`);
+    return true;
+  };
+  card.shadowRoot.getElementById(id).click();
+  coverButtons(log, card);
+};
+
 // No `draw` hook: the card has no canvas.
 
 export const scenarios = {
@@ -171,16 +199,12 @@ export const scenarios = {
   // Close Flat Cover. No capture holds the cover open.
   flat_panel_open: { hass: (dump) => cover(dump, "Open", "on").build() },
 
-  // Lit at half its range, which the section's heading says. No capture holds
-  // the light on; HA's 128 of 255 is the panel's 2048 of 4096.
-  flat_panel_lit: {
-    hass: (dump) => rig(dump, FLATS)
-      .override(FLAT_LIGHT, "on", {
-        ...dump[FLATS].states[FLAT_LIGHT].attributes, brightness: 128, color_mode: "brightness",
-      })
-      .override(FLAT_LEVEL, "2048.0")
-      .build(),
-  },
+  // Lit at half its range, which the section's heading says, and Open Flat
+  // Cover disabled, since the action refuses to open a lit panel. No capture
+  // holds the light on; HA's 128 of 255 is the panel's 2048 of 4096.
+  flat_panel_lit: { hass: (dump) => lit(dump, rig(dump, FLATS)).build() },
+  // Stuck part-way and lit: Close stays live, Open is still refused.
+  flat_panel_lit_stuck: { hass: (dump) => lit(dump, partWayFor(dump, 120_000)).build() },
 
   // A cover part-way for longer than the default 60 s it may travel is
   // stuck: both buttons, a red chip, and kept when the card folds.
@@ -196,47 +220,40 @@ export const scenarios = {
   // Open pressed on the closed cover: the button stays, disabled, while the
   // cover travels, and becomes Close once it is open.
   flat_panel_opening: {
-    hass: (dump) => ({
-      ...rig(dump, FLATS).build(),
-      callService: async () => {},
+    hass: (dump) => rig(dump, FLATS).build(),
+    act: ({ dump, hand, log }) => ({
+      pressed: (card) => pressCover(log, card, "btn-cover-open"),
+      moving: (card) => {
+        hand(cover(dump, "NeitherOpenNorClosed", "unknown")
+          .changedAt(new Date(Date.now() - 5_000)).build());
+        coverButtons(log, card);
+      },
+      open: (card) => {
+        hand(cover(dump, "Open", "on").build());
+        coverButtons(log, card);
+      },
     }),
-    act: ({ dump, hand, log }) => {
-      const buttons = (card) => log.push(`buttons ${
-        card.shadowRoot.innerHTML.match(/<button[^>]*id="btn-cover[^"]*"[^>]*>[^<]*/g).join(" | ")}`);
-      return {
-        pressed: (card) => {
-          window.confirm = () => true;
-          card.shadowRoot.getElementById("btn-cover-open").click();
-          buttons(card);
-        },
-        moving: (card) => {
-          hand(cover(dump, "NeitherOpenNorClosed", "unknown")
-            .changedAt(new Date(Date.now() - 5_000)).build());
-          buttons(card);
-        },
-        open: (card) => {
-          hand(cover(dump, "Open", "on").build());
-          buttons(card);
-        },
-      };
-    },
+  },
+
+  // Close pressed on an open cover with no sequence running: the plain
+  // question, and no `force`.
+  flat_panel_closing: {
+    hass: (dump) => cover(dump, "Open", "on").build(),
+    act: ({ log }) => ({ pressed: (card) => pressCover(log, card, "btn-cover-close") }),
+  },
+  // The same during a sequence, which the action refuses unless forced: the
+  // card warns of blank lights, and the close it confirms is sent with
+  // `force`. The rig's flats ran with no sequence, so it is switched on here.
+  flat_panel_closing_running: {
+    hass: (dump) => cover(dump, "Open", "on").override(SEQUENCER, "on").build(),
+    act: ({ log }) => ({ pressed: (card) => pressCover(log, card, "btn-cover-close") }),
   },
 
   // Open pressed on a cover in error: Close stays, since the press changes no
   // reading while it waits. The rig's panel has not failed.
   flat_panel_cover_error_pressed: {
-    hass: (dump) => ({
-      ...cover(dump, "Error", "unknown").build(),
-      callService: async () => {},
-    }),
-    act: ({ log }) => ({
-      pressed: (card) => {
-        window.confirm = () => true;
-        card.shadowRoot.getElementById("btn-cover-open").click();
-        log.push(`buttons ${
-          card.shadowRoot.innerHTML.match(/<button[^>]*id="btn-cover[^"]*"[^>]*>[^<]*/g).join(" | ")}`);
-      },
-    }),
+    hass: (dump) => cover(dump, "Error", "unknown").build(),
+    act: ({ log }) => ({ pressed: (card) => pressCover(log, card, "btn-cover-open") }),
   },
 
   // Part-way for two minutes, but N.I.N.A. stopped answering 30 s into it:
@@ -263,11 +280,17 @@ export const scenarios = {
     config: { cover_stuck_after: 180 },
     hass: (dump) => partWayFor(dump, 120_000).build(),
   },
-  // A threshold past what a timer can hold is held to a day: no fault, and
-  // no render loop.
+  // A threshold past the editor's ten minutes is held to them: two minutes
+  // part-way is no fault, and Infinity no render loop.
   flat_panel_cover_stuck_after_infinite: {
     config: { cover_stuck_after: Infinity },
     hass: (dump) => partWayFor(dump, 120_000).build(),
+  },
+  // One shorter than a read is held to the editor's 20 s: a cover 15 s
+  // part-way is still moving.
+  flat_panel_cover_stuck_after_too_short: {
+    config: { cover_stuck_after: 5 },
+    hass: (dump) => partWayFor(dump, 15_000).build(),
   },
 
   // A red chip and both buttons. The rig's panel has not failed.
@@ -326,12 +349,35 @@ export const scenarios = {
   },
 
   // The panel's driver down under a live hub: no chip, section or button.
-  flat_panel_down: {
-    hass: (dump) => {
-      const r = rig(dump, FLATS);
-      for (const id of [COVER_STATE, COVER, FLAT_LIGHT, FLAT_LEVEL]) r.override(id, "unavailable");
-      return r.build();
-    },
+  flat_panel_down: { hass: (dump) => panelDown(dump).build() },
+
+  // A sequence that disconnects the panel once its cover is set, and then
+  // takes a light behind the closed cover: the red chip says the panel is
+  // down, and the warning stays when the card folds. No capture holds it.
+  flat_panel_down_lights_behind_cover: {
+    hass: (dump) => panelDown(dump).override(BEHIND_COVER, "on").build(),
+  },
+  flat_panel_down_lights_behind_cover_folded: {
+    hass: (dump) => panelDown(dump).override(BEHIND_COVER, "on").build(),
+    folded: ["card"],
+  },
+  // Disconnected part-way, which the cover's state holds: no chip while it
+  // could still be travelling, and a red one once it is past
+  // `cover_stuck_after`, timed from when it went part-way.
+  flat_panel_down_held_part_way: {
+    hass: (dump) => panelDown(dump, "NeitherOpenNorClosed")
+      .changedAt(new Date(Date.now() - 5_000)).build(),
+  },
+  flat_panel_down_held_stuck: {
+    hass: (dump) => panelDown(dump, "NeitherOpenNorClosed")
+      .changedAt(new Date(Date.now() - 120_000)).build(),
+  },
+  // Disconnected in error, which the cover's state holds: a red chip, and the
+  // fault kept when the card folds.
+  flat_panel_down_held_error: { hass: (dump) => panelDown(dump, "Error").build() },
+  flat_panel_down_held_error_folded: {
+    hass: (dump) => panelDown(dump, "Error").build(),
+    folded: ["card"],
   },
 
   // Folded to its header, which keeps `flip_soon`'s warning and, the session

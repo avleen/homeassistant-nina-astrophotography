@@ -45,6 +45,7 @@ from .derive import flip_offset_minutes
 from .device import KINDS
 from .polling import (
     CoverClosedLatch,
+    CoverFaultHold,
     EndedWait,
     EventLedger,
     GuiderStopLatch,
@@ -60,8 +61,8 @@ from .sequence import current_wait, running, target_name
 from .session import (
     DEFAULT_AUTOFOCUS_TIMEOUT,
     RecentFrame,
-    cover_closed_at,
     fold,
+    last_cover_move,
     latest_stack,
     latest_target,
     meridian_flip,
@@ -173,6 +174,10 @@ class NinaData:
     light_behind_cover: bool
     """Whether the newest frame is a light saved since the flat panel's cover
     was seen closed. See `CoverClosedLatch`."""
+    cover_fault_held: str | None
+    """A disconnected flat panel's last cover reading, while it is a fault
+    N.I.N.A. has not resolved since; `None` while the panel is connected. See
+    `CoverFaultHold`."""
     reachable: bool = True
     """Whether N.I.N.A. answered the last poll. False while an outage is held
     within its grace, and kept false once the coordinator fails, so the one
@@ -238,6 +243,7 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
         self._ledger = EventLedger()
         self._guider_stop = GuiderStopLatch()
         self._cover = CoverClosedLatch()
+        self._cover_fault = CoverFaultHold()
         self._waits = WaitLedger()
         self._seeded = False
         self._replayed = False
@@ -679,9 +685,8 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
             rollover_hour=self._rollover_hour,
         )
         recent = recent_frames(self.frames.values(), self.generation)
-        newest = recent[0].frame if recent else None
         flat = snapshot.flat_device
-        self._cover.observe(None if flat is None else flat.cover_state, newest)
+        move = last_cover_move(self.events, self.generation)
         return NinaData(
             snapshot=snapshot,
             session=session,
@@ -707,9 +712,10 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
                 pending_guider_stop(self.events, self.generation)
             ),
             meridian_flip=self._meridian_flip(moment),
-            light_behind_cover=self._cover.light_behind_cover(
-                newest, cover_closed_at(self.events, self.generation)
+            light_behind_cover=self._cover.update(
+                flat, recent[0].frame if recent else None, move
             ),
+            cover_fault_held=self._cover_fault.update(flat, move),
             reachable=self._reachable,
         )
 

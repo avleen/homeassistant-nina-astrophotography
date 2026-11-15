@@ -741,8 +741,12 @@ EQUIPMENT: tuple[NinaSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         kind="flat_device",
         # Beside `switch.flat_panel_cover`, which cannot express a cover stuck
-        # half-way (`NeitherOpenNorClosed`).
-        value=read_field("flat_device", "cover_state"),
+        # half-way (`NeitherOpenNorClosed`). A fault outlives the panel
+        # disconnecting, so an alert timing it still sees it.
+        value=lambda data: (
+            read_field("flat_device", "cover_state")(data) or data.cover_fault_held
+        ),
+        survives_disconnect=lambda data: data.cover_fault_held is not None,
     ),
     # ── Sequence ─────────────────────────────────────────────────────────
     NinaSensorDescription(
