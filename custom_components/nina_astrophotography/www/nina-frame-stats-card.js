@@ -273,11 +273,14 @@ const STYLE = `
 // 0.05 px is coarse on a 1.3 px rig and meaningless on a 3.5 px one.
 const TREND_EPSILON = 0.03;
 
-// The narrowest span the star and ADU charts draw a run over, so a steady run
-// does not blow its frame-to-frame scatter up to full height. Star detection
-// jitters by 5–10% between frames. A frame's mean ADU sits on the camera's
-// offset pedestal, so a span relative to it would mislead: its floor is 10 ADU
-// at 16 bits, scaled to the camera's full scale.
+// The narrowest span each chart draws a run over, so a steady run does not
+// blow its frame-to-frame scatter up to full height. Star detection jitters by
+// 5–10% between frames, and HFR by 3–8% with seeing and guiding. HFR is in
+// pixels, so its floor is relative to the rig's pixel scale, which binning
+// also moves. A frame's mean ADU sits on the camera's offset
+// pedestal, so a span relative to it would mislead: its floor is 10 ADU at 16
+// bits, scaled to the camera's full scale.
+const HFR_MIN_SPAN = 0.1;
 const STARS_MIN_SPAN = 0.1;
 const ADU_MIN_SPAN = 10;
 // Headroom above and below a run, as a fraction of its span.
@@ -351,24 +354,33 @@ class NinaFrameStatsCard extends HTMLElement {
     this._aduFloor = ADU_MIN_SPAN * (fullScale + 1) / 2 ** 16;
     this._filters = lights.map((light) => light.filter ?? null);
     // A new target or exposure length moves star count and ADU by whole
-    // factors — a galaxy field against a Milky Way one — which would
-    // otherwise read as clouds rolling in.
+    // factors — a galaxy field against a Milky Way one — and a new gain or
+    // offset moves ADU, any of which would otherwise read as clouds rolling in.
+    const changed = (a, b) => a.target !== b.target || a.exposure !== b.exposure
+      || a.gain !== b.gain || a.offset !== b.offset;
     this._boundaries = lights.flatMap((light, i) =>
-      i > 0 && (light.target !== lights[i - 1].target
-                || light.exposure !== lights[i - 1].exposure) ? [i] : []);
+      i > 0 && changed(light, lights[i - 1]) ? [i] : []);
     // The newest light's run: the lights since the last target change that
-    // share its filter and exposure. Filters are often interleaved, by Target
-    // Scheduler or to balance RGB through a night, so a run need not be
-    // contiguous. A target returned to after another is at
-    // another altitude under another sky, so its run starts again.
+    // share its filter, exposure, gain and offset. Filters are often
+    // interleaved, by Target Scheduler or to balance RGB through a night, so a
+    // run need not be contiguous. A target returned to after another is at
+    // another altitude under another sky, so its run starts again. Gain
+    // scales the ADU a sky gives and offset lifts its pedestal, and some plans
+    // switch gain within one filter.
     const newest = lights[lights.length - 1];
     let start = lights.length - 1;
     while (start > 0 && lights[start - 1].target === newest.target) start--;
     this._run = lights.flatMap((light, i) =>
       i >= start && light.filter === newest.filter
-        && light.exposure === newest.exposure ? [i] : []);
+        && light.exposure === newest.exposure
+        && light.gain === newest.gain
+        && light.offset === newest.offset ? [i] : []);
+    // Gain is named only on a night that changes it, to say which lights the
+    // trend reads.
+    const gains = new Set(lights.map((light) => light.gain ?? null));
+    const gain = gains.size > 1 && newest.gain != null ? `gain ${newest.gain}` : null;
     this._runName = newest
-      ? [newest.filter, newest.target].filter(Boolean).join(" · ") : "";
+      ? [newest.filter, newest.target, gain].filter(Boolean).join(" · ") : "";
   }
 
   _mean(values) {
@@ -522,7 +534,8 @@ class NinaFrameStatsCard extends HTMLElement {
     // A folded chart has no canvas, which each draw skips.
     if (hasData && fold.open("card")) {
       requestAnimationFrame(() => {
-        this._drawSparkline("hfr-chart", this._hfr, theme.accent, true, lightColours);
+        this._drawSparkline("hfr-chart", this._hfr, theme.accent, true, lightColours,
+          (mean) => HFR_MIN_SPAN * mean);
         this._drawSparkline("stars-chart", this._stars, theme.accent2, false, lightColours,
           (mean) => STARS_MIN_SPAN * mean);
         this._drawSparkline("adu-chart", this._adu, theme.warn, false, lightColours,
@@ -531,11 +544,12 @@ class NinaFrameStatsCard extends HTMLElement {
     }
   }
 
-  // Given `minSpan`, a function of the run's mean, the chart is scaled to the
-  // newest run and the rest of the night drawn faded behind it: another
-  // filter, target or exposure sits whole factors away and would flatten the
-  // run. A run with fewer than two readings is scaled with the whole night.
-  _drawSparkline(canvasId, data, fillColour, showAvgLine, colours, minSpan = null) {
+  // The chart is scaled to the newest run and the rest of the night drawn
+  // faded behind it: another filter, target, exposure or gain, and with the
+  // filter usually the binning, sits far enough away to flatten the run.
+  // `minSpan`, a function of the run's mean, is the narrowest span it is drawn
+  // over. A run with fewer than two readings is scaled with the whole night.
+  _drawSparkline(canvasId, data, fillColour, showAvgLine, colours, minSpan) {
     const canvas = this.shadowRoot.getElementById(canvasId);
     if (!canvas) return;
 
@@ -553,21 +567,15 @@ class NinaFrameStatsCard extends HTMLElement {
 
     const known = (indices) => indices.filter((i) => data[i] !== null && data[i] !== undefined);
     const all = data.map((_, i) => i);
-    const run = minSpan !== null && known(this._run).length >= 2 ? this._run : null;
+    const run = known(this._run).length >= 2 ? this._run : null;
     const inRun = new Set(run ?? all);
-    let minVal, maxVal;
-    if (minSpan === null) {
-      minVal = Math.min(...valid) * 0.95;
-      maxVal = Math.max(...valid) * 1.05;
-    } else {
-      const scaled = known(run ?? all).map((i) => data[i]);
-      const lo = Math.min(...scaled);
-      const hi = Math.max(...scaled);
-      // A run of zero stars has no span at all, relative or not.
-      const span = Math.max(hi - lo, minSpan(this._mean(scaled))) || 1;
-      minVal = (lo + hi) / 2 - span * (0.5 + RUN_HEADROOM);
-      maxVal = (lo + hi) / 2 + span * (0.5 + RUN_HEADROOM);
-    }
+    const scaled = known(run ?? all).map((i) => data[i]);
+    const lo = Math.min(...scaled);
+    const hi = Math.max(...scaled);
+    // A run of zero stars has no span at all, relative or not.
+    const span = Math.max(hi - lo, minSpan(this._mean(scaled))) || 1;
+    const minVal = (lo + hi) / 2 - span * (0.5 + RUN_HEADROOM);
+    const maxVal = (lo + hi) / 2 + span * (0.5 + RUN_HEADROOM);
     const range = maxVal - minVal || 1;
     const pad = { l: 4, r: 4, t: 6, b: 4 };
     const plotW = W - pad.l - pad.r;
@@ -650,21 +658,25 @@ class NinaFrameStatsCard extends HTMLElement {
       ctx.stroke();
     }
 
-    if (showAvgLine && valid.length > 0) {
-      const avg = valid.reduce((a, b) => a + b, 0) / valid.length;
+    // Over what the chart is scaled to, from the run's first light: a whole
+    // night's mean can sit between two binnings, far from both, and the
+    // session's own average is in the box above.
+    if (showAvgLine) {
+      const avg = this._mean(scaled);
       const yAvg = yOf(avg);
       if (yAvg !== null) {
         ctx.setLineDash([4, 4]);
         ctx.strokeStyle = theme.ink(0.25);
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(pad.l, yAvg);
+        ctx.moveTo(run ? xOf(line[0]) : pad.l, yAvg);
         ctx.lineTo(W - pad.r, yAvg);
         ctx.stroke();
         ctx.setLineDash([]);
         ctx.fillStyle = theme.ink(0.4);
         ctx.font = "9px sans-serif";
-        ctx.fillText(`avg ${avg.toFixed(2)}`, W - pad.r - 48, yAvg - 3);
+        const label = `${run ? "run avg" : "avg"} ${avg.toFixed(2)}`;
+        ctx.fillText(label, W - pad.r - ctx.measureText(label).width, yAvg - 3);
       }
     }
 

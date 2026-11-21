@@ -15,9 +15,10 @@
  * ADU by a power of two, which is exact, rather than invent a camera.
  *
  * The newest run — the lights since the last target change sharing the newest
- * light's filter and exposure — scales the star and ADU charts and bounds the
- * trend. The night truncated at earlier lights reaches a run of one and a run
- * read across interleaved filters.
+ * light's filter, exposure, gain and offset — scales every chart and bounds
+ * the trend. The night truncated at earlier lights reaches a run of one and a
+ * run read across interleaved filters; every captured light shares one gain,
+ * so a run split by gain relabels some.
  *
  * Not reached: a gap in a series, since no captured light lacks a reading,
  * nor a trend that reads Improving or Degrading, since the newest ten S frames
@@ -179,8 +180,8 @@ export const scenarios = {
         .build(),
   },
 
-  // The first S light, after the Dark Shark's R run: a run of one, so the
-  // star and ADU charts are scaled with the whole night and nothing is faded.
+  // The first S light, after the Dark Shark's R run: a run of one, so every
+  // chart is scaled with the whole night and nothing is faded.
   first_of_run: { hass: (dump) => asOf(dump, 32).build() },
 
   // Midway through the Dark Shark's L and B pairs, the newest an L: the run is
@@ -194,14 +195,30 @@ export const scenarios = {
 
   // Target Scheduler moving one filter between targets: the S run's first
   // sixteen lights relabelled to another of the night's targets, so NGC 281's
-  // run is the newest eight. Too few for a trend, and the star and ADU charts
-  // scale to those eight. A label only, as with the filter relabels; the card
+  // run is the newest eight. Too few for a trend, and every chart scales to
+  // those eight. A label only, as with the filter relabels; the card
   // reads no per-target breakdown.
   target_rotation: {
     hass: (dump) => {
       const states = dump[NIGHT].states;
       const lights = states[HFR].attributes.recent_lights.map((light, i) =>
         (i >= 31 && i < 47 ? { ...light, target: "Wizard Nebula" } : light));
+      return rig(dump, NIGHT)
+        .override(HFR, states[HFR].state, { ...states[HFR].attributes, recent_lights: lights })
+        .build();
+    },
+  },
+
+  // A plan switching gain within one filter: the S run's first twelve lights
+  // relabelled to gain 0, so a boundary marks the switch, the run is the
+  // newest twelve at gain 100, the trend has its ten and names the gain. A
+  // label only: the readings stay those of the captured lights, and the
+  // charts rescale to the twelve.
+  gain_switch: {
+    hass: (dump) => {
+      const states = dump[NIGHT].states;
+      const lights = states[HFR].attributes.recent_lights.map((light, i) =>
+        (i >= 31 && i < 43 ? { ...light, gain: 0 } : light));
       return rig(dump, NIGHT)
         .override(HFR, states[HFR].state, { ...states[HFR].attributes, recent_lights: lights })
         .build();
