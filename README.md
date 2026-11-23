@@ -14,7 +14,7 @@ It provides:
 - buttons and actions to cool, slew, park, focus and run sequences
 - Home Assistant events for everything N.I.N.A. reports
 - eight dashboard cards
-- nine automation blueprints
+- ten automation blueprints
 
 ![The dashboard cards on a live rig imaging Sh2 132: the observatory card above a pier camera, the weather, autofocus and sky map cards, and the live stack, latest image and frame statistics cards](https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/dashboard.png)
 
@@ -128,6 +128,8 @@ Configure**. Saving reloads the entry.
 |---|---|---|---|
 | **Session Rollover Hour** | 12 | 0–23 | The hour, on the imaging PC's clock, where one session ends and the next begins. If that clock runs UTC, set it to a real midday on site, or a night's statistics split in two. |
 | **Outage Grace Period** | 30 s | 0–300 s | How long N.I.N.A. may stop answering before its entities go `unavailable`. Until then they keep their last values. `0` marks them unavailable on the first failed poll. `binary_sensor.<instance>_reachable` turns `off` at once either way. |
+| **Weather Station Freeze Window** | 60 min | 10–720 min | How long every reading of a weather station may hold exactly the same before `binary_sensor.<instance>_weather_readings_frozen` turns `on`. Give a station that reports in coarse steps longer. |
+| **Web Weather Source Freeze Window** | 120 min | 20–720 min | The same, for N.I.N.A.'s own web sources. Set it above your provider's refresh interval: N.I.N.A. queries every ten minutes, but the provider may update less often. |
 
 ## Data updates
 
@@ -309,6 +311,7 @@ on one and pick your rig's entities.
 | [Flat cover closed on lights](custom_components/nina_astrophotography/blueprints/cover_closed_alert.yaml) | Notifies when a light frame is saved with the flat panel's cover closed. Flats and darks behind it don't alert, and neither does closing it after the night's last light. A panel switched off for the night stays quiet, and so does its reconnecting for the flats. [Details](docs/reference.md#flat-panel-cover-and-light). |
 | [Flat cover fault](custom_components/nina_astrophotography/blueprints/cover_fault_alert.yaml) | Notifies when the flat panel's cover reports an error, or stays part-way longer than it takes to travel (60 seconds by default), since some drivers never report a stuck cover as an error. Optionally alerts only on a cover that reached part-way from open or closed, for drivers that read part-way while idle. [Details](docs/reference.md#flat-panel-cover-and-light). |
 | [Flat panel left lit](custom_components/nina_astrophotography/blueprints/flat_panel_left_lit_alert.yaml) | Notifies when the flat panel's light has been on for a set time (30 minutes by default) with no flat saved by the same rig; each flat restarts the count. Relies on the event socket. [Details](docs/reference.md#the-flat-panel-left-lit-blueprint). |
+| [Weather readings frozen](custom_components/nina_astrophotography/blueprints/weather_frozen_alert.yaml) | Notifies when every reading of the weather source has stopped changing while N.I.N.A. still reports it connected, which leaves a safety monitor fed by the same station reading safe whatever the sky. [Details](docs/reference.md#weather). |
 | [Imaging stall alert](custom_components/nina_astrophotography/blueprints/imaging_stall_alert.yaml) | Notifies when frames stop for a bad reason (N.I.N.A. unreachable, mount parked mid-sequence, no frames), and clears when they resume. [Details](docs/reference.md#the-imaging-stall-alert-blueprint). |
 
 They live in `config/blueprints/automation/nina_astrophotography/`, and each

@@ -14,17 +14,21 @@ from nina_astrophotography.api.models import (
     NinaEvent,
     SequenceWait,
     SequenceWaitKind,
+    WeatherModel,
 )
 from nina_astrophotography.api.v2.mapper import map_equipment_info, map_frame
 from nina_astrophotography.polling import (
+    DRIFTING_CHANNELS,
     CoverClosedLatch,
     CoverFaultHold,
     EventLedger,
+    FreezeWindows,
     GuiderStopLatch,
     ReseedGuard,
     RestartDetector,
     TierSchedule,
     WaitLedger,
+    WeatherFreeze,
     imaging,
 )
 from nina_astrophotography.session import CoverMove
@@ -592,3 +596,120 @@ def test_the_history_keeps_the_ten_newest_newest_first() -> None:
     reads = [(minute, _step() if minute % 2 == 0 else None) for minute in range(24)]
     ended = _ledger(*reads).ended
     assert (len(ended), ended[0].ended) == (10, _at(23))
+
+
+# The station as N.I.N.A. served it two nights running: a midday reading,
+# 80123 lx, `Connected: true`.
+_FROZEN = map_equipment_info(
+    load("scheduler_waiting_lost_lock_equipment_info.json")
+).weather
+_OPEN_METEO = map_equipment_info(load("weather_source_openmeteo.json")).weather
+_WINDOWS = FreezeWindows(
+    station=timedelta(hours=1), web=timedelta(hours=2), lit_night=timedelta(minutes=15)
+)
+_DAY = 50.0
+_NIGHT = -20.0
+
+
+def _station(**readings: float | None) -> WeatherModel:
+    assert _FROZEN is not None
+    return replace(_FROZEN, channels={**_FROZEN.channels, **readings})
+
+
+def _freeze(
+    *reads: tuple[float, WeatherModel | None], sun: float | None = _DAY
+) -> WeatherFreeze:
+    """Each read is (minutes after the first, the weather polled then)."""
+    freeze = WeatherFreeze(_WINDOWS)
+    for minutes, weather in reads:
+        freeze.observe(weather, _at(minutes), sun)
+    return freeze
+
+
+def test_readings_held_for_the_window_are_frozen_since_they_were_first_read() -> None:
+    assert _freeze(
+        (0, _station()), (30, _station()), (60, _station())
+    ).frozen_since == _at(0)
+
+
+def test_readings_held_for_less_than_the_window_are_not_frozen() -> None:
+    assert _freeze((0, _station()), (59, _station())).frozen_since is None
+
+
+@pytest.mark.parametrize(
+    ("minutes", "frozen"), [(119, False), (120, True)], ids=["inside", "past"]
+)
+def test_a_web_source_has_the_longer_window(minutes: int, frozen: bool) -> None:
+    freeze = _freeze((0, _OPEN_METEO), (minutes, _OPEN_METEO))
+    assert (freeze.frozen_since is not None) == frozen
+
+
+@pytest.mark.parametrize(
+    ("sun", "frozen"),
+    [(_NIGHT, True), (-6.0, False), (None, False)],
+    ids=["after dusk", "twilight", "no site"],
+)
+def test_a_daytime_sky_held_after_dusk_is_frozen_within_minutes(
+    sun: float | None, frozen: bool
+) -> None:
+    freeze = _freeze((0, _station()), (15, _station()), sun=sun)
+    assert (freeze.frozen_since is not None) == frozen
+
+
+@pytest.mark.synthetic
+def test_a_dark_sky_after_dusk_keeps_the_station_window() -> None:
+    dark = _station(sky_brightness=0.0)
+    assert _freeze((0, dark), (15, dark), sun=_NIGHT).frozen_since is None
+
+
+@pytest.mark.synthetic
+@pytest.mark.parametrize(
+    "moved",
+    [{"temperature": 37.5}, {"wind_speed": 2.8}, {"cloud_cover": 10.0}],
+    ids=["drifting channel", "wind", "a channel that was NaN"],
+)
+def test_any_channel_moving_restarts_the_window(moved: dict[str, float]) -> None:
+    freeze = _freeze((0, _station()), (30, _station(**moved)), (75, _station(**moved)))
+    assert freeze.frozen_since is None
+
+
+@pytest.mark.synthetic
+def test_a_source_with_no_drifting_channel_is_never_frozen() -> None:
+    """Rain 0, calm and 0 lx can hold all night; nothing else is reported."""
+    quiet = _station(**dict.fromkeys(DRIFTING_CHANNELS))
+    assert _freeze((0, quiet), (120, quiet)).frozen_since is None
+
+
+@pytest.mark.synthetic
+@pytest.mark.parametrize(
+    "gap",
+    [None, replace(_station(), connected=False)],
+    ids=["never observed", "disconnected"],
+)
+def test_a_source_back_on_the_readings_it_froze_on_is_still_frozen(
+    gap: WeatherModel | None,
+) -> None:
+    """A reconnect fixes nothing upstream of a dead feed."""
+    freeze = _freeze((0, _station()), (30, gap), (60, _station()), (61, _station()))
+    assert freeze.frozen_since == _at(0)
+
+
+@pytest.mark.synthetic
+def test_the_first_poll_after_a_reconnect_is_not_judged() -> None:
+    """A source queried in the background serves its pre-disconnect readings
+    until its first answer.
+    """
+    down = replace(_station(), connected=False)
+    assert _freeze((0, _station()), (30, down), (60, _station())).frozen_since is None
+
+
+@pytest.mark.synthetic
+def test_a_source_down_is_not_judged() -> None:
+    freeze = _freeze((0, _station()), (90, replace(_station(), connected=False)))
+    assert freeze.frozen_since is None
+
+
+def test_every_drifting_channel_is_one_the_mapper_produces() -> None:
+    """A misspelt name would never be read, and drop out of the judgement."""
+    assert _FROZEN is not None
+    assert set(_FROZEN.channels) >= DRIFTING_CHANNELS

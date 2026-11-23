@@ -6,6 +6,7 @@ the fold filters on.
 """
 
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import time
@@ -18,6 +19,7 @@ from .api.models import (
     NinaEvent,
     SequenceWait,
     SequenceWaitKind,
+    WeatherModel,
 )
 from .session import CoverMove
 
@@ -207,6 +209,114 @@ class CoverFaultHold:
             return self._reading
         self._read, self._reading, self._since = True, None, move
         return None
+
+
+# Channels a working station's readings drift in, minute to minute. The rest
+# can legitimately hold all night: no rain, no wind, a clear sky, 0 lx.
+DRIFTING_CHANNELS = frozenset(
+    {"temperature", "humidity", "dew_point", "pressure", "sky_temperature"}
+)
+# N.I.N.A.'s own web sources, by the `Name` each gives itself. Each refreshes
+# every ten minutes at best, from a gridded model or a provider's cache.
+_WEB_SOURCES = frozenset(
+    {"OpenMeteo", "OpenWeatherMap", "TheWeatherCompany", "Weather Underground"}
+)
+# Brighter than this with the sun below `_NIGHT_ALTITUDE` is no night sky: a
+# full moon gives about 0.25 lx.
+_NIGHT_SKY_LUX = 10.0
+_NIGHT_ALTITUDE = -12.0
+
+
+@dataclass(frozen=True, slots=True)
+class FreezeWindows:
+    """How long every reading may hold before the source counts as frozen."""
+
+    station: timedelta
+    web: timedelta
+    """For `_WEB_SOURCES`, which refresh less often than hardware."""
+    lit_night: timedelta
+    """For a sky brighter than `_NIGHT_SKY_LUX` after astronomical dusk,
+    which is a daytime reading held into the night."""
+
+
+class WeatherFreeze:
+    """Since when a connected weather source's readings have stood still.
+
+    N.I.N.A. reports no age for a reading: `WeatherData` carries no update
+    time, and ASCOM's `TimeSinceLastUpdate` is not read. A driver that stops
+    updating, or throws on every read so that N.I.N.A. serves its last good
+    value, keeps `Connected: true` and its last values. What gives it away is
+    every channel holding bit-identical across polls.
+
+    Every channel has to hold, so a source that mixes sensors is flagged only
+    when all of them stop: fewer false alarms, at the cost of missing one
+    stuck sensor beside a working one. A source reporting none of
+    `DRIFTING_CHANNELS` is never judged, since its channels can all hold for
+    hours on a still, clear night.
+
+    Nothing resets the baseline but a change of readings: a source that
+    reconnects, or a N.I.N.A. restart that reconnects it, serving the values
+    it froze on is still frozen, and the time it was down counts. The first
+    poll after it comes back is not judged: a source N.I.N.A. queries in the
+    background, such as The Weather Company, serves the readings it had
+    before the disconnect until its first answer. Measured between the polls
+    that read the source, not against the clock.
+    """
+
+    def __init__(self, windows: FreezeWindows) -> None:
+        self._windows = windows
+        self._readings: Mapping[str, float | None] | None = None
+        self._since: datetime | None = None
+        self._last: datetime | None = None
+        self._window: timedelta | None = None
+        self._settled = False
+
+    def observe(
+        self,
+        weather: WeatherModel | None,
+        read_at: datetime,
+        sun_altitude: float | None,
+    ) -> None:
+        """Take one poll's reading: `read_at` is when it was read, and
+        `sun_altitude` the sun's at the site then, `None` with no site.
+        """
+        if (
+            weather is None
+            or not weather.connected
+            or not any(
+                weather.channels.get(channel) is not None
+                for channel in DRIFTING_CHANNELS
+            )
+        ):
+            self._window = None
+            return
+        self._settled = self._window is not None or self._readings is None
+        if weather.channels != self._readings:
+            self._readings, self._since = dict(weather.channels), read_at
+        self._last = read_at
+        windows = self._windows
+        self._window = (
+            windows.web if weather.meta.name in _WEB_SOURCES else windows.station
+        )
+        sky = weather.channels.get("sky_brightness")
+        dark = sun_altitude is not None and sun_altitude < _NIGHT_ALTITUDE
+        if dark and sky is not None and sky > _NIGHT_SKY_LUX:
+            self._window = min(self._window, windows.lit_night)
+
+    @property
+    def frozen_since(self) -> datetime | None:
+        """The first poll that read the held readings, once they have held
+        for the source's window; `None` before that, and while the source is
+        not judged.
+        """
+        if (
+            not self._settled
+            or self._window is None
+            or self._since is None
+            or self._last is None
+        ):
+            return None
+        return self._since if self._last - self._since >= self._window else None
 
 
 @dataclass

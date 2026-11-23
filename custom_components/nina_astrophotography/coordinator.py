@@ -40,14 +40,22 @@ from .api.models import (
 )
 from .api.v2 import NinaClientV2, NinaEventStream
 from .api.v2.events import MAX_RECONNECT_DELAY
-from .const import CONF_HOST, DEFAULT_OUTAGE_GRACE, DEFAULT_ROLLOVER_HOUR
-from .derive import flip_offset_minutes
+from .const import (
+    CONF_HOST,
+    DEFAULT_OUTAGE_GRACE,
+    DEFAULT_ROLLOVER_HOUR,
+    DEFAULT_WEATHER_FREEZE_STATION,
+    DEFAULT_WEATHER_FREEZE_WEB,
+    WEATHER_FREEZE_LIT_NIGHT,
+)
+from .derive import flip_offset_minutes, sun_altitude
 from .device import KINDS
 from .polling import (
     CoverClosedLatch,
     CoverFaultHold,
     EndedWait,
     EventLedger,
+    FreezeWindows,
     GuiderStopLatch,
     OutageGrace,
     ReseedGuard,
@@ -55,6 +63,7 @@ from .polling import (
     TierSchedule,
     Wait,
     WaitLedger,
+    WeatherFreeze,
     imaging,
 )
 from .sequence import current_wait, running, target_name
@@ -178,6 +187,9 @@ class NinaData:
     """A disconnected flat panel's last cover reading, while it is a fault
     N.I.N.A. has not resolved since; `None` while the panel is connected. See
     `CoverFaultHold`."""
+    weather_frozen_since: datetime | None = None
+    """The first poll that read the weather source's current readings, once
+    every one has held for its window; `None` otherwise. See `WeatherFreeze`."""
     reachable: bool = True
     """Whether N.I.N.A. answered the last poll. False while an outage is held
     within its grace, and kept false once the coordinator fails, so the one
@@ -214,6 +226,10 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
         version: VersionInfo = VersionInfo(None, None),
         rollover_hour: int = DEFAULT_ROLLOVER_HOUR,
         outage_grace: timedelta = timedelta(seconds=DEFAULT_OUTAGE_GRACE),
+        weather_freeze_station: timedelta = timedelta(
+            minutes=DEFAULT_WEATHER_FREEZE_STATION
+        ),
+        weather_freeze_web: timedelta = timedelta(minutes=DEFAULT_WEATHER_FREEZE_WEB),
     ) -> None:
         super().__init__(
             hass,
@@ -244,6 +260,13 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
         self._guider_stop = GuiderStopLatch()
         self._cover = CoverClosedLatch()
         self._cover_fault = CoverFaultHold()
+        self._weather_freeze = WeatherFreeze(
+            FreezeWindows(
+                station=weather_freeze_station,
+                web=weather_freeze_web,
+                lit_night=WEATHER_FREEZE_LIT_NIGHT,
+            )
+        )
         self._waits = WaitLedger()
         self._seeded = False
         self._replayed = False
@@ -314,6 +337,9 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
         )
         self._log_connection_changes(snapshot)
         self._hold_flip_reading(snapshot, read_at)
+        self._weather_freeze.observe(
+            snapshot.weather, read_at, self._sun_altitude(read_at)
+        )
         await self._run_tiers(snapshot, count)
         self._last_snapshot = snapshot
         if not self._replayed:
@@ -716,8 +742,19 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
                 flat, recent[0].frame if recent else None, move
             ),
             cover_fault_held=self._cover_fault.update(flat, move),
+            weather_frozen_since=self._weather_freeze.frozen_since,
             reachable=self._reachable,
         )
+
+    def _sun_altitude(self, moment: datetime) -> float | None:
+        """At the rig's site, or Home Assistant's while the profile names none."""
+        latitude = self._profile.site_latitude
+        longitude = self._profile.site_longitude
+        if latitude is None or longitude is None:
+            latitude, longitude = self.hass.config.latitude, self.hass.config.longitude
+        if latitude is None or longitude is None:
+            return None
+        return sun_altitude(latitude, longitude, moment)
 
     def _hold_flip_reading(
         self, snapshot: EquipmentSnapshot, read_at: datetime

@@ -84,7 +84,7 @@ the readings your source actually provides.
 | Guider | RMS total, RA and declination, status; guider (`switch`); clear calibration (`button`) |
 | Rotator | position, mechanical position (`number`); reverse (`switch`); moving, synced (`binary_sensor`) |
 | Flat Panel | cover state; brightness (`number`); light (`light`); cover (`switch`); light frames behind closed cover (`binary_sensor`) |
-| Weather | temperature, humidity, dew point, pressure, wind speed/direction/gust, rain rate, sky brightness, sky temperature, cloud cover, sky quality, star FWHM |
+| Weather | temperature, humidity, dew point, pressure, wind speed/direction/gust, rain rate, sky brightness, sky temperature, cloud cover, sky quality, star FWHM; readings frozen (`binary_sensor`) |
 | Safety Monitor | unsafe, connected (`binary_sensor`) |
 | Dome | shutter status; azimuth (`number`); following (`switch`); at park, at home, slewing, synchronized (`binary_sensor`); open, close, park, home (`button`) |
 | Switch | one entity per channel the driver reports: a read-only channel is a `sensor`, an on/off channel a `switch`, a range a `number` |
@@ -299,6 +299,46 @@ formula, which adds under 0.35 °C to the error of the humidity reading itself.
 The weather card's dew alert and any automation on the sensor then work as
 they would with a dew point sensor.
 The source's own dew point is used whenever it reports one.
+
+A station, feed or driver that stops updating keeps reporting connected, with
+every channel still available at its last value, so nothing else shows it.
+N.I.N.A. does the same when a driver throws on every read: it serves the last
+good value. `binary_sensor.<instance>_weather_readings_frozen` turns `on` once
+every channel has held exactly the same value for:
+
+- an hour, on a station: its temperature, humidity, pressure or IR sky
+  temperature moves within that;
+- two hours, on one of N.I.N.A.'s own web sources (OpenWeatherMap, Open-Meteo,
+  The Weather Company, Weather Underground). N.I.N.A. queries them every ten
+  minutes, but a provider may refresh its readings less often;
+- fifteen minutes, when the sky brightness reads over 10 lx with the sun below
+  −12°: a daytime reading held into the night. The sun is placed at the rig's
+  site from its N.I.N.A. profile, else at Home Assistant's location.
+
+Change the first two under **Settings → Devices & Services → N.I.N.A.
+Astrophotography → Configure → Weather Station Freeze Window** and **Web
+Weather Source Freeze Window**, in minutes. Give a station that reports in
+coarse steps longer, and set the web window above your provider's refresh
+interval, or a working source reads frozen for the last stretch of every
+refresh. The fifteen minutes is fixed.
+
+Its `frozen_since` attribute is the first poll that read those values. It
+judges only a source that reports at least one of temperature, humidity, dew
+point, pressure and sky temperature, since rain, wind, cloud cover and sky
+brightness can all hold through a still, clear night. Every channel has to
+hold, so one stuck sensor beside working ones is not caught. A source that
+comes back from a disconnect, or a N.I.N.A. restart, on the readings it froze
+on is still frozen; Home Assistant starting measures afresh.
+
+The channels stay available, so an automation that should not act on frozen
+readings has to check this sensor. Reconnecting the weather source in N.I.N.A.
+clears a driver that stopped reading, such as N.I.N.A.'s OpenWeatherMap client
+after a network error; if the readings still hold, the station or its feed has
+stopped. The weather card shows the freeze in place of a safe verdict and dims
+the readings. The weather readings frozen blueprint notifies; the unsafe
+conditions abort holds its resume while the sensor is on, and the imaging
+stall alert stops letting an unsafe verdict mute it, once you pick the sensor
+in each.
 
 Don't use weather readings to decide it's safe to image. Forecast-based
 sources such as OpenMeteo are gridded forecasts updated every 10 minutes, and
