@@ -16,6 +16,7 @@ instance name `N.I.N.A.` the prefix is `n_i_n_a`, so
 - [Sessions](#sessions)
 - [Is the rig working?](#is-the-rig-working)
 - [The imaging stall alert blueprint](#the-imaging-stall-alert-blueprint)
+- [The guider not guiding blueprint](#the-guider-not-guiding-blueprint)
 - [Weather](#weather)
 - [Flats](#flats)
   - [Flat panel cover and light](#flat-panel-cover-and-light)
@@ -293,9 +294,71 @@ Limitations:
 - After a restart the quiet case waits the full quiet period (20 minutes by
   default) before it can fire, because its timers restart with Home Assistant.
 - A rig taking bad frames is not stalled; this blueprint won't notice it.
-  Guiding problems are covered by `guiding_alert.yaml`. A lost guide star that
-  stops frames will show up here as a stall, with the guider state in the
-  message.
+  Guiding problems are covered by `guiding_alert.yaml`, and a lost guide star
+  while lights keep arriving by `guider_not_guiding_alert.yaml`. A lost guide
+  star that stops frames will show up here as a stall, with the guider state
+  in the message.
+
+## The guider not guiding blueprint
+
+`guider_not_guiding_alert.yaml` notifies when lights are saved while the
+guider is not guiding: `sensor.<instance>_guider_status` reads `LostLock`,
+`Looping`, `Selected`, `Paused`, `Calibrating` or `Stopped`. `Stopped` covers
+a guide camera that drops out mid-night, which stops PHD2 while unguided
+lights keep arriving. The guiding alert cannot see any of this, since guide RMS
+reads `unknown` whenever PHD2 is not guiding.
+
+It alerts once the guider has not guided for three minutes, by default, and a
+light begun since it stopped has been saved, while
+`binary_sensor.<instance>_sequencer_running` is on and no meridian flip or
+sequence wait is under way. Both stop and restart guiding on purpose, a flip's
+calibration included. An autofocus run or a plate solve exposes without saving
+a light, so autofocus and plate solving never alert on their own, and neither
+does a guider N.I.N.A. stopped for one. A light begun while PHD2 calibrates
+does alert: N.I.N.A. takes none while it calibrates for its own guider start.
+A light begun before guiding stopped is partly guided, and does not count.
+
+The notification names the status. `LostLock` is either a lost guide star or
+what a stop leaves behind, such as guiding that never restarted after an
+autofocus run: the guider status cannot tell them apart, so the message says
+only that the guider has not guided.
+
+The time runs from when guide RMS turned `unknown`, so a lock lost, then
+looping, then lost again is one stretch, and guiding again ends it. It is
+checked each time a light is saved, and when RMS has read `unknown` for the
+time. So it alerts the set time after guiding stopped at the earliest, and at
+the latest when the first light begun after guiding stopped is saved, which is
+one exposure later.
+
+It alerts again for the same stretch at most once per cooldown, 15 minutes by
+default; a stretch that begins after the last alert alerts at once. A Home
+Assistant restart, or N.I.N.A. dropping out and coming back, starts the
+stretch again, so the same stretch can then alert again inside the cooldown.
+
+Patchy cloud that makes PHD2 alternate between `LostLock` and `Guiding` ends
+the stretch each time it guides, so this never fires for it, and neither does
+the card; a cloud sensor covers that case.
+
+The light gate compares when a light began, from N.I.N.A.'s stamp less its
+exposure, with when Home Assistant saw guiding stop. N.I.N.A. stops guiding a
+few seconds after saving a light, so only a rig clock ahead of Home
+Assistant's by more than a whole exposure could make that light count.
+
+To image unguided on purpose, disconnect the guider in N.I.N.A.
+
+Three minutes is longer than PHD2 needed on one Target Scheduler rig over ten
+nights. Mid-session, it found a lost star again within 10 to 35 seconds, and
+looped for 10 to 20 seconds while guiding restarted, and twice for a minute.
+
+The observatory card warns of the same, by the same light gate, while a
+sequence runs, but its three minutes are fixed and it has no cooldown: it warns for as long as it holds. Its
+Guider chip turns orange, a collapsed card says "Guiding stopped", "Guide star
+lost", "Guider looping, not guiding", "Guider paused, not guiding" or "Guider
+calibrating, not guiding", and a collapsed Guiding heading shows a warning dot.
+The Guiding heading names the status, `Lost lock` or `Looping`, from the moment
+it changes. The card also needs the guider switch to tell a guider stopped from
+one that has lost its star, since a stop can leave `LostLock` behind; without
+the switch it warns only of `Stopped`.
 
 ## Weather
 

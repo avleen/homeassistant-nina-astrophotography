@@ -32,6 +32,9 @@ const UNSAFE = "binary_sensor.n_i_n_a_safety_monitor_unsafe";
 const ROTATOR = "number.n_i_n_a_rotator_position";
 const SYNCED = "binary_sensor.n_i_n_a_rotator_synced";
 const GUIDER = "switch.n_i_n_a_guider";
+const GUIDER_STATUS = "sensor.n_i_n_a_guider_status";
+const FLIPPING = "binary_sensor.n_i_n_a_mount_meridian_flip";
+const HFR = "sensor.n_i_n_a_last_image_hfr";
 const CAMERA = "sensor.n_i_n_a_camera_state";
 const COOLER = "switch.n_i_n_a_camera_cooler";
 const FLATS = "dawn_flats";
@@ -95,6 +98,29 @@ const waiting = (dump, rigState, into = 0, changes = {}) => {
     ends_at: moved(row.attributes.ends_at),
     ...changes,
   });
+};
+
+// `r` with the guider at `status`, every row last changed `minutes` before
+// now, and RMS `unknown` as it reads in every status but `Guiding`. The switch
+// reads `running`. With `lit`, the newest light of `dawn_flats`, the one dump
+// holding lights, was saved half a minute ago: a 600 s light, so begun after
+// the guider stopped only where that was over ten and a half minutes ago. The corpus's mid-session
+// `LostLock` is the stale one a stop leaves, with the switch off, and its
+// `Looping` and `Paused` are the simulator's, with no sequence running.
+const guider = (dump, r, status, minutes, lit = true, running = "on") => {
+  for (const axis of ["total", "ra", "declination"]) {
+    r.override(`sensor.n_i_n_a_guider_rms_${axis}`, "unknown");
+  }
+  if (lit) {
+    const row = dump[FLATS].states[HFR];
+    const lights = row.attributes.recent_lights;
+    const newest = { ...lights.at(-1), date: new Date(Date.now() - 30_000).toISOString() };
+    r.override(HFR, row.state, { ...row.attributes, recent_lights: [...lights.slice(0, -1), newest] });
+  }
+  return r
+    .override(GUIDER, running)
+    .override(GUIDER_STATUS, status)
+    .changedAt(new Date(Date.now() - minutes * 60_000));
 };
 
 // No `draw` hook: the card has no canvas.
@@ -425,11 +451,11 @@ export const scenarios = {
     folded: ["card"],
   },
 
-  // Folded with the camera lost and the guider switched off mid-session, both
-  // invented: no capture loses either during a run.
+  // Folded with the camera lost, and guiding stopped before a light was saved,
+  // both invented: no capture loses either during a run.
   folded_faults: {
     hass: (dump) =>
-      rig(dump, UP).override(CAMERA, "unavailable").override(GUIDER, "off").build(),
+      guider(dump, rig(dump, UP).override(CAMERA, "unavailable"), "Stopped", 12, true, "off").build(),
     folded: ["card"],
   },
 
@@ -500,10 +526,95 @@ export const scenarios = {
     folded: ["card"],
   },
 
-  // Folded headings cueing what they hide: the cooler and guider switched off
-  // mid-session, both invented, so Camera and Guiding warn.
+  // Folded headings cueing what they hide: the cooler switched off, and
+  // guiding stopped twelve minutes before a light was saved, all invented, so
+  // Camera and Guiding warn.
   folded_cues: {
-    hass: (dump) => rig(dump, UP).override(COOLER, "off").override(GUIDER, "off").build(),
+    hass: (dump) => guider(dump, rig(dump, UP).override(COOLER, "off"), "Stopped", 12, true, "off")
+      .build(),
     folded: ["camera", "guiding"],
   },
+
+  // The guide star lost twelve minutes ago, and a light saved since: the
+  // heading names the status, and the Guider chip warns.
+  guider_lost_lock: { hass: (dump) => guider(dump, rig(dump, UP), "LostLock", 12).build() },
+
+  // Looping, paused, or calibrating, with a light saved since: none of them
+  // is guiding it.
+  guider_looping: { hass: (dump) => guider(dump, rig(dump, UP), "Looping", 12).build() },
+  guider_paused: { hass: (dump) => guider(dump, rig(dump, UP), "Paused", 12).build() },
+  guider_calibrating_lit: {
+    hass: (dump) => guider(dump, rig(dump, UP), "Calibrating", 12).build(),
+  },
+
+  // Folded: the Guiding heading, and the card, both cue the lost star.
+  guider_lost_lock_folded: {
+    hass: (dump) => guider(dump, rig(dump, UP), "LostLock", 12).build(),
+    folded: ["guiding"],
+  },
+  guider_lost_lock_card_folded: {
+    hass: (dump) => guider(dump, rig(dump, UP), "LostLock", 12).build(),
+    folded: ["card"],
+  },
+
+  // Each of these folded, so what is missing is the warning.
+  // Lost a minute ago, which PHD2 usually recovers from.
+  guider_lost_lock_brief: {
+    hass: (dump) => guider(dump, rig(dump, UP), "LostLock", 1).build(),
+    folded: ["card"],
+  },
+  // No light saved since, as through an autofocus run that stops guiding.
+  guider_lost_lock_no_light: {
+    hass: (dump) => guider(dump, rig(dump, UP), "LostLock", 12, false).build(),
+    folded: ["card"],
+  },
+  // A light saved since the star was lost four minutes ago, but begun before:
+  // partly guided, so not warned of.
+  guider_lost_lock_straddled: {
+    hass: (dump) => guider(dump, rig(dump, UP), "LostLock", 4).build(),
+    folded: ["card"],
+  },
+  // Calibrating at a guiding start, which N.I.N.A. takes no light through.
+  guider_calibrating: {
+    hass: (dump) => guider(dump, rig(dump, UP), "Calibrating", 12, false).build(),
+    folded: ["card"],
+  },
+  // No switch row to tell a running guider from a stop's leftover.
+  guider_lost_lock_no_switch: {
+    hass: (dump) => guider(dump, rig(dump, UP), "LostLock", 12).without("guider").build(),
+    folded: ["card"],
+  },
+  // A flip restarts guiding on purpose, and PHD2 loops while it picks a star.
+  guider_looping_flipping: {
+    hass: (dump) => guider(dump, rig(dump, UP).override(FLIPPING, "on", {
+      ...dump[UP].states[FLIPPING].attributes,
+      slews_at: new Date(Date.now() - 60_000).toISOString(),
+    }), "Looping", 12).build(),
+    folded: ["card"],
+  },
+  // A wait, which stops guiding on purpose.
+  guider_lost_lock_waiting: {
+    hass: (dump) => guider(dump, waiting(dump, "scheduler_waiting"), "LostLock", 12).build(),
+    folded: ["card"],
+  },
+
+  // The simulator's guider looping after guiding, as captured: the heading
+  // names it, and with no sequence running nothing warns.
+  guider_looping_captured: {
+    hass: (dump) => rig(dump, "simulator_guider_looping_after_guiding").build(),
+  },
+
+  // Guiding stopped twelve minutes ago, and a light saved since: the Guider
+  // chip says so.
+  guiding_stopped: {
+    hass: (dump) => guider(dump, rig(dump, UP), "Stopped", 12, true, "off").build(),
+  },
+  // Stopped with no light saved since, as for an autofocus run, which leaves
+  // `LostLock` behind with the switch off.
+  guider_autofocus: {
+    hass: (dump) => guider(dump, rig(dump, UP), "LostLock", 12, false, "off").build(),
+    folded: ["card"],
+  },
+  // `Selected`, which N.I.N.A. reports from connecting until guiding starts.
+  guider_selected: { hass: (dump) => guider(dump, rig(dump, UP), "Selected", 12).build() },
 };

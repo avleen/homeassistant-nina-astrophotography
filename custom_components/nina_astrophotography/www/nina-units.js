@@ -1,7 +1,8 @@
 /**
  * Readings in the unit Home Assistant shows them in, the meridian flip window
- * read from them and the flip under way, the camera's ADU full scale, and text
- * off the rig made safe to print.
+ * read from them and the flip under way, a sequence wait, a guider not
+ * guiding, the camera's ADU full scale, and text off the rig made safe to
+ * print.
  *
  * Not a card, so not in `frontend.py`'s `CARD_FILENAMES`.
  *
@@ -259,6 +260,66 @@ function about(seconds) {
 export function waitCountdown({ left, atMost, approx }) {
   if (left === null) return "Waiting";
   return `Waiting · ${approx ? about(left) : `${atMost ? "≤ " : ""}${clock(left)}`}`;
+}
+
+// The guider statuses that are PHD2 running but not guiding, as a warning.
+// N.I.N.A. reports `Selected` from connecting until guiding first starts.
+const NOT_GUIDING = {
+  LostLock: "Guide star lost",
+  Looping: "Guider looping, not guiding",
+  Selected: "Guider looping, not guiding",
+  Paused: "Guider paused, not guiding",
+  Calibrating: "Guider calibrating, not guiding",
+};
+
+/**
+ * The guider not guiding, or `null`. `ids` names the rows of the guider
+ * `status`, the total `rms`, the `guider` switch, and the `lights` sensor
+ * whose `recent_lights` say when each light was saved.
+ *
+ * `kind` is `Stopped` for a guider stopped, which the switch reads off
+ * whatever the status: a stop leaves `LostLock` behind. Otherwise it is the
+ * status, for a guider the switch reads running; with no switch to read, only
+ * `Stopped` is told apart from that leftover.
+ *
+ * Not guiding is timed from when RMS turned `unknown`, which it reads from the
+ * first status that is not guiding until PHD2 guides again, so a lock lost,
+ * looping and lost again is one stretch; or from the switch changing, if
+ * later, so a restart starts it again. With no RMS row, the status's own
+ * change starts it. `left` is the seconds until it has lasted `grace`, and
+ * `lit` whether the newest light began its exposure after it began, so was
+ * unguided throughout: autofocus and plate solving expose without saving a
+ * light. The exposure's start, not its save, since N.I.N.A. stops guiding
+ * seconds after saving a light, and the rig's clock need not agree with Home
+ * Assistant's. Both are `null` and false for a stretch whose start is
+ * unknown.
+ */
+export function notGuiding(hass, { status, rms, guider, lights }, grace, now = Date.now()) {
+  const read = hass.states[status]?.state;
+  const running = hass.states[guider]?.state;
+  const kind = read === "Stopped" || (running === "off" && read in NOT_GUIDING) ? "Stopped"
+    : running === "on" && read in NOT_GUIDING ? read : null;
+  if (!kind) return null;
+  const warning = NOT_GUIDING[kind] ?? "Guiding stopped";
+  const changed = (id) => Date.parse(hass.states[id]?.last_changed ?? "");
+  const starts = hass.states[rms]?.state === "unknown"
+    ? [changed(rms), changed(guider)] : [changed(status)];
+  const known = starts.filter(Number.isFinite);
+  if (!known.length) return { kind, warning, left: null, lit: false };
+  const since = Math.max(...known);
+  const newest = hass.states[lights]?.attributes?.recent_lights?.at(-1);
+  const exposed = Date.parse(newest?.date ?? "") - (newest?.exposure ?? 0) * 1000;
+  return {
+    kind,
+    warning,
+    left: Math.max(grace - (now - since) / 1000, 0),
+    lit: exposed > since,
+  };
+}
+
+/** The guider status as the Guiding heading names it: "Active", "Lost lock". */
+export function guiderStatus(status) {
+  return { Guiding: "Active", LostLock: "Lost lock" }[status] ?? status;
 }
 
 // The depths a camera's ADC delivers, or N.I.N.A. scales to.
