@@ -14,7 +14,8 @@
  *
  * The limits a reading is coloured by are options too, in °C and m/s whatever
  * unit Home Assistant shows the reading in:
- *   dew_margin: 3          # dew alert while the air is within this of its dew point
+ *   dew_margin: 3          # dew alert while the air is within this of its dew
+ *                          # point, unless the safety monitor reads unsafe
  *   wind_warn: 8           # and wind_danger: 12
  *
  * The sky brightness cell can be left out, for a station that reads 0 lx all
@@ -23,15 +24,19 @@
  *
  * A reading whose entity is disabled, or that the station never reports, has
  * no cell at all; one that is merely unknown or unavailable shows a dash.
+ *
+ * A station whose every reading has stopped changing while N.I.N.A. still
+ * reports it connected is flagged frozen, and its readings are dimmed: a
+ * "Conditions safe" banner over them gives way to the warning.
  */
 
 import { DEFAULT_PREFIX, configForm } from "./nina-card-config.js";
 import { CHEVRON, COLLAPSE_STYLE, Collapse, worst } from "./nina-collapse.js";
 import { LinkView, RigEntities } from "./nina-entity-resolver.js";
-import { displayed, interval, inUnit, missing, quantity } from "./nina-units.js";
+import { displayed, interval, inUnit, missing, quantity, significant } from "./nina-units.js";
 import { THEME, applyTheme, palette } from "./nina-theme.js";
 
-const VERSION = "2.6.0";
+const VERSION = "2.9.0";
 
 const STYLE = `
   ${THEME}
@@ -74,7 +79,7 @@ const STYLE = `
   .safety-banner.unknown {
     background: color-mix(in srgb, var(--ink) 4%, transparent);
   }
-  .safety-banner.unreachable {
+  .safety-banner.unreachable, .safety-banner.frozen {
     background: rgba(244,162,97,0.10);
     border-bottom-color: rgba(244,162,97,0.30);
   }
@@ -88,9 +93,10 @@ const STYLE = `
   .safety-text .safe   { color: var(--success); }
   .safety-text .unsafe { color: var(--danger); }
   .safety-text .unknown{ color: var(--muted); }
-  .safety-text .unreachable { color: var(--warn); }
+  .safety-text .unreachable, .safety-text .frozen { color: var(--warn); }
 
-  /* Readings N.I.N.A. has not confirmed since it stopped answering */
+  /* Readings N.I.N.A. has not confirmed since it stopped answering, or a
+     frozen station's */
   .body.stale { opacity: 0.5; }
 
   /* ── Grid ── */
@@ -202,6 +208,15 @@ function since(ms) {
     : "";
 }
 
+// `since()`, with the date when it was not today: a freeze can last days.
+function sinceDated(ms) {
+  if (!ms) return "";
+  const at = new Date(ms);
+  if (at.toDateString() === new Date(Date.now()).toDateString()) return since(ms);
+  const day = at.toLocaleDateString([], { month: "short", day: "numeric" });
+  return ` since ${day}, ${at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+}
+
 class NinaWeatherCard extends HTMLElement {
   constructor() {
     super();
@@ -302,6 +317,10 @@ class NinaWeatherCard extends HTMLElement {
       return state !== null && state !== "unavailable";
     }));
     const wxName  = wxConnected && sourceLive ? source : "Weather station";
+    // Every reading unchanged for the integration's window, though connected.
+    const frozenRow = this._shown.states?.[this._eid("binary_sensor", "weather_frozen", "weather_readings_frozen")];
+    const frozen = wxConnected && frozenRow?.state === "on";
+    const frozenSince = frozen ? Date.parse(frozenRow.attributes?.frozen_since) || null : null;
     const temp    = this._q(channels.temp);
     const humid   = this._f(channels.humid);
     const dewPt   = this._q(channels.dewPt);
@@ -324,6 +343,9 @@ class NinaWeatherCard extends HTMLElement {
     // Dew threat: the air within `dew_margin` of its dew point.
     const dewMargin = tempC !== null && dewC !== null ? tempC - dewC : null;
     const dewThreat = dewMargin !== null && dewMargin < L.dewMargin;
+    // An unsafe verdict already calls for closing up, which makes dew moot; the
+    // dew point cell keeps its warning.
+    const dewAlertShown = dewThreat && !isUnsafe;
     const windLevel = this._windLevel(windMs);
     const windColor = windLevel === "danger" ? "var(--danger)"
       : windLevel === "warn" ? "var(--warn)" : "var(--text)";
@@ -355,6 +377,12 @@ class NinaWeatherCard extends HTMLElement {
       safetyIcon = "🔘"; safetyLabelCls = "unknown";
       safetyLabel = "Safety monitor has no reading";
       safetyDetail = "The monitor is connected but has not reported yet";
+    } else if (frozen) {
+      // A safe verdict over readings that stopped changing is no comfort: the
+      // monitor is often fed by the same station.
+      safetyIcon = "🧊"; safetyLabelCls = "frozen";
+      safetyLabel = "Weather readings frozen";
+      safetyDetail = `No reading has changed${sinceDated(frozenSince)}. Reconnect the weather source in N.I.N.A.; if the readings still hold, the station or its feed has stopped. The safety monitor reports safe, but it may read the same station.`;
     } else {
       safetyIcon = "✅"; safetyLabelCls = "safe";
       safetyLabel = "Conditions safe";
@@ -364,6 +392,8 @@ class NinaWeatherCard extends HTMLElement {
     let wxStatus, noReadings, noReadingsHint;
     if (link.stale) {
       wxStatus = `N.I.N.A. ${link.lost ? "unreachable" : "not answering"} · last readings`;
+    } else if (frozen) {
+      wxStatus = `Readings frozen${sinceDated(frozenSince)} · N.I.N.A. weather station`;
     } else if (wxConnected) {
       wxStatus = "Connected · N.I.N.A. weather station";
     } else if (unreachable) {
@@ -442,7 +472,7 @@ class NinaWeatherCard extends HTMLElement {
       has(channels.rain) && qcell("🌧", "Rain rate", rain, 2, false, rain !== null && rain.value > 0, rain === null),
       has(channels.skyT) && qcell("🌡", "Sky temp", skyT, 1, false, false, skyT === null),
       has(channels.seeing) && cell("👁", "Seeing", seeing?.toFixed(1) ?? null, "\"", seeing !== null && seeing > L.seeingWarn, seeing !== null && seeing > L.seeingDanger, seeing === null),
-      this._showSkyBrightness && has(channels.skyB) && qcell("✨", "Sky brightness", skyB, 2, false, false, skyB === null),
+      this._showSkyBrightness && has(channels.skyB) && cell("✨", "Sky brightness", significant(skyB, 3), skyB?.unit ?? "", false, false, skyB === null),
     ]);
     // A station that names itself before any of its channels has a reading:
     // every channel is created on its first one.
@@ -481,7 +511,7 @@ class NinaWeatherCard extends HTMLElement {
           </div>
           ${CHEVRON}
         </div>
-        ${fold.banner(worst([...levels, windRows.length ? windLevel : null]))}
+        ${fold.banner(worst([...levels, windRows.length ? windLevel : null, frozen ? "warn" : null]))}
 
         <!-- Safety banner -->
         <div class="safety-banner ${safetyLabelCls}">
@@ -492,15 +522,15 @@ class NinaWeatherCard extends HTMLElement {
           </div>
         </div>
 
-        ${!fold.open("card") ? (wxConnected && dewThreat ? `
-          <div class="body${link.stale ? " stale" : ""}">${dewAlert}</div>
+        ${!fold.open("card") ? (wxConnected && dewAlertShown ? `
+          <div class="body${link.stale || frozen ? " stale" : ""}">${dewAlert}</div>
         ` : "") : !wxConnected ? `
           <div class="not-connected">
             <div>${noReadings}</div>
             <div class="hint">${noReadingsHint}</div>
           </div>
         ` : `
-        <div class="body${link.stale ? " stale" : ""}">
+        <div class="body${link.stale || frozen ? " stale" : ""}">
 
           ${nothingShown ? `
             <div class="not-connected">
@@ -509,7 +539,7 @@ class NinaWeatherCard extends HTMLElement {
             </div>
           ` : ""}
 
-          ${dewThreat ? dewAlert : ""}
+          ${dewAlertShown ? dewAlert : ""}
 
           ${atmosphere}
 
@@ -652,9 +682,9 @@ class NinaWeatherCard extends HTMLElement {
           {
             name: "dew_margin",
             label: "Dew margin",
-            helper: "Show the dew alert while the air is within this of its dew point. "
-              + "Smaller with dew heaters on the optics. In °C, whatever unit the "
-              + "temperature is shown in.",
+            helper: "Show the dew alert while the air is within this of its dew point, "
+              + "unless the safety monitor reads unsafe. Smaller with dew heaters on "
+              + "the optics. In °C, whatever unit the temperature is shown in.",
             default: LIMITS.dew_margin,
             ...number("°C", { min: 0 }),
           },

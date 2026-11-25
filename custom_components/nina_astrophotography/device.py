@@ -12,15 +12,18 @@ creates a nameless device.
 """
 
 from collections.abc import Callable, Mapping
+import math
 from typing import TYPE_CHECKING, Any, cast
 
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import area_registry as ar, device_registry as dr
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 
 from .api.models import DeviceMeta, SwitchChannelModel, VersionInfo
 from .const import CONF_HOST, CONF_PORT, DOMAIN
+from .derive import rotator_fold
 
 if TYPE_CHECKING:
     from .coordinator import NinaConfigEntry, NinaData
@@ -82,6 +85,91 @@ def refused_while_unsafe(data: NinaData) -> str | None:
         if read_field("safety_monitor", "is_safe")(data) is False
         else None
     )
+
+
+def refused_while_unsynced(data: NinaData) -> str | None:
+    """Refuse a sky-angle move until a plate solve syncs the rotator.
+
+    N.I.N.A. accepts the move, then fails it unsynced after answering, so the
+    rotator stays put behind a `Success: true`.
+    """
+    return (
+        "rotator_not_synced" if read_field("rotator", "synced")(data) is False else None
+    )
+
+
+def raise_outside_rotator_range(data: NinaData, angle: float) -> None:
+    """Refuse a mechanical angle outside the profile's rotator range.
+
+    N.I.N.A. would turn the rotator to another angle instead, and only says
+    so on its own screen.
+    """
+    arc = data.profile.rotator_range
+    if arc is None or arc.span >= 360:
+        return
+    folded = rotator_fold(angle, arc.start, arc.span)
+    if math.isclose(folded, angle % 360, abs_tol=1e-6):
+        return
+    raise ServiceValidationError(
+        translation_domain=DOMAIN,
+        translation_key="outside_rotator_range",
+        translation_placeholders={
+            "value": f"{angle:g}",
+            "start": f"{arc.start:g}",
+            "end": f"{(arc.start + arc.span) % 360:g}",
+            "folded": f"{folded:g}",
+        },
+    )
+
+
+def raise_unless_cover_closed(data: NinaData) -> None:
+    """Refuse lighting the panel while its cover reads anything but closed.
+
+    A panel lit with its cover open shines into the observatory, onto every
+    other telescope in a shared one. A panel with no cover is exempt, and so is
+    a disconnected one, which reports none: N.I.N.A. refuses it itself.
+    """
+    panel = data.snapshot.flat_device
+    if (
+        panel is None
+        or panel.supports_open_close is False
+        or panel.cover_state in ("Closed", "NotPresent")
+    ):
+        return
+    raise ServiceValidationError(
+        translation_domain=DOMAIN,
+        translation_key="flat_panel_cover_not_closed",
+        translation_placeholders={"cover": panel.cover_state or "Unknown"},
+    )
+
+
+def raise_if_level_lights_open_panel(data: NinaData, level: float) -> None:
+    """Refuse a brightness above the panel's minimum unless its cover is
+    closed: an ASCOM panel lights at any such level.
+    """
+    bounds = read_field("flat_device", "brightness_range")(data)
+    if bounds is not None and level > bounds[0]:
+        raise_unless_cover_closed(data)
+
+
+def raise_while_lit(data: NinaData) -> None:
+    """Refuse opening the cover while the panel reads lit, for the reason
+    `raise_unless_cover_closed` gives.
+    """
+    if read_field("flat_device", "light_on")(data):
+        raise ServiceValidationError(
+            translation_domain=DOMAIN, translation_key="flat_panel_lit"
+        )
+
+
+def raise_closing_while_running(data: NinaData, force: bool) -> None:
+    """Refuse closing the cover while the sequencer runs, unless forced: a
+    closed cover blanks every light frame the sequence takes after it.
+    """
+    if data.running and not force:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN, translation_key="flat_panel_close_while_running"
+        )
 
 
 def channels_of(data: NinaData) -> tuple[SwitchChannelModel, ...]:

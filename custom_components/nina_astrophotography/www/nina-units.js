@@ -1,7 +1,8 @@
 /**
  * Readings in the unit Home Assistant shows them in, the meridian flip window
- * read from them and the flip under way, the camera's ADU full scale, and text
- * off the rig made safe to print.
+ * read from them and the flip under way, a sequence wait, a guider not
+ * guiding, the camera's ADU full scale, and text off the rig made safe to
+ * print.
  *
  * Not a card, so not in `frontend.py`'s `CARD_FILENAMES`.
  *
@@ -80,6 +81,7 @@ const UNITS = {
   "kPa": scaled("pressure", 10),
   "cbar": scaled("pressure", 10),
   "bar": scaled("pressure", 1000),
+  "atm": scaled("pressure", 1013.25),
   "mmHg": scaled("pressure", 1.33322387415),
   "inHg": scaled("pressure", 33.86388640341),
   "inH₂O": scaled("pressure", 2.490889083333348),
@@ -195,6 +197,131 @@ export function flipStatus({ waiting, slewsIn }) {
     : `Waiting to flip · slews in ${Math.ceil(slewsIn)} min`;
 }
 
+/** `4:07`, or `1:04:07` from an hour up. */
+export function clock(seconds) {
+  const whole = Math.ceil(seconds);
+  const pad = (value) => String(value).padStart(2, "0");
+  const hours = Math.floor(whole / 3600);
+  const minutes = Math.floor(whole / 60) % 60;
+  return hours > 0
+    ? `${hours}:${pad(minutes)}:${pad(whole % 60)}`
+    : `${minutes}:${pad(whole % 60)}`;
+}
+
+/**
+ * The wait the sequence is in, from the waiting sensor `id`, or `null`.
+ * `ends` is epoch ms, `null` where nothing places it: Target Scheduler and Wait
+ * for Time name their end, and an altitude wait's is N.I.N.A.'s estimate, to
+ * the minute (`approx`), where it has one. A Wait for Time Span is placed from
+ * the read that first showed it, which can be minutes after it began, so its
+ * `ends` is the latest it can end (`atMost`). `left` is the seconds to `ends`:
+ * `null` with no `ends`, or once it has passed and a read has yet to show the
+ * wait over.
+ */
+export function sequenceWait(hass, id, now = Date.now()) {
+  const row = hass.states[id];
+  if (row?.state !== "on") return null;
+  const { kind = null, ends_at, started_at, span_seconds } = row.attributes ?? {};
+  const named = Date.parse(ends_at ?? "");
+  // `null * 1000` is 0, which would end an altitude wait as it started.
+  const spanned = Number.isFinite(span_seconds)
+    ? Date.parse(started_at ?? "") + span_seconds * 1000 : NaN;
+  const atMost = !Number.isFinite(named) && Number.isFinite(spanned);
+  const approx = Number.isFinite(named) && kind === "altitude";
+  const ends = Number.isFinite(named) ? named : atMost ? spanned : null;
+  return { kind, ends, atMost, approx, left: ends > now ? (ends - now) / 1000 : null };
+}
+
+// What each kind of wait is waiting for. A kind not listed is still a wait.
+const WAITING_FOR = {
+  scheduler: "Waiting for next target",
+  time: "Wait for Time",
+  time_span: "Wait for Time Span",
+  altitude: "Waiting for an altitude",
+};
+
+/** A wait's kind as words: "Waiting for next target", or "Waiting". */
+export function waitReason({ kind }) {
+  return WAITING_FOR[kind] ?? "Waiting";
+}
+
+// `≈ 24 min`, or `≈ 1 h 04 min` from an hour up: seconds would claim a
+// precision an end known to the minute does not have.
+function about(seconds) {
+  const minutes = Math.ceil(seconds / 60);
+  return minutes < 60 ? `≈ ${minutes} min`
+    : `≈ ${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, "0")} min`;
+}
+
+/**
+ * A wait's time left: "Waiting · 1:04:07", "Waiting · ≤ 4:07",
+ * "Waiting · ≈ 24 min", or "Waiting".
+ */
+export function waitCountdown({ left, atMost, approx }) {
+  if (left === null) return "Waiting";
+  return `Waiting · ${approx ? about(left) : `${atMost ? "≤ " : ""}${clock(left)}`}`;
+}
+
+// The guider statuses that are PHD2 running but not guiding, as a warning.
+// N.I.N.A. reports `Selected` from connecting until guiding first starts.
+const NOT_GUIDING = {
+  LostLock: "Guide star lost",
+  Looping: "Guider looping, not guiding",
+  Selected: "Guider looping, not guiding",
+  Paused: "Guider paused, not guiding",
+  Calibrating: "Guider calibrating, not guiding",
+};
+
+/**
+ * The guider not guiding, or `null`. `ids` names the rows of the guider
+ * `status`, the total `rms`, the `guider` switch, and the `lights` sensor
+ * whose `recent_lights` say when each light was saved.
+ *
+ * `kind` is `Stopped` for a guider stopped, which the switch reads off
+ * whatever the status: a stop leaves `LostLock` behind. Otherwise it is the
+ * status, for a guider the switch reads running; with no switch to read, only
+ * `Stopped` is told apart from that leftover.
+ *
+ * Not guiding is timed from when RMS turned `unknown`, which it reads from the
+ * first status that is not guiding until PHD2 guides again, so a lock lost,
+ * looping and lost again is one stretch; or from the switch changing, if
+ * later, so a restart starts it again. With no RMS row, the status's own
+ * change starts it. `left` is the seconds until it has lasted `grace`, and
+ * `lit` whether the newest light began its exposure after it began, so was
+ * unguided throughout: autofocus and plate solving expose without saving a
+ * light. The exposure's start, not its save, since N.I.N.A. stops guiding
+ * seconds after saving a light, and the rig's clock need not agree with Home
+ * Assistant's. Both are `null` and false for a stretch whose start is
+ * unknown.
+ */
+export function notGuiding(hass, { status, rms, guider, lights }, grace, now = Date.now()) {
+  const read = hass.states[status]?.state;
+  const running = hass.states[guider]?.state;
+  const kind = read === "Stopped" || (running === "off" && read in NOT_GUIDING) ? "Stopped"
+    : running === "on" && read in NOT_GUIDING ? read : null;
+  if (!kind) return null;
+  const warning = NOT_GUIDING[kind] ?? "Guiding stopped";
+  const changed = (id) => Date.parse(hass.states[id]?.last_changed ?? "");
+  const starts = hass.states[rms]?.state === "unknown"
+    ? [changed(rms), changed(guider)] : [changed(status)];
+  const known = starts.filter(Number.isFinite);
+  if (!known.length) return { kind, warning, left: null, lit: false };
+  const since = Math.max(...known);
+  const newest = hass.states[lights]?.attributes?.recent_lights?.at(-1);
+  const exposed = Date.parse(newest?.date ?? "") - (newest?.exposure ?? 0) * 1000;
+  return {
+    kind,
+    warning,
+    left: Math.max(grace - (now - since) / 1000, 0),
+    lit: exposed > since,
+  };
+}
+
+/** The guider status as the Guiding heading names it: "Active", "Lost lock". */
+export function guiderStatus(status) {
+  return { Guiding: "Active", LostLock: "Lost lock" }[status] ?? status;
+}
+
 // The depths a camera's ADC delivers, or N.I.N.A. scales to.
 const ADC_BITS = [12, 14, 16];
 
@@ -220,4 +347,19 @@ export function aduFullScale(maxima) {
  */
 export function displayed(q, decimals) {
   return q ? q.value.toFixed(q.precision ?? decimals) : null;
+}
+
+/**
+ * A quantity's number to at least `digits` significant figures, its whole part
+ * never cut short and no trailing zeros, or `null` for none. For a reading that
+ * spans orders of magnitude, such as illuminance from a dark sky to noon,
+ * where any fixed number of decimals either pads one end or zeroes the other.
+ * A precision the registry gives takes precedence.
+ */
+export function significant(q, digits) {
+  if (!q) return null;
+  if (q.precision !== null) return q.value.toFixed(q.precision);
+  if (q.value === 0) return "0";
+  const whole = Math.floor(Math.log10(Math.abs(q.value))) + 1;
+  return String(Number(q.value.toFixed(Math.max(0, digits - whole))));
 }

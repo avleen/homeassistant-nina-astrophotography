@@ -40,12 +40,22 @@ from .api.models import (
 )
 from .api.v2 import NinaClientV2, NinaEventStream
 from .api.v2.events import MAX_RECONNECT_DELAY
-from .const import CONF_HOST, DEFAULT_OUTAGE_GRACE, DEFAULT_ROLLOVER_HOUR
-from .derive import flip_offset_minutes
+from .const import (
+    CONF_HOST,
+    DEFAULT_OUTAGE_GRACE,
+    DEFAULT_ROLLOVER_HOUR,
+    DEFAULT_WEATHER_FREEZE_STATION,
+    DEFAULT_WEATHER_FREEZE_WEB,
+    WEATHER_FREEZE_LIT_NIGHT,
+)
+from .derive import flip_offset_minutes, sun_altitude
 from .device import KINDS
 from .polling import (
+    CoverClosedLatch,
+    CoverFaultHold,
     EndedWait,
     EventLedger,
+    FreezeWindows,
     GuiderStopLatch,
     OutageGrace,
     ReseedGuard,
@@ -53,12 +63,15 @@ from .polling import (
     TierSchedule,
     Wait,
     WaitLedger,
+    WeatherFreeze,
     imaging,
 )
 from .sequence import current_wait, running, target_name
 from .session import (
     DEFAULT_AUTOFOCUS_TIMEOUT,
+    RecentFrame,
     fold,
+    last_cover_move,
     latest_stack,
     latest_target,
     meridian_flip,
@@ -118,6 +131,7 @@ _NO_PROFILE = ProfileSettings(
     dome_park_mount_before_shutter_move=None,
     dome_park_before_shutter_move=None,
     dome_find_home_before_park=None,
+    rotator_range=None,
 )
 
 
@@ -142,8 +156,9 @@ class NinaData:
     autofocus_report: AutoFocusReport | None
     """The newest `/equipment/focuser/last-af`, or `None` if none was ever run.
     It survives a restart, so it is dated against the session before use."""
-    recent_frames: tuple[Frame, ...]
-    """The newest frames of any type, newest first, bounded."""
+    recent_frames: tuple[RecentFrame, ...]
+    """The newest frames of any type, then the newest lights, newest first,
+    bounded. See `session.recent_frames`."""
     profile: ProfileSettings
     generation: str | None
     version: VersionInfo
@@ -165,6 +180,16 @@ class NinaData:
     star."""
     meridian_flip: MeridianFlip | None
     """The flip N.I.N.A. is in, its wait with tracking off included, or None."""
+    light_behind_cover: bool
+    """Whether the newest frame is a light saved since the flat panel's cover
+    was seen closed. See `CoverClosedLatch`."""
+    cover_fault_held: str | None
+    """A disconnected flat panel's last cover reading, while it is a fault
+    N.I.N.A. has not resolved since; `None` while the panel is connected. See
+    `CoverFaultHold`."""
+    weather_frozen_since: datetime | None = None
+    """The first poll that read the weather source's current readings, once
+    every one has held for its window; `None` otherwise. See `WeatherFreeze`."""
     reachable: bool = True
     """Whether N.I.N.A. answered the last poll. False while an outage is held
     within its grace, and kept false once the coordinator fails, so the one
@@ -176,7 +201,7 @@ class NinaData:
         is the newest light inside the session window, so after a flat run or
         the rollover the two differ.
         """
-        return self.recent_frames[0] if self.recent_frames else None
+        return self.recent_frames[0].frame if self.recent_frames else None
 
 
 class NinaCoordinator(DataUpdateCoordinator[NinaData]):
@@ -201,6 +226,10 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
         version: VersionInfo = VersionInfo(None, None),
         rollover_hour: int = DEFAULT_ROLLOVER_HOUR,
         outage_grace: timedelta = timedelta(seconds=DEFAULT_OUTAGE_GRACE),
+        weather_freeze_station: timedelta = timedelta(
+            minutes=DEFAULT_WEATHER_FREEZE_STATION
+        ),
+        weather_freeze_web: timedelta = timedelta(minutes=DEFAULT_WEATHER_FREEZE_WEB),
     ) -> None:
         super().__init__(
             hass,
@@ -229,6 +258,15 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
         self._reseed_guard = ReseedGuard()
         self._ledger = EventLedger()
         self._guider_stop = GuiderStopLatch()
+        self._cover = CoverClosedLatch()
+        self._cover_fault = CoverFaultHold()
+        self._weather_freeze = WeatherFreeze(
+            FreezeWindows(
+                station=weather_freeze_station,
+                web=weather_freeze_web,
+                lit_night=WEATHER_FREEZE_LIT_NIGHT,
+            )
+        )
         self._waits = WaitLedger()
         self._seeded = False
         self._replayed = False
@@ -299,6 +337,9 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
         )
         self._log_connection_changes(snapshot)
         self._hold_flip_reading(snapshot, read_at)
+        self._weather_freeze.observe(
+            snapshot.weather, read_at, self._sun_altitude(read_at)
+        )
         await self._run_tiers(snapshot, count)
         self._last_snapshot = snapshot
         if not self._replayed:
@@ -669,6 +710,9 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
             now=moment,
             rollover_hour=self._rollover_hour,
         )
+        recent = recent_frames(self.frames.values(), self.generation)
+        flat = snapshot.flat_device
+        move = last_cover_move(self.events, self.generation)
         return NinaData(
             snapshot=snapshot,
             session=session,
@@ -682,7 +726,7 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
                 or target_name(self._sequence)
             ),
             autofocus_report=self._last_autofocus,
-            recent_frames=recent_frames(self.frames.values(), self.generation),
+            recent_frames=recent,
             profile=self._profile,
             generation=self.generation,
             version=self._version,
@@ -694,8 +738,23 @@ class NinaCoordinator(DataUpdateCoordinator[NinaData]):
                 pending_guider_stop(self.events, self.generation)
             ),
             meridian_flip=self._meridian_flip(moment),
+            light_behind_cover=self._cover.update(
+                flat, recent[0].frame if recent else None, move
+            ),
+            cover_fault_held=self._cover_fault.update(flat, move),
+            weather_frozen_since=self._weather_freeze.frozen_since,
             reachable=self._reachable,
         )
+
+    def _sun_altitude(self, moment: datetime) -> float | None:
+        """At the rig's site, or Home Assistant's while the profile names none."""
+        latitude = self._profile.site_latitude
+        longitude = self._profile.site_longitude
+        if latitude is None or longitude is None:
+            latitude, longitude = self.hass.config.latitude, self.hass.config.longitude
+        if latitude is None or longitude is None:
+            return None
+        return sun_altitude(latitude, longitude, moment)
 
     def _hold_flip_reading(
         self, snapshot: EquipmentSnapshot, read_at: datetime

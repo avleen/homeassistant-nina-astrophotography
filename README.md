@@ -14,9 +14,9 @@ It provides:
 - buttons and actions to cool, slew, park, focus and run sequences
 - Home Assistant events for everything N.I.N.A. reports
 - eight dashboard cards
-- six automation blueprints
+- ten automation blueprints
 
-![Six of the dashboard cards on a live rig: the observatory and autofocus cards, the weather and sky map cards, and the latest image and frame statistics cards](https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/dashboard.png)
+![The dashboard cards on a live rig imaging Sh2 132: the observatory card above a pier camera, the weather, autofocus and sky map cards, and the live stack, latest image and frame statistics cards](https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/dashboard.png)
 
 This is a maintained fork of
 [C3X0Astro/homeassistant-nina-astrophotography](https://github.com/C3X0Astro/homeassistant-nina-astrophotography),
@@ -88,7 +88,7 @@ along with the rest of HACS.
 The Marketplace (or HACS) offers each new release as an update. Updating a
 loaded integration takes effect after a restart; the Marketplace raises a
 repair with a restart button. Update a manual install by replacing the folder
-and restarting.
+and restarting. The [blueprints](#blueprints) update with the integration.
 
 ## Setup
 
@@ -128,6 +128,8 @@ Configure**. Saving reloads the entry.
 |---|---|---|---|
 | **Session Rollover Hour** | 12 | 0–23 | The hour, on the imaging PC's clock, where one session ends and the next begins. If that clock runs UTC, set it to a real midday on site, or a night's statistics split in two. |
 | **Outage Grace Period** | 30 s | 0–300 s | How long N.I.N.A. may stop answering before its entities go `unavailable`. Until then they keep their last values. `0` marks them unavailable on the first failed poll. `binary_sensor.<instance>_reachable` turns `off` at once either way. |
+| **Weather Station Freeze Window** | 60 min | 10–720 min | How long every reading of a weather station may hold exactly the same before `binary_sensor.<instance>_weather_readings_frozen` turns `on`. Give a station that reports in coarse steps longer. |
+| **Web Weather Source Freeze Window** | 120 min | 20–720 min | The same, for N.I.N.A.'s own web sources. Set it above your provider's refresh interval: N.I.N.A. queries every ten minutes, but the provider may update less often. |
 
 ## Data updates
 
@@ -198,10 +200,10 @@ type: custom:nina-observatory-card
 
 | Card | Shows | Options (all optional) |
 |---|---|---|
-| `custom:nina-observatory-card` | Session summary, equipment status, meridian countdown, camera/mount/focuser readings, rotator angles, guiding, last frame, and controls. Stop, park, and opening or closing the dome ask for confirmation; Open Dome is disabled unless the safety monitor reads safe. | — |
+| `custom:nina-observatory-card` | Session summary, equipment status, meridian countdown, a countdown to the end of a sequence wait, camera/mount/focuser readings, rotator angles, flat panel, the guider's status and RMS, last frame, and controls. Stop, park, and opening or closing the dome or the flat panel's cover ask for confirmation; Open Dome is disabled unless the safety monitor reads safe. | `cover_stuck_after`: seconds the flat panel's cover may read part-way before the card shows it as stuck (default 60, 20 to 600); set it a little longer than your cover takes to open or close plus the 10 s between reads |
 | `custom:nina-frame-stats-card` | HFR, star count and ADU trends for the session's frames, and a per-filter breakdown | — |
 | `custom:nina-autofocus-card` | The last autofocus run: measured points, fitted curves, final position, and whether it passed your R² threshold | `temperature_delta`: flag when the focuser has drifted this many °C since the run (default: your sequence's "AF After Temperature Change" trigger, else 2) |
-| `custom:nina-image-panel-card` | The latest frame, recent frames, their statistics, and a countdown for the sub being exposed | `refresh_on_save`, `stretch`, `show_histogram`, `show_strip` (all default `true`); `strip_count` (default 6, max 20); `quality` (JPEG, default 85) |
+| `custom:nina-image-panel-card` | The latest frame, recent frames, their statistics, and a countdown for the sub being exposed | `refresh_on_save`, `stretch`, `show_histogram`, `show_strip` (all default `true`); `strip_count` (default 6, max 20); `quality` (JPEG, default 85); `lights_only`: show only lights in the image and the strip (default `false`); a browser that presses the card's Lights only button away from this keeps its own choice, unless `show_strip` is off |
 | `custom:nina-livestack-card` | The Livestack plugin's stacks this session: pick a target and filter from chips showing each stack's frame count, start or stop stacking, and open a stack full screen to zoom and pan. Needs the Livestack plugin | `follow_latest`: show whichever stack updated last, or keep the one shown until you pick another (default `true`); `show_controls`: the start/stop button (default `true`); `quality` (JPEG, default 85) |
 | `custom:nina-site-camera-card` | A pier, all-sky or observatory camera in the same frame as the other cards, from any camera or image entity in Home Assistant. With two or more, chips under the picture choose between them. Tap the picture for the entity's more-info dialog, where a camera's live stream plays | `cameras` (required): a list, each with an `entity`, and optionally a `name` and a `url` shown as an **Open** link over the picture; `title` (default "Site Cameras"); `refresh_interval`: seconds between a camera's pictures (default 10, minimum 2) |
 | `custom:nina-sky-map-card` | A star chart with the telescope's pointing, recent positions and the meridian | `trail_length` (default 60); `map_size` in px (default 320); `latitude` to override the site |
@@ -212,17 +214,38 @@ type: custom:nina-observatory-card
 | <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/observatory.png" alt="Observatory card" width="260"> | <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/image-panel.png" alt="Latest image card" width="260"> | <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/sky-map.png" alt="Sky map card" width="260"> |
 | **Weather** | **Autofocus** | **Frame statistics** |
 | <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/weather.png" alt="Weather card" width="260"> | <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/autofocus.png" alt="Autofocus card" width="260"> | <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/frame-stats.png" alt="Frame statistics card" width="260"> |
-| **Live stack** | | |
-| <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/livestack.png" alt="Live stack card: Sh2 132's R stack at 7 frames, with chips for Latest, G 13 and R 7" width="260"> | | |
+| **Live stack** | **Site camera** | |
+| <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/livestack.png" alt="Live stack card: Sh2 132's R stack at 15 frames, with chips for Latest, G 4 and R 15" width="260"> | <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/site-camera.png" alt="Site camera card: a pier camera's all-sky view over the telescope, with an Open link" width="260"> | |
 
 With a dome, the observatory card adds a Dome chip and Open or Close Dome:
 
 <img src="https://raw.githubusercontent.com/dgivens/homeassistant-nina-astrophotography/main/docs/images/cards/observatory-dome.png" alt="Observatory card with a dome: a Dome chip, and Close Dome among the controls" width="260">
 
-With a rotator, it adds a Rotator chip and the sky angle, shown once a plate
-solve syncs the rotator. Enable `number.<instance>_rotator_mechanical_position`
-to add the mechanical angle. On an upgraded install, also enable
-`binary_sensor.<instance>_rotator_synced`.
+With a rotator, it adds a Rotator chip, the mechanical angle, and the sky
+angle, shown once a plate solve syncs the rotator.
+
+With a flat panel, it adds a Flat Panel chip, whether the cover is open and
+the light on, and the brightness in the panel's own units, and Open or Close
+Flat Cover, greyed out while the cover moves; Open Flat Cover is also greyed
+out while the light is on, and Close Flat Cover asks first, then forces the
+close, while a sequence runs. N.I.N.A. reports a cover stuck
+part-way the same as one still moving, so a cover part-way for longer than
+`cover_stuck_after` (a minute by default) counts as stuck: it turns the chip
+red and offers both buttons, as a cover in error or not read does. The card
+keeps a held cover fault and the behind-cover warning while the panel is
+disconnected. An ASCOM
+panel reads brightness 0 while its light is off. A light frame exposed after
+the cover closed turns the chip red too: that frame is blank, and so is every
+light after it until the cover opens.
+
+The Guiding heading names what the guider is doing: Active while it guides,
+or Stopped, Lost lock, Looping, Paused or Calibrating. While a sequence runs,
+the Guider chip turns orange once the guider has not guided for three minutes
+and a light begun since has been saved, which leaves that light unguided:
+guiding stopped, the guide star lost, or PHD2 looping, paused or calibrating.
+Not during a meridian flip or a sequence wait, and not for an autofocus run or
+a plate solve, which save no light. To image unguided on purpose, disconnect
+the guider in N.I.N.A., and the card stops warning.
 
 Tap or click a card's header to collapse the card, or a section's heading,
 such as **ADU range** or **Wind**, to collapse that section. A collapsed
@@ -237,10 +260,14 @@ sees the same thing, and a private window forgets on reload.
 A collapsed card still shows what needs attention:
 
 - **Weather**: the safety status and the dew alert.
-- **Observatory**: a lost or unresponsive link, a meridian flip, a dome
-  shutter error, and, while a sequence runs, a disconnected camera or mount
-  or stopped guiding. Stop Sequence, Park and Close Dome stay, each while it
-  applies, and a collapsed **Controls** section keeps them too.
+- **Observatory**: in its header, a sequence wait's countdown; below it, a
+  lost or unresponsive link, a meridian flip, a dome shutter or flat panel
+  cover error, a flat panel cover stuck part-way, light frames behind the
+  closed flat cover, and, while a sequence runs, a
+  disconnected camera or mount, or a guider that has not guided for three
+  minutes while lights are saved. Stop Sequence, Park and
+  Close Dome stay, each while it applies, and a collapsed **Controls** section
+  keeps them too.
 - **Autofocus**: a failed run.
 - **Live stack**: whether stacking is running or N.I.N.A. is unreachable, and
   Start/Stop. It asks N.I.N.A. for no stack while collapsed, and on expanding
@@ -281,21 +308,39 @@ lovelace:
 
 ## Blueprints
 
-To add one, go to **Settings → Automations & Scenes → Blueprints → Import
-Blueprint** and paste its URL from the table. Then click **Create automation**
-on the imported blueprint and pick your rig's entities.
+The integration installs these blueprints itself, so they are already under
+**Settings → Automations & Scenes → Blueprints**. Click **Create automation**
+on one and pick your rig's entities.
 
 | Blueprint | What it does |
 |---|---|
-| [Unsafe conditions abort](https://github.com/dgivens/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/weather_abort.yaml) | When the safety monitor reports unsafe or stops reporting: stop the sequence, park, warm the camera and, if you enable it, close the dome once the mount confirms park — given the shutter status, it alerts if the dome does not close. Can resume when conditions clear. Notifies when N.I.N.A. itself stops answering, soonest with the rig's Reachable sensor. |
-| [Session startup](https://github.com/dgivens/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/session_startup.yaml) | At a set time, if the safety monitor reads safe: unpark, optionally open the dome, cool the camera and wait out the ramp, check safety again, then load a named sequence (or keep the loaded one) and start it. It leaves tracking to the sequence's first slew. |
-| [Session shutdown](https://github.com/dgivens/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/session_shutdown.yaml) | At a set time, first waits up to two hours for the sequence to finish (on by default), then stops it if it's still running, parks, optionally closes the dome over a parked mount — alerting if it does not close — and warms the camera. |
-| [Meridian flip warning](https://github.com/dgivens/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/meridian_flip_warning.yaml) | Notifies before a meridian flip, when it starts, and when it finishes. |
-| [Guiding alert](https://github.com/dgivens/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/guiding_alert.yaml) | Notifies, and optionally runs autofocus, when guiding RMS stays high. |
-| [Imaging stall alert](https://github.com/dgivens/homeassistant-nina-astrophotography/blob/main/blueprints/automation/nina_astrophotography/imaging_stall_alert.yaml) | Notifies when frames stop for a bad reason (N.I.N.A. unreachable, mount parked mid-sequence, no frames), and clears when they resume. [Details](docs/reference.md#the-imaging-stall-alert-blueprint). |
+| [Unsafe conditions abort](custom_components/nina_astrophotography/blueprints/weather_abort.yaml) | When the safety monitor reports unsafe or stops reporting: stop the sequence, park, warm the camera and, if you enable it, close the dome once the mount confirms park — given the shutter status, it alerts if the dome does not close. Can resume when conditions clear. Notifies when N.I.N.A. itself stops answering, soonest with the rig's Reachable sensor. |
+| [Session startup](custom_components/nina_astrophotography/blueprints/session_startup.yaml) | At a set time, if the safety monitor reads safe: unpark, optionally open the dome, cool the camera and wait out the ramp, check safety again, then load a named sequence (or keep the loaded one) and start it. It leaves tracking to the sequence's first slew. |
+| [Session shutdown](custom_components/nina_astrophotography/blueprints/session_shutdown.yaml) | At a set time, first waits up to two hours for the sequence to finish (on by default), then stops it if it's still running, parks, optionally closes the dome over a parked mount — alerting if it does not close — and warms the camera. |
+| [Meridian flip warning](custom_components/nina_astrophotography/blueprints/meridian_flip_warning.yaml) | Notifies before a meridian flip, when it starts, and when it finishes. |
+| [Guiding alert](custom_components/nina_astrophotography/blueprints/guiding_alert.yaml) | Notifies, and optionally runs autofocus, when guiding RMS stays high. |
+| [Guider not guiding](custom_components/nina_astrophotography/blueprints/guider_not_guiding_alert.yaml) | Notifies when lights are saved while the guider has not guided for a set time (3 minutes by default): the guide star lost, PHD2 looping, paused or calibrating, or guiding stopped, as when the guide camera drops out. Not during a meridian flip or a sequence wait. [Details](docs/reference.md#the-guider-not-guiding-blueprint). |
+| [Flat cover closed on lights](custom_components/nina_astrophotography/blueprints/cover_closed_alert.yaml) | Notifies when a light frame is saved with the flat panel's cover closed. Flats and darks behind it don't alert, and neither does closing it after the night's last light. A panel switched off for the night stays quiet, and so does its reconnecting for the flats. [Details](docs/reference.md#flat-panel-cover-and-light). |
+| [Flat cover fault](custom_components/nina_astrophotography/blueprints/cover_fault_alert.yaml) | Notifies when the flat panel's cover reports an error, or stays part-way longer than it takes to travel (60 seconds by default), since some drivers never report a stuck cover as an error. Optionally alerts only on a cover that reached part-way from open or closed, for drivers that read part-way while idle. [Details](docs/reference.md#flat-panel-cover-and-light). |
+| [Flat panel left lit](custom_components/nina_astrophotography/blueprints/flat_panel_left_lit_alert.yaml) | Notifies when the flat panel's light has been on for a set time (30 minutes by default) with no flat saved by the same rig; each flat restarts the count. Relies on the event socket. [Details](docs/reference.md#the-flat-panel-left-lit-blueprint). |
+| [Weather readings frozen](custom_components/nina_astrophotography/blueprints/weather_frozen_alert.yaml) | Notifies when every reading of the weather source has stopped changing while N.I.N.A. still reports it connected, which leaves a safety monitor fed by the same station reading safe whatever the sky. [Details](docs/reference.md#weather). |
+| [Imaging stall alert](custom_components/nina_astrophotography/blueprints/imaging_stall_alert.yaml) | Notifies when frames stop for a bad reason (N.I.N.A. unreachable, mount parked mid-sequence, no frames), and clears when they resume. [Details](docs/reference.md#the-imaging-stall-alert-blueprint). |
 
-Alternatively, copy the `blueprints/automation/nina_astrophotography/` folder
-into `config/blueprints/automation/` and reload automations.
+They live in `config/blueprints/automation/nina_astrophotography/`, and each
+start of Home Assistant brings them up to the installed release, so every
+automation built from one picks up its fixes without you doing anything. An
+input a release has shipped keeps its name, and a new one comes with a
+default, so an automation keeps working across updates.
+
+That folder belongs to the integration: an edit to a file in it is overwritten
+by the next update. To change what an automation does, open it and choose
+**⋮ → Take control**, which turns it into an ordinary automation you can edit
+and which no update touches.
+
+A copy imported from GitHub, under `config/blueprints/automation/dgivens/`, is
+never updated. An automation still using one raises a repair saying how to
+move it onto the installed copy. Restart Home Assistant after moving them:
+until then the repair may stay open and the old copy may refuse to delete.
 
 ## Actions
 
@@ -315,7 +360,12 @@ command, not when the equipment finishes.
 | `focuser_move` | Move the focuser to an absolute position |
 | `focuser_auto_focus` | Run an autofocus with N.I.N.A.'s configured method, outside the sequence |
 | `filterwheel_change_filter` | Change filter |
+| `flat_panel_set_cover` | Open or close the flat panel's cover. Opening is refused while the panel is lit, and closing while a sequence runs unless forced, since closing mid-exposure ruins the frame |
+| `flat_panel_set_light` | Switch the flat panel's light on or off. A panel with a cover is lit only while the cover reads `Closed`. It comes on at the brightness given, else at the level it is already lit at, else at its dimmest, and never at full output. The light is switched on only once the panel reports that brightness; a panel that does not within 30 seconds, or reports no brightness range, is refused |
+| `flat_panel_set_brightness` | Set the flat panel's brightness. An ASCOM panel lights at any level above 0 and goes dark at 0; a native Alnitak or Pegasus driver leaves the light as it is. On a panel with a cover, any level above the minimum is refused unless the cover reads `Closed`. A panel reporting no brightness range is refused. [What a level does to the light](docs/reference.md#flat-panel-cover-and-light) |
 | `guider_start` / `guider_stop` | Start / stop guiding |
+| `rotator_move` | Rotate to a sky position angle; refused until a plate solve syncs the rotator |
+| `rotator_move_mechanical` | Rotate to a mechanical angle within the rotator's range |
 | `dome_open` | Open the dome shutter; refused while the safety monitor reports unsafe |
 | `dome_close` / `dome_park` | Close the shutter / park the dome. Whether parking also closes the shutter is up to the dome's driver |
 | `sequence_load` | Load a sequence, without starting it |
@@ -338,15 +388,35 @@ Actions not listed here take no fields.
 | `mount_set_tracking` | `enabled` | yes | — | — | `true` tracks at the sidereal rate; `false` stops tracking. |
 | `focuser_move` | `position` | yes | — | 0 or more steps | Absolute focuser position. The API reports no maximum, so travel beyond the focuser's is left to N.I.N.A. and its driver. |
 | `filterwheel_change_filter` | `filter_index` | yes | — | one of the wheel's slots | **Zero-based** slot: the first filter is `0`. |
+| `flat_panel_set_cover` | `open` | yes | — | — | `true` opens the cover; `false` closes it. |
+| `flat_panel_set_cover` | `force` | no | `false` | — | Close the cover even while a sequence runs. Only when closing. |
+| `flat_panel_set_light` | `light_on` | yes | — | — | `true` lights the panel; `false` switches it off. |
+| `flat_panel_set_light` | `brightness` | no | the lit level, else the dimmest | above the panel's minimum, up to its maximum | The level to light the panel at, in the panel's own units. Only with `light_on: true`. |
+| `flat_panel_set_brightness` | `level` | yes | — | the panel's own minimum to maximum | In the panel's own units, not Home Assistant's 0–255: an Alnitak reports 0–255, a Pegasus FlatMaster 20–220, a DeepSkyDad FP 0–4096. Use `flat_panel_set_light` to switch off: what `0` does depends on the driver. |
 | `guider_start` | `force_calibration` | no | `false` | — | Calibrate before guiding starts. |
+| `rotator_move` | `position` | yes | — | 0–360° | Sky position angle. On a rotator kept to a half or quarter range, N.I.N.A. turns to the equivalent angle within it: a half range can land 180° away, the same framing upside down. |
+| `rotator_move_mechanical` | `position` | yes | — | 0–360°, within the rotator's range | The rotator's own angle, whatever the sky angle. |
 | `sequence_load` | `sequence_name` | yes | — | — | The sequence's name as N.I.N.A. lists it, without the `.ninasequence` extension. Not a path. |
 
 Out-of-range values are rejected with an error rather than sent to N.I.N.A.,
 which would silently clamp them. That holds for the fixed limits above and for
 the ranges the connected equipment reports: the camera's maximum exposure and
-its gain range, and the filter wheel's slots. Equipment that reports no range,
-or is disconnected, leaves the value to N.I.N.A., as does the focuser's upper
-limit. There is no dither action; the API doesn't provide one.
+its gain range, the filter wheel's slots, and the flat panel's brightness
+range. A panel reporting no cover or no light has that action refused.
+Other equipment that reports no range, or is disconnected, leaves the value to
+N.I.N.A., as does the focuser's upper limit; a flat panel reporting no
+brightness range, which a disconnected one does too, has a brightness or a
+switch on refused, since N.I.N.A. could light it at full output.
+
+The rotator's range is N.I.N.A.'s, from its profile: a full, half or quarter
+turn from a start angle, set in the rotator's settings in N.I.N.A., and it can
+wrap past 0°. A mechanical angle outside it is refused, since N.I.N.A. would
+turn to a different angle instead. `rotator_move` is refused until a plate
+solve syncs the rotator (`binary_sensor.<instance>_rotator_synced`), since
+N.I.N.A. would accept the move and leave the rotator where it is. Reversing the
+rotator in N.I.N.A., or with `switch.<instance>_rotator_reverse`, leaves it
+reported as synced, but the sky angle can be wrong until the next plate solve
+with sync. The two rotator numbers are held to the same rules. There is no dither action; the API doesn't provide one.
 
 ```yaml
 - alias: "Cool the camera before sunset"
@@ -535,9 +605,9 @@ behind, pointing at a route nothing serves.
    `/nina_astrophotography_static/` entries yourself.
 2. **Remove the cards** from your dashboards. A card left behind shows
    "Custom element doesn't exist".
-3. **Delete the automations** you built from the blueprints, then the
-   blueprints themselves under **Settings → Automations & Scenes →
-   Blueprints**, or delete `config/blueprints/automation/nina_astrophotography/`.
+3. **Delete the automations** you built from the blueprints, then delete
+   `config/blueprints/automation/nina_astrophotography/`, and any copies you
+   imported under `config/blueprints/automation/dgivens/`.
 4. **Remove the integration's files**: remove N.I.N.A. Astrophotography in
    **Settings → Marketplace** (or HACS), or delete
    `config/custom_components/nina_astrophotography/` if you installed it by
@@ -545,6 +615,9 @@ behind, pointing at a route nothing serves.
 5. **Restart Home Assistant.**
 
 ## Development
+
+Looking for something to work on? [`docs/feature-ideas.md`](docs/feature-ideas.md)
+lists features written up far enough to start an issue from.
 
 > [!NOTE]
 > **AI-Assisted Development**

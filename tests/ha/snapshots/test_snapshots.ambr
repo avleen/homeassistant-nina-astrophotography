@@ -30,6 +30,13 @@
       'unique_id': '01JTESTENTRY0000000000000_filterwheel_is_moving',
     }),
     dict({
+      'enabled_default': True,
+      'entity_category': None,
+      'entity_id': 'binary_sensor.n_i_n_a_flat_panel_light_frames_behind_closed_cover',
+      'original_name': 'Light frames behind closed cover',
+      'unique_id': '01JTESTENTRY0000000000000_flat_panel_light_frames_behind_closed_cover',
+    }),
+    dict({
       'enabled_default': False,
       'entity_category': <EntityCategory.DIAGNOSTIC: 'diagnostic'>,
       'entity_id': 'binary_sensor.n_i_n_a_focuser_moving',
@@ -80,7 +87,7 @@
     }),
     dict({
       'enabled_default': True,
-      'entity_category': <EntityCategory.DIAGNOSTIC: 'diagnostic'>,
+      'entity_category': None,
       'entity_id': 'binary_sensor.n_i_n_a_rotator_synced',
       'original_name': 'Synced',
       'unique_id': '01JTESTENTRY0000000000000_rotator_synced',
@@ -112,6 +119,13 @@
       'entity_id': 'binary_sensor.n_i_n_a_sequencer_running',
       'original_name': 'Sequencer running',
       'unique_id': '01JTESTENTRY0000000000000_sequencer_running',
+    }),
+    dict({
+      'enabled_default': True,
+      'entity_category': None,
+      'entity_id': 'binary_sensor.n_i_n_a_weather_readings_frozen',
+      'original_name': 'Readings frozen',
+      'unique_id': '01JTESTENTRY0000000000000_weather_frozen',
     }),
   ])
 # ---
@@ -246,8 +260,8 @@
       'unique_id': '01JTESTENTRY0000000000000_focuser_position_control',
     }),
     dict({
-      'enabled_default': False,
-      'entity_category': <EntityCategory.CONFIG: 'config'>,
+      'enabled_default': True,
+      'entity_category': None,
       'entity_id': 'number.n_i_n_a_rotator_mechanical_position',
       'original_name': 'Mechanical position',
       'unique_id': '01JTESTENTRY0000000000000_rotator_mechanical_position',

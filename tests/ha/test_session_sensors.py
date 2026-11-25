@@ -82,19 +82,41 @@ async def test_the_breakdowns_are_attributes_not_entities(
     assert set(state_of(hass, SESSION_AVG_HFR).attributes[attribute]) == expected
 
 
-async def test_recent_frames_is_every_type_newest_first_and_bounded(
+async def test_recent_frames_are_the_newest_frames_then_the_newest_lights(
     hass: HomeAssistant, loaded_entry: MockConfigEntry, advance
 ) -> None:
-    """Unlike the sensor's own LIGHT-only state, `recent_frames` is every type
-    this process saved, each carrying its own, which a dashboard's strip must
-    label correctly whatever it lands on: filter alone cannot tell a flat from
-    a light. The newest frame of the night is a flat (see the
-    ignores-calibration test above).
+    """The night ends on 67 flats, more than the newest frames hold, so a
+    lights-only strip needs the lights behind them, at the age the image proxy
+    fetches each by.
     """
     await advance("dawn_flats")
     recent = state_of(hass, LAST_IMAGE_MEAN_ADU).attributes["recent_frames"]
-    assert len(recent) == 20
-    assert recent[0]["image_type"] == "FLAT"
+    assert [(f["image_type"], f["age"]) for f in recent] == [
+        *(("FLAT", age) for age in range(20)),
+        *(("LIGHT", age) for age in range(67, 87)),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("state", "lights"),
+    [("imaging_guiding", 20), ("scheduler_waiting_lost_lock", 8)],
+)
+async def test_recent_frames_list_a_light_among_the_newest_frames_once(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    rig,
+    set_up_at,
+    state: str,
+    lights: int,
+) -> None:
+    """With no calibration run behind them, the newest lights are the newest
+    frames, and a light listed as both would be two tiles in the strip.
+    """
+    await set_up_at(hass, config_entry, rig, state)
+    recent = state_of(hass, LAST_IMAGE_MEAN_ADU).attributes["recent_frames"]
+    assert [(f["image_type"], f["age"]) for f in recent] == [
+        ("LIGHT", age) for age in range(lights)
+    ]
 
 
 def _number(state: str):
@@ -168,6 +190,18 @@ async def test_recent_lights_carry_each_lights_max(
     await advance("dawn_flats")
     lights = state_of(hass, LAST_IMAGE_HFR).attributes["recent_lights"]
     assert {light["max"] for light in lights} == {65535}
+
+
+@pytest.mark.parametrize(("field", "value"), [("gain", 100), ("offset", 50)])
+async def test_recent_lights_carry_each_lights_camera_settings(
+    hass: HomeAssistant, loaded_entry: MockConfigEntry, advance, field: str, value: int
+) -> None:
+    """The card's newest run is keyed on these: gain moves star count and ADU
+    by whole factors, as exposure does.
+    """
+    await advance("dawn_flats")
+    lights = state_of(hass, LAST_IMAGE_HFR).attributes["recent_lights"]
+    assert {light[field] for light in lights} == {value}
 
 
 async def test_the_session_start_sensor_is_the_most_recent_local_noon(

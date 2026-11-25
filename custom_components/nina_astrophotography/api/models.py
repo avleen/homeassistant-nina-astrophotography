@@ -583,8 +583,10 @@ class SequenceWait:
 
     kind: SequenceWaitKind
     ends: datetime | None
-    """Wait for Time's target. The others name no end as a time: an altitude
-    wait's `ExpectedTime` is display text."""
+    """Wait for Time's target, to the second. An altitude wait's is N.I.N.A.'s
+    estimate, printed to the minute: a target's wait tends to end minutes
+    before it, a sun or moon wait up to a minute after. `None` where N.I.N.A.
+    places none. A Wait for Time Span names no end."""
     span_seconds: float | None = None
     """A Wait for Time Span's length; `None` on the other waits."""
 
@@ -669,6 +671,18 @@ class VersionInfo:
 
 
 @dataclass(frozen=True, slots=True)
+class RotatorRange:
+    """The mechanical arc N.I.N.A. keeps a rotator within, in degrees.
+
+    `span` is 360, 180 or 90, from `start` and wrapping past 0. N.I.N.A. folds
+    a target outside it by whole spans rather than refusing it.
+    """
+
+    start: float
+    span: float
+
+
+@dataclass(frozen=True, slots=True)
 class ProfileSettings:
     """The allowlisted slice of `/profile/show`."""
 
@@ -702,3 +716,4 @@ class ProfileSettings:
     dome_park_mount_before_shutter_move: bool | None
     dome_park_before_shutter_move: bool | None
     dome_find_home_before_park: bool | None
+    rotator_range: RotatorRange | None

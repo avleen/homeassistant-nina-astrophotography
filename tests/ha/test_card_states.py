@@ -12,12 +12,14 @@ fake rig, so it is the captured corpus one mapper and one platform table later.
 Regenerating is part of the snapshot commit, the same as `entity_ids.txt`.
 """
 
+from datetime import timedelta
 import json
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers.json import json_encoder_default
 from homeassistant.util.unit_system import (
     METRIC_SYSTEM,
     US_CUSTOMARY_SYSTEM,
@@ -25,7 +27,10 @@ from homeassistant.util.unit_system import (
 )
 import pytest
 
-from custom_components.nina_astrophotography.const import DOMAIN
+from custom_components.nina_astrophotography.const import (
+    DEFAULT_WEATHER_FREEZE_STATION,
+    DOMAIN,
+)
 from helpers import needs_node, run_node
 
 SNAPSHOTS = Path(__file__).parent / "snapshots"
@@ -44,8 +49,8 @@ class Dump(NamedTuple):
     # for one poll, inside the outage grace, or for good.
     missed: bool = False
     lost: bool = False
-    # Disabled registry rows to enable for this dump, before reloading.
-    enable: tuple[str, ...] = ()
+    # Whether the rig is polled again, unchanged, a weather freeze window on.
+    frozen: bool = False
 
 
 # `site_configured` rather than the `imaging_guiding` it derives from: it is the
@@ -63,9 +68,6 @@ class Dump(NamedTuple):
 # instance: Home Assistant's own conversion of the same readings, which is what
 # a card that assumed the integration's units would mislabel.
 #
-# `rotator_mechanical` is `site_configured` with the rotator's mechanical
-# position enabled.
-#
 # `nina_not_answering` is `site_configured` one missed poll later: every reading
 # still its last, and `reachable` off.
 #
@@ -77,17 +79,24 @@ class Dump(NamedTuple):
 # The `simulator_dome_*` dumps are the test VM's rig (`docs/test-vm.md`), the
 # only one with a dome: parked with the shutter closed, open and following the
 # mount, and parked when N.I.N.A. stops answering.
+#
+# `weather_frozen` is `scheduler_waiting_lost_lock`, whose station served a
+# midday reading through two nights, polled again a freeze window later.
+#
+# `scheduler_waiting` and `wait_for_time` are the two captured waits that name
+# their end: Target Scheduler's for a target's window, and the sequence's own
+# Wait for Time, each dumped from inside it. `simulator_altitude_wait` is the
+# test VM's Wait if Sun Altitude, whose end N.I.N.A. expects to the minute,
+# dumped as it was captured.
+#
+# `simulator_guider_looping_after_guiding` and `simulator_guider_paused` are the
+# test VM's guider running but not guiding, the corpus's only `Looping` and
+# `Paused`.
 DUMPS: dict[str, Dump] = {
     "site_configured": Dump("site_configured", None, METRIC_SYSTEM),
     "equipment_disconnected": Dump("equipment_disconnected", None, METRIC_SYSTEM),
     "dawn_flats": Dump("dawn_flats", "inside_the_dawn_session", METRIC_SYSTEM),
     "site_configured_us_customary": Dump("site_configured", None, US_CUSTOMARY_SYSTEM),
-    "rotator_mechanical": Dump(
-        "site_configured",
-        None,
-        METRIC_SYSTEM,
-        enable=("number.n_i_n_a_rotator_mechanical_position",),
-    ),
     "nina_not_answering": Dump("site_configured", None, METRIC_SYSTEM, missed=True),
     "nina_unreachable": Dump("site_configured", None, METRIC_SYSTEM, lost=True),
     "simulator_dome_parked": Dump("simulator_dome_parked", None, METRIC_SYSTEM),
@@ -95,6 +104,23 @@ DUMPS: dict[str, Dump] = {
     "simulator_dome_unreachable": Dump(
         "simulator_dome_parked", None, METRIC_SYSTEM, lost=True
     ),
+    "weather_frozen": Dump(
+        "scheduler_waiting_lost_lock",
+        "on_the_frozen_station_night",
+        METRIC_SYSTEM,
+        frozen=True,
+    ),
+    "scheduler_waiting": Dump(
+        "scheduler_waiting", "inside_the_scheduler_wait", METRIC_SYSTEM
+    ),
+    "wait_for_time": Dump("wait_for_time", "inside_the_wait_for_time", METRIC_SYSTEM),
+    "simulator_altitude_wait": Dump(
+        "simulator_altitude_wait", "inside_the_altitude_wait", METRIC_SYSTEM
+    ),
+    "simulator_guider_looping_after_guiding": Dump(
+        "simulator_guider_looping_after_guiding", None, METRIC_SYSTEM
+    ),
+    "simulator_guider_paused": Dump("simulator_guider_paused", None, METRIC_SYSTEM),
 }
 
 # Home Assistant mints these per run, so they are the one thing here that is not
@@ -201,6 +227,7 @@ async def test_the_card_harness_dump_is_current(
     rig,
     set_up_at,
     outage,
+    freezer,
     request: pytest.FixtureRequest,
     dump: str,
     setup: Dump,
@@ -214,24 +241,25 @@ async def test_the_card_harness_dump_is_current(
         request.getfixturevalue(setup.clock)
     hass.config.units = setup.units
     await set_up_at(hass, config_entry, rig, setup.rig_state)
-    if setup.enable:
-        registry = er.async_get(hass)
-        for entity_id in setup.enable:
-            registry.async_update_entity(entity_id, disabled_by=None)
-        await hass.config_entries.async_reload(config_entry.entry_id)
-        await hass.async_block_till_done()
     if setup.missed:
         rig.goto("nina_unreachable")
         await config_entry.runtime_data.coordinator.async_refresh()
         await hass.async_block_till_done()
     if setup.lost:
         await outage()
+    if setup.frozen:
+        freezer.tick(timedelta(minutes=DEFAULT_WEATHER_FREEZE_STATION))
+        await config_entry.runtime_data.coordinator.async_refresh()
+        await hass.async_block_till_done()
 
     current = json.loads(DUMP.read_text(encoding="utf-8")) if DUMP.exists() else {}
     # Round-tripped before comparing: an attribute Home Assistant holds as a
     # tuple comes back from the committed file as a list and is otherwise
     # unequal to itself for ever.
-    fresh = json.loads(json.dumps(_hass_for_a_card(hass, config_entry)))
+    # A datetime attribute is sent to the frontend as ISO text.
+    fresh = json.loads(
+        json.dumps(_hass_for_a_card(hass, config_entry), default=json_encoder_default)
+    )
     if current.get(dump) == fresh:
         return
 

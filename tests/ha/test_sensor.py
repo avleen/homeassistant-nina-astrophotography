@@ -12,13 +12,17 @@ rather than `unknown` by a rule of their own (§5.2.2).
 """
 
 import json
-from pathlib import Path
 
 from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+)
 
+from custom_components.nina_astrophotography.blueprint_sync import SHIPPED_DIR
 from ha.registry import registered
 from helpers import state_of
 
@@ -28,6 +32,7 @@ SEQUENCE_PROGRESS = "sensor.n_i_n_a_sequence_progress"
 WAIT_ENDS_AT = "sensor.n_i_n_a_wait_ends_at"
 LAST_FRAME_AT = "sensor.n_i_n_a_last_frame_at"
 EXPOSURE_END = "sensor.n_i_n_a_camera_exposure_end"
+COVER_STATE = "sensor.n_i_n_a_flat_panel_cover_state"
 GUIDER_RMS = (
     "sensor.n_i_n_a_guider_rms_total",
     "sensor.n_i_n_a_guider_rms_ra",
@@ -130,6 +135,8 @@ async def test_the_kept_sensors_keep_their_1_4_5_unique_id(
         "scheduler_waiting_lost_lock",
         "simulator_guider_calibrating",
         "simulator_guider_connected",
+        "simulator_guider_paused",
+        "simulator_guider_looping_after_guiding",
     ],
 )
 async def test_guide_rms_reads_unknown_unless_the_guider_is_guiding(
@@ -188,13 +195,7 @@ async def test_the_flip_sensor_publishes_the_offset_a_warning_needs(
 
 def test_the_blueprint_reads_the_attribute_by_that_name() -> None:
     """The other half of the seam: nothing else connects the two."""
-    blueprint = (
-        Path(__file__).resolve().parents[2]
-        / "blueprints"
-        / "automation"
-        / "nina_astrophotography"
-        / "meridian_flip_warning.yaml"
-    )
+    blueprint = SHIPPED_DIR / "meridian_flip_warning.yaml"
 
     assert "flip_fires_at_minutes" in blueprint.read_text(encoding="utf-8")
 
@@ -208,8 +209,17 @@ def test_the_blueprint_reads_the_attribute_by_that_name() -> None:
             "2026-09-16T02:05:40+00:00",
         ),
         ("wait_for_time", "2026-11-11T23:57:00+00:00", "2026-11-12T00:06:18+00:00"),
+        (
+            "simulator_altitude_wait",
+            "2026-11-24T01:58:00+00:00",
+            "2026-11-24T02:22:00+00:00",
+        ),
     ],
-    ids=["Target Scheduler's wait, 21:05:40 UTC-5", "Wait for Time, 18:06:18 UTC-6"],
+    ids=[
+        "Target Scheduler's wait, 21:05:40 UTC-5",
+        "Wait for Time, 18:06:18 UTC-6",
+        "Wait if Sun Altitude, expected 20:22 UTC-6",
+    ],
 )
 async def test_the_wait_end_is_published_in_utc_as_home_assistant_stores_it(
     hass: HomeAssistant,
@@ -228,6 +238,30 @@ async def test_the_wait_end_is_published_in_utc_as_home_assistant_stores_it(
     freezer.move_to(now)
     await set_up_at(hass, config_entry, rig, state)
     assert state_of(hass, WAIT_ENDS_AT).state == expected
+
+
+async def test_an_altitude_wait_first_read_past_its_estimate_ends_today(
+    hass: HomeAssistant, config_entry, rig, set_up_at, freezer
+) -> None:
+    """A restart or a mount connecting late leaves no earlier end to keep:
+    `20:22`, first read at 21:30.
+    """
+    freezer.move_to("2026-11-24T03:30:00+00:00")
+    await set_up_at(hass, config_entry, rig, "simulator_altitude_wait")
+    assert state_of(hass, WAIT_ENDS_AT).state == "2026-11-24T02:22:00+00:00"
+
+
+async def test_an_altitude_wait_overrun_by_hours_keeps_the_end_it_had(
+    hass: HomeAssistant, config_entry, rig, set_up_at, freezer
+) -> None:
+    """The dateless `20:22`, read again at 02:30, places on the next day."""
+    freezer.move_to("2026-11-24T01:58:00+00:00")
+    await set_up_at(hass, config_entry, rig, "simulator_altitude_wait")
+    freezer.move_to("2026-11-24T08:30:00+00:00")
+    async_fire_time_changed(hass, dt_util.utcnow())
+    await hass.async_block_till_done()
+
+    assert state_of(hass, WAIT_ENDS_AT).state == "2026-11-24T02:22:00+00:00"
 
 
 @pytest.mark.parametrize(
@@ -468,3 +502,37 @@ async def test_the_autofocus_readings_exist_before_a_run_reports(
     assert (
         state_of(hass, "sensor.n_i_n_a_focuser_autofocus_position").state == "unknown"
     )
+
+
+@pytest.mark.synthetic
+@pytest.mark.parametrize(
+    ("reading", "pushed", "shown"),
+    [
+        ("NeitherOpenNorClosed", [], "NeitherOpenNorClosed"),
+        ("Error", [], "Error"),
+        ("NeitherOpenNorClosed", ["FLAT-COVER-OPENED"], "unavailable"),
+        ("Open", [], "unavailable"),
+    ],
+    ids=["left part-way", "left in error", "opened since", "at rest"],
+)
+async def test_the_cover_state_keeps_an_unresolved_fault_through_a_disconnect(
+    hass: HomeAssistant,
+    set_up_with_flat_device,
+    flat_device_changes,
+    flat_panel_disconnects,
+    push,
+    reading: str,
+    pushed: list[str],
+    shown: str,
+) -> None:
+    """A panel powered off leaves its cover where it was, and the fault alert
+    times the reading.
+    """
+    await set_up_with_flat_device()
+    await flat_device_changes(cover_state=reading)
+    for name in pushed:
+        push({"Event": name})
+    await flat_panel_disconnects()
+    await hass.async_block_till_done()
+
+    assert state_of(hass, COVER_STATE).state == shown

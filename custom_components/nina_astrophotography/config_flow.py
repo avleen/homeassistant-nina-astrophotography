@@ -23,10 +23,14 @@ from .const import (
     CONF_OUTAGE_GRACE,
     CONF_PORT,
     CONF_ROLLOVER_HOUR,
+    CONF_WEATHER_FREEZE_STATION,
+    CONF_WEATHER_FREEZE_WEB,
     DEFAULT_INSTANCE_NAME,
     DEFAULT_OUTAGE_GRACE,
     DEFAULT_PORT,
     DEFAULT_ROLLOVER_HOUR,
+    DEFAULT_WEATHER_FREEZE_STATION,
+    DEFAULT_WEATHER_FREEZE_WEB,
     DOMAIN,
     normalize_host,
 )
@@ -50,7 +54,7 @@ class NinaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
     # `async_migrate_entry` brings an earlier minor version up to this one.
-    MINOR_VERSION = 3
+    MINOR_VERSION = 4
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -93,7 +97,11 @@ class NinaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     )
 
         return self.async_show_form(
-            step_id="user", data_schema=STEP_USER_SCHEMA, errors=errors
+            step_id="user",
+            # Home Assistant 2026.10 annotates a schema as probatio's, which
+            # stands in for voluptuous at runtime; 2026.9 imports only voluptuous.
+            data_schema=STEP_USER_SCHEMA,  # pyright: ignore[reportArgumentType]
+            errors=errors,
         )
 
     def _address_in_use(self, host: str, port: int) -> bool:
@@ -143,7 +151,7 @@ class NinaOptionsFlow(config_entries.OptionsFlowWithReload):
         options = self.config_entry.options
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(
+            data_schema=vol.Schema(  # pyright: ignore[reportArgumentType]
                 {
                     vol.Optional(
                         CONF_ROLLOVER_HOUR,
@@ -153,6 +161,20 @@ class NinaOptionsFlow(config_entries.OptionsFlowWithReload):
                         CONF_OUTAGE_GRACE,
                         default=options.get(CONF_OUTAGE_GRACE, DEFAULT_OUTAGE_GRACE),
                     ): vol.All(int, vol.Range(min=0, max=300)),
+                    vol.Optional(
+                        CONF_WEATHER_FREEZE_STATION,
+                        default=options.get(
+                            CONF_WEATHER_FREEZE_STATION, DEFAULT_WEATHER_FREEZE_STATION
+                        ),
+                    ): vol.All(int, vol.Range(min=10, max=720)),
+                    # N.I.N.A. queries a web source every ten minutes, so
+                    # anything shorter than two queries flags a working one.
+                    vol.Optional(
+                        CONF_WEATHER_FREEZE_WEB,
+                        default=options.get(
+                            CONF_WEATHER_FREEZE_WEB, DEFAULT_WEATHER_FREEZE_WEB
+                        ),
+                    ): vol.All(int, vol.Range(min=20, max=720)),
                 }
             ),
         )

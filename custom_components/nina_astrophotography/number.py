@@ -3,17 +3,26 @@
 **Ranges are the driver's own**, such as `MinBrightness`–`MaxBrightness`. They
 are the validation: `number.set_value` refuses a value outside them, and
 N.I.N.A. silently clamps one and answers `Success: true`. A driver reporting
-no usable range (`Min 0 / Max 0`) is refused here. Where no driver reports a
-range (the focuser, the cooling setpoint, and the geometric rotator and dome),
-the descriptor carries a constant.
+no usable range (`Min 0 / Max 0`) leaves the entity unavailable rather than
+offering Home Assistant's default 0–100. Where no driver reports a range (the
+focuser, the cooling setpoint, and the geometric rotator and dome),
+the descriptor carries a constant; the rotator's mechanical range is N.I.N.A.'s
+profile's, which can wrap past 0, so `check` holds it.
 
 **A switch device channel is a number when writable and wider than one step**,
 such as a dew heater at 0–100. Its range is the channel's own, and it reads
 `Value`, never `TargetValue`.
 
 **The state is the next poll's reading**, never the command's response.
-`flat_panel_brightness` is in driver units, not the light's 0–255, and 0 is
-not off.
+
+**`flat_panel_brightness` sends only `set-brightness`**, in driver units rather
+than the light's 0–255. What the panel does with it is the driver's: N.I.N.A.'s
+ASCOM CoverCalibrator driver, which also serves Alpaca panels, sets a
+brightness by calling `CalibratorOn`, so any level above 0 lights the panel and
+0 darkens it, while N.I.N.A.'s native drivers, such as Alnitak's and
+Pegasus's, leave the light as it is. So a level above the minimum is refused
+while a panel's cover reads anything but closed, and the entity is a box: a
+slider dragged by mistake on a 0–4096 panel would light it.
 """
 
 from collections.abc import Awaitable, Callable, Iterator
@@ -28,18 +37,20 @@ from homeassistant.components.number import (
 )
 from homeassistant.const import DEGREE, EntityCategory, Platform, UnitOfTemperature
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .api.models import SwitchChannelModel
 from .api.v2.client import NinaClientV2
-from .const import CAMERA_SETPOINT_RANGE, DOMAIN
+from .const import CAMERA_SETPOINT_RANGE
 from .coordinator import NinaConfigEntry, NinaCoordinator, NinaData
 from .device import (
     channel_key,
     channels_for,
+    raise_if_level_lights_open_panel,
+    raise_outside_rotator_range,
     read_field,
     refused_while_following,
+    refused_while_unsynced,
     supports,
 )
 from .entity import (
@@ -70,6 +81,9 @@ class NinaNumberDescription(NinaEntityDescription, NumberEntityDescription):
     kind: str
     command: Callable[[NinaClientV2, float], Awaitable[None]]
     bounds: Callable[[NinaData], tuple[float, float] | None] | None = None
+    check: Callable[[NinaData, float], None] | None = None
+    """Raises `ServiceValidationError` for a value the device would not take
+    as given, where `bounds` cannot say so."""
 
 
 DESCRIPTIONS: tuple[NinaNumberDescription, ...] = (
@@ -77,10 +91,11 @@ DESCRIPTIONS: tuple[NinaNumberDescription, ...] = (
         key="flat_panel_brightness",
         translation_key="flat_panel_brightness",
         native_step=1,
-        mode=NumberMode.SLIDER,
+        mode=NumberMode.BOX,
         kind="flat_device",
         value=read_field("flat_device", "brightness"),
         bounds=read_field("flat_device", "brightness_range"),
+        check=raise_if_level_lights_open_panel,
         command=lambda client, value: client.set_flat_brightness(round(value)),
     ),
     NinaNumberDescription(
@@ -134,6 +149,7 @@ DESCRIPTIONS: tuple[NinaNumberDescription, ...] = (
         mode=NumberMode.BOX,
         kind="rotator",
         # Sky position angle, meaningful only while `rotator_synced` is on.
+        refusal=refused_while_unsynced,
         value=read_field("rotator", "position"),
         command=lambda client, value: client.move_rotator(value),
     ),
@@ -145,10 +161,10 @@ DESCRIPTIONS: tuple[NinaNumberDescription, ...] = (
         native_step=0.01,
         native_unit_of_measurement=DEGREE,
         mode=NumberMode.BOX,
-        entity_category=EntityCategory.CONFIG,
-        entity_registry_enabled_default=False,
         kind="rotator",
         value=read_field("rotator", "mechanical_position"),
+        # 0-360 is the angle's domain; a profile range can wrap past 0.
+        check=raise_outside_rotator_range,
         command=lambda client, value: client.move_rotator_mechanical(value),
     ),
     NinaNumberDescription(
@@ -185,6 +201,10 @@ class NinaNumber(NinaDescribedEntity, NumberEntity):
         return description.bounds(self.coordinator.data)
 
     @property
+    def available(self) -> bool:
+        return super().available and self._range is not None
+
+    @property
     def native_min_value(self) -> float:
         bounds = self._range
         return super().native_min_value if bounds is None else bounds[0]
@@ -199,13 +219,9 @@ class NinaNumber(NinaDescribedEntity, NumberEntity):
         return self.entity_description.value(self.coordinator.data)
 
     async def async_set_native_value(self, value: float) -> None:
-        if self._range is None:
-            raise ServiceValidationError(
-                translation_domain=DOMAIN,
-                translation_key="no_driver_range",
-                translation_placeholders={"entity_id": self.entity_id},
-            )
         self._raise_if_refused()
+        if (check := self.entity_description.check) is not None:
+            check(self.coordinator.data, value)
         await self._async_send(
             self.entity_description.command(self.coordinator.client, value)
         )

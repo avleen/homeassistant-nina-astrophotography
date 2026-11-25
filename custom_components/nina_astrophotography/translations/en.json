@@ -32,11 +32,15 @@
         "title": "N.I.N.A. Options",
         "data": {
           "rollover_hour": "Session Rollover Hour (rig local time)",
-          "outage_grace": "Outage Grace Period (seconds)"
+          "outage_grace": "Outage Grace Period (seconds)",
+          "weather_freeze_station": "Weather Station Freeze Window (minutes)",
+          "weather_freeze_web": "Web Weather Source Freeze Window (minutes)"
         },
         "data_description": {
           "rollover_hour": "The hour, in the RIG's own local time, where one session ends and the next begins. Noon by default. Set it to a real midday on site if the imaging PC's clock runs UTC, or a night's statistics split in two during its dawn flats.",
-          "outage_grace": "How long N.I.N.A. may stop answering before its entities go unavailable. Until then they keep their last values, so a dropped poll leaves no gap in history; the Reachable sensor turns off at once either way. 0 marks them unavailable on the first failed poll."
+          "outage_grace": "How long N.I.N.A. may stop answering before its entities go unavailable. Until then they keep their last values, so a dropped poll leaves no gap in history; the Reachable sensor turns off at once either way. 0 marks them unavailable on the first failed poll.",
+          "weather_freeze_station": "How long every reading of a weather station may stay exactly the same before Readings frozen turns on. An hour by default; give a station that reports in coarse steps, or a still night, longer. 10 to 720.",
+          "weather_freeze_web": "The same, for N.I.N.A.'s own web sources (OpenWeatherMap, Open-Meteo, The Weather Company, Weather Underground). N.I.N.A. queries them every ten minutes, but a provider may refresh its readings far less often; set this above your provider's refresh interval. Two hours by default; 20 to 720."
         }
       }
     }
@@ -66,6 +70,9 @@
       },
       "filterwheel_is_moving": {
         "name": "Moving"
+      },
+      "flat_panel_light_frames_behind_closed_cover": {
+        "name": "Light frames behind closed cover"
       },
       "focuser_is_moving": {
         "name": "Moving"
@@ -99,6 +106,9 @@
       },
       "sequencer_running": {
         "name": "Sequencer running"
+      },
+      "weather_frozen": {
+        "name": "Readings frozen"
       }
     },
     "button": {
@@ -528,6 +538,44 @@
         }
       }
     },
+    "flat_panel_set_cover": {
+      "name": "Set Flat Panel Cover",
+      "description": "Open or close the flat panel's cover. Opening is refused while the panel is lit, and closing while the sequencer runs unless forced.",
+      "fields": {
+        "open": {
+          "name": "Open",
+          "description": "On to open the cover, off to close it."
+        },
+        "force": {
+          "name": "Force",
+          "description": "Close the cover even while the sequencer runs, which blanks every light frame it takes after. Only when closing."
+        }
+      }
+    },
+    "flat_panel_set_light": {
+      "name": "Set Flat Panel Light",
+      "description": "Switch the flat panel's light on or off. It comes on at the brightness given, else at the level it is already lit at, else at its dimmest; never at full output. The light is switched on only once the panel reports that brightness, and refused if it does not within 30 seconds or reports no brightness range. Switching on is refused while the cover reads anything but closed.",
+      "fields": {
+        "light_on": {
+          "name": "Light On",
+          "description": "On to light the panel, off to switch it off."
+        },
+        "brightness": {
+          "name": "Brightness",
+          "description": "The level to light the panel at, in the panel's own units: above its minimum, which an ASCOM panel reads as off, and up to its maximum, such as 255 or 4096. Only when switching on."
+        }
+      }
+    },
+    "flat_panel_set_brightness": {
+      "name": "Set Flat Panel Brightness",
+      "description": "Set the flat panel's brightness. An ASCOM panel lights at any level above its minimum and switches off at it; other drivers leave the light as it is. Refused while the panel reports no brightness range, and above the minimum while its cover reads anything but closed.",
+      "fields": {
+        "level": {
+          "name": "Level",
+          "description": "Brightness in the panel's own units, within its own range, such as 0 to 255 or 0 to 4096."
+        }
+      }
+    },
     "guider_start": {
       "name": "Start Guiding",
       "description": "Start the autoguider.",
@@ -541,6 +589,26 @@
     "guider_stop": {
       "name": "Stop Guiding",
       "description": "Stop the autoguider."
+    },
+    "rotator_move": {
+      "name": "Move Rotator",
+      "description": "Rotate to a sky position angle. Refused until a plate solve has synced the rotator. On a half or quarter range, N.I.N.A. turns to the equivalent angle within it.",
+      "fields": {
+        "position": {
+          "name": "Position",
+          "description": "Target sky position angle in degrees, from 0 to 360."
+        }
+      }
+    },
+    "rotator_move_mechanical": {
+      "name": "Move Rotator (Mechanical)",
+      "description": "Rotate to a mechanical angle, the rotator's own, whatever the sky angle. Refused outside the rotator's range in N.I.N.A.'s profile.",
+      "fields": {
+        "position": {
+          "name": "Mechanical Position",
+          "description": "Target mechanical angle in degrees, from 0 to 360 and within the rotator's range."
+        }
+      }
     },
     "dome_open": {
       "name": "Open Dome",
@@ -592,20 +660,47 @@
     "entry_not_loaded": {
       "message": "N.I.N.A. instance {instance} is not loaded, so the action was not sent."
     },
+    "flat_panel_brightness_not_reported": {
+      "message": "The flat panel did not report brightness {level} within {seconds} seconds, so its light was not switched on: N.I.N.A. could light it at full output. The brightness was sent, and an ASCOM or Alpaca panel may still come on at it. A device polling interval set long in N.I.N.A.'s options slows the report."
+    },
+    "flat_panel_brightness_while_off": {
+      "message": "A brightness lights the panel, so it is refused when switching the light off. The action was not sent."
+    },
+    "flat_panel_close_while_running": {
+      "message": "The sequencer is running, so the flat panel's cover was not closed: it would blank every light frame after it. Set force to close it anyway."
+    },
+    "flat_panel_cover_not_closed": {
+      "message": "The flat panel's cover reads {cover}, not Closed, so the panel was not lit: with its cover open it would shine into the observatory. Close the cover first."
+    },
+    "flat_panel_lit": {
+      "message": "The flat panel is lit, so its cover was not opened: it would shine into the observatory. Switch the light off first."
+    },
+    "flat_panel_lit_at_another_level": {
+      "message": "The flat panel reads lit at brightness {reported}, not the {level} sent, after {seconds} seconds, so its light was left as it is. A device polling interval set long in N.I.N.A.'s options slows the report."
+    },
+    "flat_panel_no_range": {
+      "message": "The flat panel reports no brightness range, so the action was not sent: N.I.N.A. could light it at full output."
+    },
+    "flat_panel_unsupported": {
+      "message": "The flat panel reports no {feature}, so the action was not sent."
+    },
     "gain_not_settable": {
       "message": "The API cannot set a gain of {value}: it applies only a gain of 1 or more, and leaves the camera at its default gain otherwise. The capture was not sent."
     },
     "no_cooling_setpoint": {
       "message": "The cooler cannot be started: the camera reports no target temperature."
     },
-    "no_driver_range": {
-      "message": "{entity_id} cannot be set: the driver reports no usable range."
-    },
     "no_instance": {
       "message": "No N.I.N.A. instance is loaded, so the action was not sent."
     },
     "out_of_range": {
       "message": "{field} must be {limits}: N.I.N.A. clamps {value} silently and reports success, so the action was not sent."
+    },
+    "rotator_not_synced": {
+      "message": "The rotator is not synced, so it has no sky angle to move to. Plate solve with sync first; N.I.N.A. would accept the move and leave the rotator where it is."
+    },
+    "outside_rotator_range": {
+      "message": "Mechanical position {value}° is outside the rotator's range in N.I.N.A.'s profile, {start}° to {end}°, so it was not sent. N.I.N.A. would turn the rotator to {folded}° instead."
     },
     "outside_device_range": {
       "message": "{field} must be {limits} on this {device}, so {value} was not sent."
@@ -621,6 +716,12 @@
     },
     "unknown_tracking_mode": {
       "message": "The mount offers a tracking mode the API cannot encode: {option}."
+    }
+  },
+  "issues": {
+    "imported_blueprint": {
+      "title": "An automation runs an imported copy of a N.I.N.A. blueprint",
+      "description": "`{imported}` is a copy of a N.I.N.A. blueprint imported from GitHub, and these automations still use it: {automations}. Nothing updates an imported copy, so they miss every fix made to the blueprint since it was imported.\n\nThe integration installs its own copy, `{managed}`, and updates it with each release. Open each automation, choose **⋮ → Edit in YAML**, change `path: {imported}` to `path: {managed}`, and save. Every input you set carries over.\n\nThen restart Home Assistant: until it restarts, an automation whose blueprint changed only in its description or comments still reports the old copy, so this repair stays open and Home Assistant refuses to delete that copy. After the restart, delete `{imported}` under **Settings → Automations & scenes → Blueprints**."
     }
   }
 }

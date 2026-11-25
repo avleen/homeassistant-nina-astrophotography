@@ -165,11 +165,12 @@ def _with_site(state: State, **settings: float) -> State:
     return _with_profile(state, "AstrometrySettings", **settings)
 
 
-def _with_profile(state: State, section: str, **settings: float) -> State:
+def _with_profile(state: State, section: str, **settings: float | str) -> State:
     """A copy of `state` whose profile has `settings` set in `section`.
 
-    For moving a captured setting; the key set stays the wire's. `_with_site`
-    is the exception, its section being absent from every capture.
+    For moving a captured setting; the key set stays the wire's. The site and
+    the rotator range are the exceptions, their sections being absent from
+    every capture.
     """
     envelope = state["/profile/show?active=true"]
     response = envelope["Response"]
@@ -418,10 +419,12 @@ _REFUSED = aiohttp.ClientError("refused")
 def _down(block: dict) -> dict:
     """A connected block as its disconnected self.
 
-    The corpus has no capture of the camera, flat panel, safety monitor or
-    switch hub down, so those four are derived — by the rule the corpus does
-    show, comparing the connected and disconnected blocks it holds: the
-    identity keys go, `Connected` is false.
+    The corpus has no capture of the camera, safety monitor or switch hub down,
+    so those three are derived — by the rule the corpus does show, comparing the
+    connected and disconnected blocks it holds: the identity keys go,
+    `Connected` is false. The readings are carried over, where a real
+    disconnect may reset them: the captured flat panel reports no on/off or
+    cover support and a `MaxBrightness` of 0.
     """
     return {k: v for k, v in block.items() if k not in _IDENTITY_KEYS} | {
         "Connected": False
@@ -432,9 +435,14 @@ def disconnect(state: State, *devices: str) -> State:
     """Derive a state with `devices` disconnected, leaving `state` untouched.
 
     Prefers a captured disconnected block over a derived one wherever the
-    corpus holds the device down.
+    corpus holds the device down: the restart capture for seven devices, and
+    `imaging_guiding` for the flat panel, which is up at the restart.
     """
-    reference = load_envelope("restart_equipment_partial_connect.json")["Response"]
+    reference = load_envelope("restart_equipment_partial_connect.json")["Response"] | {
+        "FlatDevice": load_envelope("imaging_guiding_equipment_info.json")["Response"][
+            "FlatDevice"
+        ]
+    }
     for device in devices:
         captured = reference[device]
         block = (
@@ -465,6 +473,17 @@ def _dome_from(slug: str) -> State:
     """
     block = load_envelope(f"simulator_dome_{slug}_equipment_info.json")["Response"]
     return _replace_device(_DOME_PARKED, "Dome", block["Dome"])
+
+
+def _guider_from(slug: str) -> State:
+    """The calibrating simulator capture with the guider block of a later
+    `simulator_guider_<slug>` /equipment/info from the same rig; every other
+    block stays calibrating's.
+    """
+    block = load_envelope(f"simulator_guider_{slug}_equipment_info.json")["Response"]
+    return _replace_device(
+        _captured("simulator_guider_calibrating"), "Guider", block["Guider"]
+    )
 
 
 # Each name gets its own dict even where two are content-equal, so an in-place
@@ -518,6 +537,13 @@ STATES: dict[str, State] = {
     # guider just reconnected, which reports an RMS of 0 until it guides.
     "simulator_guider_calibrating": _captured("simulator_guider_calibrating"),
     "simulator_guider_connected": _captured("simulator_guider_connected"),
+    # PHD2 told to loop from Stopped, which reports an RMS of 0; paused while
+    # guiding; and told to loop while guiding, where PHD2 itself reads
+    # `Selected`. The last two still report the RMS of the run before. None of
+    # the three changes raised a socket event.
+    "simulator_guider_looping": _guider_from("looping"),
+    "simulator_guider_paused": _guider_from("paused"),
+    "simulator_guider_looping_after_guiding": _guider_from("looping_after_guiding"),
     # 20:49, ten seconds after SEQUENCE-STARTING: every container still CREATED
     # on a sequence that IS running. The tree lags the start, so it cannot be
     # the only running signal either.
@@ -535,6 +561,12 @@ STATES: dict[str, State] = {
     # civil dusk at 18:06, with the roof open, no frame yet and no TS-WAITSTART.
     # Only the running chain in /sequence/json says the rig is waiting.
     "wait_for_time": _captured("wait_for_time"),
+    # Captured from the simulator rig (`docs/test-vm.md`), 19:58 on 2026-11-23
+    # at UTC-6: a Wait if Sun Altitude running, which N.I.N.A. expects to end
+    # at 20:22, ahead of a Wait for Altitude, a Wait until Above horizon and
+    # three Wait if Moon or Sun Altitude, one already met (`Now`) and one
+    # never reached (`--`). No frame taken.
+    "simulator_altitude_wait": _captured("simulator_altitude_wait"),
     # Captured from the simulator rig (`docs/test-vm.md`): real wire data from
     # an OmniSim dome. Parked with the shutter closed, and open following the
     # mount. The next two swap in the dome block of a later /equipment/info:
@@ -705,6 +737,22 @@ STATES: dict[str, State] = {
     "site_configured": _with_site(
         _IMAGING_GUIDING, Latitude=31.5478, Longitude=-110.2977, Elevation=1509
     ),
+    # `scheduler_waiting_lost_lock`'s frozen station with its rig sited at
+    # Siding Spring, where 03:23 UTC is early afternoon: its 80123 lx is
+    # daylight there whatever the sky over Home Assistant. Synthetic in
+    # `AstrometrySettings` alone.
+    "frozen_station_sited_in_daylight": _with_site(
+        _LOST_LOCK_AFTER_STOP, Latitude=-31.2733, Longitude=149.0644, Elevation=1165
+    ),
+    # A rotator kept to the half range 300° to 120°, wrapping past 0; the
+    # captured mechanical angle, 64.12°, is inside it. Synthetic in
+    # `RotatorSettings` alone.
+    "rotator_half_range": _with_profile(
+        _IMAGING_GUIDING,
+        "RotatorSettings",
+        RangeType="HALF",
+        RangeStartMechanicalPosition=300,
+    ),
     # `imaging_guiding` with the guider's lock lost, and with the guider
     # stopped. Synthetic in `State` alone; a guider that is down carries no
     # `State` at all.
@@ -812,8 +860,8 @@ STATES: dict[str, State] = {
         ],
     ),
     "safety_monitor_disconnected": disconnect(_IMAGING, "SafetyMonitor"),
-    # All eleven down: the seven the restart capture holds down, plus the four
-    # that are connected in every capture.
+    # All eleven down: the seven the restart capture holds down, the flat panel
+    # `imaging_guiding` holds down, and the three connected in every capture.
     "equipment_disconnected": disconnect(
         _RESTARTED, "Camera", "FlatDevice", "SafetyMonitor", "Switch"
     ),

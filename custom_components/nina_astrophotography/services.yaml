@@ -199,6 +199,84 @@ filterwheel_change_filter:
           min: 0
           mode: box
 
+flat_panel_set_cover:
+  name: Set Flat Panel Cover
+  description: >-
+    Open or close the flat panel's cover. Opening is refused while the panel
+    is lit, and closing while the sequencer runs unless forced.
+  target:
+    entity:
+      integration: nina_astrophotography
+  fields:
+    open:
+      name: Open
+      description: On to open the cover, off to close it.
+      required: true
+      selector:
+        boolean:
+    force:
+      name: Force
+      description: >-
+        Close the cover even while the sequencer runs, which blanks every light
+        frame it takes after. Only when closing.
+      default: false
+      selector:
+        boolean:
+
+flat_panel_set_light:
+  name: Set Flat Panel Light
+  description: >-
+    Switch the flat panel's light on or off. It comes on at the brightness
+    given, else at the level it is already lit at, else at its dimmest; never
+    at full output. The light is switched on only once the panel reports that
+    brightness, and refused if it does not within 30 seconds or reports no
+    brightness range. Switching on is refused while the cover reads anything
+    but closed.
+  target:
+    entity:
+      integration: nina_astrophotography
+  fields:
+    light_on:
+      name: Light On
+      description: On to light the panel, off to switch it off.
+      required: true
+      selector:
+        boolean:
+    brightness:
+      name: Brightness
+      description: >-
+        The level to light the panel at, in the panel's own units: above its
+        minimum, which an ASCOM panel reads as off, and up to its maximum, such
+        as 255 or 4096. Only when switching on.
+      example: 1024
+      selector:
+        number:
+          min: 0
+          mode: box
+
+flat_panel_set_brightness:
+  name: Set Flat Panel Brightness
+  description: >-
+    Set the flat panel's brightness. An ASCOM panel lights at any level above
+    its minimum and switches off at it; other drivers leave the light as it
+    is. Refused while the panel reports no brightness range, and above the
+    minimum while its cover reads anything but closed.
+  target:
+    entity:
+      integration: nina_astrophotography
+  fields:
+    level:
+      name: Level
+      description: >-
+        Brightness in the panel's own units, within its own range, such as 0
+        to 255 or 0 to 4096.
+      required: true
+      example: 1024
+      selector:
+        number:
+          min: 0
+          mode: box
+
 guider_start:
   name: Start Guiding
   description: Start the autoguider.
@@ -219,6 +297,53 @@ guider_stop:
   target:
     entity:
       integration: nina_astrophotography
+
+rotator_move:
+  name: Move Rotator
+  description: >-
+    Rotate to a sky position angle. Refused until a plate solve has synced the
+    rotator. On a half or quarter range, N.I.N.A. turns to the equivalent angle
+    within it.
+  target:
+    entity:
+      integration: nina_astrophotography
+  fields:
+    position:
+      name: Position
+      description: Target sky position angle in degrees, from 0 to 360.
+      required: true
+      example: 90
+      selector:
+        number:
+          min: 0
+          max: 360
+          step: "any"
+          unit_of_measurement: "°"
+          mode: box
+
+rotator_move_mechanical:
+  name: Move Rotator (Mechanical)
+  description: >-
+    Rotate to a mechanical angle, the rotator's own, whatever the sky angle.
+    Refused outside the rotator's range in N.I.N.A.'s profile.
+  target:
+    entity:
+      integration: nina_astrophotography
+  fields:
+    position:
+      name: Mechanical Position
+      description: >-
+        Target mechanical angle in degrees, from 0 to 360 and within the
+        rotator's range.
+      required: true
+      example: 90
+      selector:
+        number:
+          min: 0
+          max: 360
+          step: "any"
+          unit_of_measurement: "°"
+          mode: box
 
 dome_open:
   name: Open Dome

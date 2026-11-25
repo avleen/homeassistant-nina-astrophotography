@@ -10,8 +10,8 @@ tag, never by clearing.
 """
 
 from collections.abc import Callable, Container, Iterable, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta
-import heapq
 from math import fsum
 from operator import attrgetter
 from statistics import fmean
@@ -65,6 +65,8 @@ _FRESH_FLIP_READING = timedelta(minutes=5)
 _GUIDER_STARTED = "GUIDER-START"
 _GUIDER_STOPPED = "GUIDER-STOP"
 _GUIDER_STARTED_OR_STOPPED = frozenset({_GUIDER_STARTED, _GUIDER_STOPPED})
+_COVER_CLOSED = "FLAT-COVER-CLOSED"
+_COVER_MOVED = frozenset({_COVER_CLOSED, "FLAT-COVER-OPENED"})
 
 # Used only until the profile's `AutoFocusTimeoutSeconds` is read.
 DEFAULT_AUTOFOCUS_TIMEOUT = 300.0
@@ -288,13 +290,34 @@ def stacks(
 
 
 _RECENT_FRAMES_LIMIT = 20
-"""Covers a card's thumbnail strip."""
+"""Covers a card's thumbnail strip, of every type or of lights alone."""
 
 
-def recent_frames(frames: Iterable[Frame], generation: str | None) -> tuple[Frame, ...]:
-    """The newest frames this process saved, of any type, newest first."""
-    kept = (f for f in frames if f.generation == generation)
-    return tuple(heapq.nlargest(_RECENT_FRAMES_LIMIT, kept, key=_IDENTITY))
+@dataclass(frozen=True, slots=True)
+class RecentFrame:
+    frame: Frame
+    age: int
+    """How many frames this process saved after it, 0 the newest. The image
+    proxy takes it and turns it into N.I.N.A.'s oldest-first index."""
+
+
+def recent_frames(
+    frames: Iterable[Frame], generation: str | None
+) -> tuple[RecentFrame, ...]:
+    """The 20 newest frames this process saved, of any type, then whichever of
+    the 20 newest lights are older than those, newest first. Without the
+    second part, twenty calibration frames in a row leave Lights only with no
+    light to show.
+    """
+    newest_first = sorted(
+        (f for f in frames if f.generation == generation), key=_IDENTITY, reverse=True
+    )
+    aged = [RecentFrame(frame, age) for age, frame in enumerate(newest_first)]
+    lights = [r for r in aged if r.frame.image_type == _LIGHT][:_RECENT_FRAMES_LIMIT]
+    return (
+        *aged[:_RECENT_FRAMES_LIMIT],
+        *(r for r in lights if r.age >= _RECENT_FRAMES_LIMIT),
+    )
 
 
 def latest_target(events: Iterable[NinaEvent], generation: str | None) -> str | None:
@@ -324,6 +347,29 @@ def pending_guider_stop(
     return (
         newest.time if newest is not None and newest.name == _GUIDER_STOPPED else None
     )
+
+
+@dataclass(frozen=True, slots=True)
+class CoverMove:
+    """A cover move N.I.N.A. reported: `FLAT-COVER-CLOSED` or `-OPENED`.
+
+    N.I.N.A. raises either only once its open or close has finished, so a
+    cover that jams on the way reports neither.
+    """
+
+    closed: bool
+    time: datetime
+    """On the rig's clock, as frame dates are."""
+
+
+def last_cover_move(
+    events: Iterable[NinaEvent], generation: str | None
+) -> CoverMove | None:
+    """The newest cover move this process reported; `None` if it reported none."""
+    newest = _newest(events, _COVER_MOVED, generation)
+    if newest is None:
+        return None
+    return CoverMove(closed=newest.name == _COVER_CLOSED, time=newest.time)
 
 
 def _flip_started(

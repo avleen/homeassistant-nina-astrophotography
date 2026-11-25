@@ -65,6 +65,7 @@ function recorder(log) {
  */
 function element(tag) {
   const classes = new Set();
+  const listeners = [];
   let markup = "";
   return {
     tag,
@@ -92,6 +93,10 @@ function element(tag) {
     set innerHTML(value) {
       markup = value;
       this.children.length = 0;
+    },
+    // A `<template>`'s parsed markup, as the one text node `morph` copies over.
+    get content() {
+      return { childNodes: [markupNode(markup)] };
     },
     get className() {
       return [...classes].join(" ");
@@ -126,8 +131,24 @@ function element(tag) {
       walk(this);
       return found;
     },
-    addEventListener() {},
+    addEventListener(type, listener) {
+      listeners.push({ type, listener });
+    },
+    // What a scenario's `act` presses: the card's own handlers, without an event.
+    click() {
+      for (const { type, listener } of listeners) if (type === "click") listener({});
+      this.onclick?.({});
+    },
   };
+}
+
+/**
+ * The whole of a markup string as a single text node. The stub parses nothing,
+ * so a card patching its root against a template replaces this node's text,
+ * which is the markup assigned whole.
+ */
+function markupNode(value) {
+  return { nodeName: "#text", nodeType: 3, nodeValue: value };
 }
 
 /** One node and its children, with only the fields the card set. */
@@ -159,10 +180,12 @@ function describe(node, id, depth = 0) {
  * @param {object} [options]
  * @param {number} [options.width]   the canvas size a card reads off the layout
  * @param {number} [options.dpr]     `window.devicePixelRatio`
+ * @param {string} [options.images]  `"hold"` keeps every image loading until
+ *                                   `load()`; otherwise each fails at once
  * @returns {{log: string[], element: () => Function, html: () => string,
- *            nodes: () => string, frame: () => void}}
+ *            nodes: () => string, frame: () => void, load: () => void}}
  */
-export function install({ width = 320, height = 320, dpr = 2 } = {}) {
+export function install({ width = 320, height = 320, dpr = 2, images } = {}) {
   const log = [];
   let defined = null;
   let html = "";
@@ -186,6 +209,28 @@ export function install({ width = 320, height = 320, dpr = 2 } = {}) {
     },
     get innerHTML() {
       return html;
+    },
+    // The markup as one node, for a card that patches its root: `morph`
+    // appends it to an empty root and then rewrites its text.
+    get childNodes() {
+      if (html === "") return [];
+      return [{
+        nodeName: "#text",
+        nodeType: 3,
+        get nodeValue() { return html; },
+        set nodeValue(value) { html = value; },
+        remove() { html = ""; },
+      }];
+    },
+    get firstChild() {
+      return this.childNodes[0] ?? null;
+    },
+    get lastChild() {
+      return this.childNodes.at(-1) ?? null;
+    },
+    appendChild(node) {
+      html = node.nodeValue;
+      return node;
     },
     // An id the card's own markup puts on a `<canvas>` is the canvas; any
     // other id it holds is a recorded node, and one it lacks is `null`, as a
@@ -225,16 +270,26 @@ export function install({ width = 320, height = 320, dpr = 2 } = {}) {
   };
   globalThis.window = { devicePixelRatio: dpr, customCards: [] };
   globalThis.document = { createElement: element };
+  globalThis.Node = { ELEMENT_NODE: 1, TEXT_NODE: 3 };
   // No stylesheet resolves here, so no theme does: a card draws in the dark
   // palette it falls back to, which keeps a log comparable across versions.
   globalThis.getComputedStyle = () => ({ getPropertyValue: () => "" });
   // There are no image bytes to serve, so every load fails — which is what the
   // browser page shows too, since nothing there answers the image proxy. The
-  // address asked for is the record.
+  // address asked for is the record. Held instead, a load is still in flight
+  // when a scenario acts, and succeeds when it calls `load()`.
+  const held = [];
   globalThis.Image = class {
     set src(value) {
       log.push(`image ${value}`);
-      queueMicrotask(() => this.onerror?.());
+      if (images === "hold") held.push(this);
+      else queueMicrotask(() => this.onerror?.());
+    }
+  };
+  const load = () => {
+    for (const image of held.splice(0)) {
+      log.push("loaded");
+      image.onload?.();
     }
   };
   // Held rather than run: node fires no frames, so the runner decides when the
@@ -269,5 +324,6 @@ export function install({ width = 320, height = 320, dpr = 2 } = {}) {
     html: () => html,
     nodes: () => [...nodes].map(([id, node]) => describe(node, id)).join("\n"),
     frame,
+    load,
   };
 }

@@ -9,20 +9,29 @@ from datetime import datetime, timedelta, timezone
 
 from nina_astrophotography.api.models import (
     EquipmentSnapshot,
+    FlatDeviceModel,
+    Frame,
     NinaEvent,
     SequenceWait,
     SequenceWaitKind,
+    WeatherModel,
 )
-from nina_astrophotography.api.v2.mapper import map_equipment_info
+from nina_astrophotography.api.v2.mapper import map_equipment_info, map_frame
 from nina_astrophotography.polling import (
+    DRIFTING_CHANNELS,
+    CoverClosedLatch,
+    CoverFaultHold,
     EventLedger,
+    FreezeWindows,
     GuiderStopLatch,
     ReseedGuard,
     RestartDetector,
     TierSchedule,
     WaitLedger,
+    WeatherFreeze,
     imaging,
 )
+from nina_astrophotography.session import CoverMove
 import pytest
 
 from helpers import load_fixture as load
@@ -322,6 +331,167 @@ def test_a_stop_holds_until_a_later_poll_sees_the_guider_running_past_it(
     assert latch.stopped(stop) is stopped
 
 
+_DAWN = [map_frame(f, "g") for f in load("dawn_image_history_with_flats.json")]
+_LIGHTS = [f for f in _DAWN if f.image_type == "LIGHT"]
+# The night's last four lights, then the first flat after them.
+_EARLIER, _EARLY, _LIGHT, _LAST_LIGHT = _LIGHTS[-4:]
+_FLAT = next(f for f in _DAWN if f.image_type == "FLAT" and f.date > _LAST_LIGHT.date)
+_LAST_START = _LAST_LIGHT.date - timedelta(seconds=_LAST_LIGHT.exposure_time or 0)
+
+_PANEL = map_equipment_info(load("dawn_equipment_info.json")).flat_device
+# Captured down: a panel the sequence disconnects once its cover has opened.
+_DOWN = map_equipment_info(load("imaging_guiding_equipment_info.json")).flat_device
+_OPENED = CoverMove(closed=False, time=datetime.fromisoformat(T1))
+_CLOSED = CoverMove(closed=True, time=datetime.fromisoformat(T2))
+
+
+def _panel(cover_state: str | None) -> FlatDeviceModel | None:
+    """The dawn panel reading `cover_state`; the captured down panel for None."""
+    assert _PANEL is not None
+    return _DOWN if cover_state is None else replace(_PANEL, cover_state=cover_state)
+
+
+@pytest.mark.parametrize(
+    ("polled", "flagged"),
+    [
+        ([("Closed", _LIGHT), ("Closed", _LAST_LIGHT)], True),
+        ([("Closed", None), ("Closed", _LIGHT)], True),
+        # The night's close, after its last light.
+        ([("Open", _LIGHT), ("Closed", _LAST_LIGHT)], False),
+        ([("Closed", _LAST_LIGHT), ("Closed", _FLAT)], False),
+        ([("Open", _LIGHT), ("Open", _LAST_LIGHT)], False),
+        ([("Closed", _LIGHT), ("Closed", _LAST_LIGHT), ("Open", _LAST_LIGHT)], False),
+        (
+            [("Closed", _LIGHT), ("Unknown", _LAST_LIGHT), ("Closed", _LAST_LIGHT)],
+            False,
+        ),
+        ([("Closed", _EARLY), (None, _LIGHT), (None, _LAST_LIGHT)], True),
+        ([("Closed", _EARLY), (None, _LIGHT), ("Closed", _LAST_LIGHT)], True),
+        ([(None, _LIGHT), ("Closed", _LAST_LIGHT)], False),
+    ],
+    ids=[
+        "light after the close",
+        "first light after the close",
+        "closed after the last light",
+        "flat after the close",
+        "cover open",
+        "cover reopened",
+        "connected panel reading unknown",
+        "panel disconnected after the close",
+        "panel reconnected still closed",
+        "panel reconnected for the flats",
+    ],
+)
+def test_a_light_counts_only_once_the_cover_was_seen_closed(
+    polled: list[tuple[str | None, Frame | None]], flagged: bool
+) -> None:
+    latch = CoverClosedLatch()
+    results = [latch.update(_panel(state), newest, None) for state, newest in polled]
+    assert results[-1] is flagged
+
+
+@pytest.mark.parametrize(
+    ("polled", "flagged"),
+    [
+        ([("Closed", _LIGHT, None), (None, _LAST_LIGHT, _OPENED)], False),
+        # A poll reading the cover before it moved, published again with the
+        # event that it opened.
+        (
+            [
+                ("Closed", _EARLIER, None),
+                ("Closed", _EARLY, _OPENED),
+                ("Closed", _LIGHT, _OPENED),
+                ("Closed", _LAST_LIGHT, _OPENED),
+            ],
+            False,
+        ),
+        # Closed by hand after N.I.N.A. opened it.
+        ([("Closed", _LIGHT, _OPENED), ("Closed", _LAST_LIGHT, _OPENED)], True),
+    ],
+    ids=[
+        "opened, then disconnected",
+        "stale closed after the open",
+        "opened before the cover was seen closed",
+    ],
+)
+def test_a_reported_open_after_the_cover_was_seen_closed_clears_it(
+    polled: list[tuple[str | None, Frame | None, CoverMove | None]], flagged: bool
+) -> None:
+    latch = CoverClosedLatch()
+    results = [
+        latch.update(_panel(state), newest, move) for state, newest, move in polled
+    ]
+    assert results[-1] is flagged
+
+
+@pytest.mark.parametrize(
+    ("closed_at", "flagged"),
+    [
+        # Saved after the poll saw the cover closed, but exposed before.
+        (_LAST_START + timedelta(seconds=1), False),
+        (_LAST_START - timedelta(seconds=1), True),
+    ],
+    ids=["exposed before the reported close", "exposed after it"],
+)
+def test_a_light_exposed_before_the_reported_close_is_not_flagged(
+    closed_at: datetime, flagged: bool
+) -> None:
+    latch = CoverClosedLatch()
+    latch.update(_panel("Closed"), _LIGHT, None)
+    move = CoverMove(closed=True, time=closed_at)
+    assert latch.update(_panel("Closed"), _LAST_LIGHT, move) is flagged
+
+
+_PART_WAY = "NeitherOpenNorClosed"
+
+
+@pytest.mark.parametrize(
+    ("polled", "held"),
+    [
+        # The captured order: connected, opened, disconnected within the second.
+        ([("Closed", None), (_PART_WAY, None), (None, _OPENED)], None),
+        ([("Closed", None), (_PART_WAY, _OPENED), (None, _OPENED)], None),
+        ([(_PART_WAY, None), (None, _OPENED)], None),
+        ([("Closed", None), (_PART_WAY, None), (None, None)], _PART_WAY),
+        ([("Closed", None), ("Error", None), (None, None)], "Error"),
+        ([("Open", _OPENED), (_PART_WAY, _OPENED), (None, _OPENED)], _PART_WAY),
+        ([("Closed", _CLOSED), (_PART_WAY, _CLOSED), (None, None)], _PART_WAY),
+        ([("Closed", None), (_PART_WAY, None)], None),
+        ([("Open", _OPENED), (None, _OPENED)], None),
+        (
+            [
+                ("Open", _OPENED),
+                (_PART_WAY, _CLOSED),
+                (None, _CLOSED),
+                (_PART_WAY, _CLOSED),
+                (None, _CLOSED),
+            ],
+            _PART_WAY,
+        ),
+        ([(None, _OPENED), (_PART_WAY, _CLOSED), (None, _CLOSED)], None),
+    ],
+    ids=[
+        "opened, then disconnected",
+        "read part-way after the open",
+        "first read part-way",
+        "left part-way",
+        "left in error",
+        "jammed on a later move",
+        "N.I.N.A. restarted",
+        "still connected",
+        "left at rest",
+        "jammed on a move first read part-way",
+        "first read after a restart lags the close",
+    ],
+)
+def test_a_disconnect_holds_a_cover_fault_no_move_has_resolved(
+    polled: list[tuple[str | None, CoverMove | None]], held: str | None
+) -> None:
+    hold = CoverFaultHold()
+    results = [hold.update(_panel(state), move) for state, move in polled]
+    assert results[-1] == held
+
+
 _EVENING = datetime(2026, 11, 11, 18, 0, tzinfo=timezone(timedelta(hours=-6)))
 
 
@@ -367,8 +537,15 @@ def test_a_wait_the_read_no_longer_shows_ends_at_that_read() -> None:
     [
         (_step("time", ends=_at(10), span=None), 11, 10),
         (_step("altitude", span=None), 12 * 60 + 1, 12 * 60 + 1),
+        (_step("altitude", ends=_at(60), span=None), 12 * 60 + 1, 12 * 60 + 1),
+        (_step("altitude", ends=_at(16 * 60), span=None), 17 * 60 + 1, 17 * 60 + 1),
     ],
-    ids=["Wait for Time, at its named end", "an altitude wait, after twelve hours"],
+    ids=[
+        "Wait for Time, at its named end",
+        "an altitude wait, after twelve hours",
+        "an altitude wait expected in an hour, after twelve hours",
+        "an altitude wait expected in sixteen hours, an hour past that",
+    ],
 )
 def test_a_wait_still_shown_running_past_its_possible_end_is_over(
     step: Step, late: float, ended: float
@@ -385,6 +562,51 @@ def test_an_expired_wait_stays_over_while_the_read_still_shows_it() -> None:
     late = _step("time", ends=_at(10), span=None)
     ledger = _ledger((0, late), (11, late), (12, late))
     assert (ledger.current, len(ledger.ended)) == (None, 1)
+
+
+_ESTIMATED = _step("altitude", ends=_at(10), span=None)
+
+
+@pytest.mark.parametrize(
+    ("step", "late"),
+    [
+        (_ESTIMATED, 15),
+        (_step("altitude", ends=_at(16 * 60), span=None), 12 * 60 + 1),
+    ],
+    ids=["past its estimate", "dawn to a summer dusk, past twelve hours"],
+)
+def test_an_altitude_wait_runs_on(step: Step, late: float) -> None:
+    """N.I.N.A.'s estimate is printed to the minute, and a sun or moon wait
+    can end after it.
+    """
+    ledger = _ledger((0, step), (late, step))
+    assert ledger.current is not None
+
+
+@pytest.mark.parametrize(
+    ("later", "held"),
+    [(_at(10) + timedelta(days=1), _at(10)), (_at(4), _at(4)), (None, _at(10))],
+    ids=[
+        "the same minute a day on",
+        "a re-estimate minutes earlier",
+        "a read with no estimate",
+    ],
+)
+def test_an_altitude_wait_keeps_its_end_but_for_a_re_estimate(
+    later: datetime | None, held: datetime
+) -> None:
+    """The mapper places a dateless estimate the wait has overrun by more than
+    six hours on the next day.
+    """
+    rolled = _step("altitude", ends=later, span=None)
+    ledger = _ledger((0, _ESTIMATED), (75, rolled))
+    assert ledger.current is not None
+    assert ledger.current.ends == held
+
+
+def test_an_altitude_wait_ends_at_the_read_that_finds_it_over() -> None:
+    ledger = _ledger((0, _ESTIMATED), (15, None))
+    assert ledger.ended[0].ended == _at(15)
 
 
 def test_a_span_still_shown_past_its_length_is_the_loops_next_pass() -> None:
@@ -426,3 +648,120 @@ def test_the_history_keeps_the_ten_newest_newest_first() -> None:
     reads = [(minute, _step() if minute % 2 == 0 else None) for minute in range(24)]
     ended = _ledger(*reads).ended
     assert (len(ended), ended[0].ended) == (10, _at(23))
+
+
+# The station as N.I.N.A. served it two nights running: a midday reading,
+# 80123 lx, `Connected: true`.
+_FROZEN = map_equipment_info(
+    load("scheduler_waiting_lost_lock_equipment_info.json")
+).weather
+_OPEN_METEO = map_equipment_info(load("weather_source_openmeteo.json")).weather
+_WINDOWS = FreezeWindows(
+    station=timedelta(hours=1), web=timedelta(hours=2), lit_night=timedelta(minutes=15)
+)
+_DAY = 50.0
+_NIGHT = -20.0
+
+
+def _station(**readings: float | None) -> WeatherModel:
+    assert _FROZEN is not None
+    return replace(_FROZEN, channels={**_FROZEN.channels, **readings})
+
+
+def _freeze(
+    *reads: tuple[float, WeatherModel | None], sun: float | None = _DAY
+) -> WeatherFreeze:
+    """Each read is (minutes after the first, the weather polled then)."""
+    freeze = WeatherFreeze(_WINDOWS)
+    for minutes, weather in reads:
+        freeze.observe(weather, _at(minutes), sun)
+    return freeze
+
+
+def test_readings_held_for_the_window_are_frozen_since_they_were_first_read() -> None:
+    assert _freeze(
+        (0, _station()), (30, _station()), (60, _station())
+    ).frozen_since == _at(0)
+
+
+def test_readings_held_for_less_than_the_window_are_not_frozen() -> None:
+    assert _freeze((0, _station()), (59, _station())).frozen_since is None
+
+
+@pytest.mark.parametrize(
+    ("minutes", "frozen"), [(119, False), (120, True)], ids=["inside", "past"]
+)
+def test_a_web_source_has_the_longer_window(minutes: int, frozen: bool) -> None:
+    freeze = _freeze((0, _OPEN_METEO), (minutes, _OPEN_METEO))
+    assert (freeze.frozen_since is not None) == frozen
+
+
+@pytest.mark.parametrize(
+    ("sun", "frozen"),
+    [(_NIGHT, True), (-6.0, False), (None, False)],
+    ids=["after dusk", "twilight", "no site"],
+)
+def test_a_daytime_sky_held_after_dusk_is_frozen_within_minutes(
+    sun: float | None, frozen: bool
+) -> None:
+    freeze = _freeze((0, _station()), (15, _station()), sun=sun)
+    assert (freeze.frozen_since is not None) == frozen
+
+
+@pytest.mark.synthetic
+def test_a_dark_sky_after_dusk_keeps_the_station_window() -> None:
+    dark = _station(sky_brightness=0.0)
+    assert _freeze((0, dark), (15, dark), sun=_NIGHT).frozen_since is None
+
+
+@pytest.mark.synthetic
+@pytest.mark.parametrize(
+    "moved",
+    [{"temperature": 37.5}, {"wind_speed": 2.8}, {"cloud_cover": 10.0}],
+    ids=["drifting channel", "wind", "a channel that was NaN"],
+)
+def test_any_channel_moving_restarts_the_window(moved: dict[str, float]) -> None:
+    freeze = _freeze((0, _station()), (30, _station(**moved)), (75, _station(**moved)))
+    assert freeze.frozen_since is None
+
+
+@pytest.mark.synthetic
+def test_a_source_with_no_drifting_channel_is_never_frozen() -> None:
+    """Rain 0, calm and 0 lx can hold all night; nothing else is reported."""
+    quiet = _station(**dict.fromkeys(DRIFTING_CHANNELS))
+    assert _freeze((0, quiet), (120, quiet)).frozen_since is None
+
+
+@pytest.mark.synthetic
+@pytest.mark.parametrize(
+    "gap",
+    [None, replace(_station(), connected=False)],
+    ids=["never observed", "disconnected"],
+)
+def test_a_source_back_on_the_readings_it_froze_on_is_still_frozen(
+    gap: WeatherModel | None,
+) -> None:
+    """A reconnect fixes nothing upstream of a dead feed."""
+    freeze = _freeze((0, _station()), (30, gap), (60, _station()), (61, _station()))
+    assert freeze.frozen_since == _at(0)
+
+
+@pytest.mark.synthetic
+def test_the_first_poll_after_a_reconnect_is_not_judged() -> None:
+    """A source queried in the background serves its pre-disconnect readings
+    until its first answer.
+    """
+    down = replace(_station(), connected=False)
+    assert _freeze((0, _station()), (30, down), (60, _station())).frozen_since is None
+
+
+@pytest.mark.synthetic
+def test_a_source_down_is_not_judged() -> None:
+    freeze = _freeze((0, _station()), (90, replace(_station(), connected=False)))
+    assert freeze.frozen_since is None
+
+
+def test_every_drifting_channel_is_one_the_mapper_produces() -> None:
+    """A misspelt name would never be read, and drop out of the judgement."""
+    assert _FROZEN is not None
+    assert set(_FROZEN.channels) >= DRIFTING_CHANNELS
