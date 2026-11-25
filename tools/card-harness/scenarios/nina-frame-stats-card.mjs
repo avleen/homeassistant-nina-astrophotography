@@ -246,9 +246,9 @@ export const scenarios = {
   unscaled_14_bit: { hass: (dump) => unscaled(dump, NIGHT, 4).build() },
 
   // R pinned: its five Wizard Nebula lights and four Dark Shark ones, one
-  // target boundary between them, and the star and ADU charts scaled to the
-  // Dark Shark four. The trend box names R's run rather than the newest S,
-  // and four lights are too few for a trend.
+  // target boundary between them, joined as one line every chart is scaled
+  // to. The trend box names R's run rather than the newest S, and its four
+  // Dark Shark lights are too few for a trend.
   pinned: { hass: (dump) => rig(dump, NIGHT).build(), pinned: "R" },
 
   // `interleaved`'s night with B pinned: its seven lights as one evenly spaced

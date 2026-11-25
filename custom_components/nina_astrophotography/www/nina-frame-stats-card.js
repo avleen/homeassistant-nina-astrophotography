@@ -583,7 +583,7 @@ class NinaFrameStatsCard extends HTMLElement {
     const pinnedTo = pinned === null ? "" : ` · ${safe(pinned)}`;
     // Said on the card, since a phone shows no tooltip.
     const hint = [
-      pinned !== null ? `Charting ${safe(pinned)} alone · tap it again for every filter`
+      pinned !== null ? ""
         : this._pinned !== null && this._chipNames.includes(this._pinned)
           ? `${safe(this._pinned)} is pinned · every filter is charted until two of its recent lights have an HFR`
           : "Tap a filter to chart it alone",
@@ -656,8 +656,8 @@ class NinaFrameStatsCard extends HTMLElement {
             ${chart("adu", `Mean ADU per frame${pinnedTo}`, `<canvas id="adu-chart" height="48"></canvas>`)}
 
             ${!chipless
-              ? chart("filters", "Frames per filter", `<div class="filter-bar" role="group" aria-label="Chart one filter" aria-describedby="filter-hint">${filterChipsHtml}</div>
-                 <div class="filter-hint" id="filter-hint">${hint}</div>`)
+              ? chart("filters", "Frames per filter", `<div class="filter-bar" role="group" aria-label="Chart one filter"${hint ? ' aria-describedby="filter-hint"' : ""}>${filterChipsHtml}</div>
+                 ${hint ? `<div class="filter-hint" id="filter-hint">${hint}</div>` : ""}`)
               : ""}
           `}
         </div>` : ""}
@@ -712,7 +712,9 @@ class NinaFrameStatsCard extends HTMLElement {
 
     const known = (indices) => indices.filter((i) => data[i] !== null && data[i] !== undefined);
     const all = data.map((_, i) => i);
-    const run = known(this._run).length >= 2 ? this._run : null;
+    // A pinned filter is one line across its targets: its lights are few, and
+    // the viewer asked for all of them.
+    const run = this._charted === null && known(this._run).length >= 2 ? this._run : null;
     const path = run ?? all;
     const inRun = new Set(path);
     // The joined line, which the scale fits and the numbers describe.

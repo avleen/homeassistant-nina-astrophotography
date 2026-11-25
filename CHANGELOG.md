@@ -16,8 +16,9 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
   nothing reads `—`. The line is the newest run the graph is scaled to, or
   the whole night while that run has fewer than two readings.
 - **A filter chip on the frame statistics card charts that filter alone.**
-  Pressing one draws that filter's recent lights, evenly spaced, and points the
-  HFR trend and rolling average at its run; the chart titles name it. Pressing
+  Pressing one draws that filter's recent lights, evenly spaced and joined as
+  one line across its targets, and points the HFR trend and rolling average at
+  its run; the chart titles name it. Pressing
   it again follows the newest light. The browser remembers the choice per rig,
   and while the filter has fewer than two recent HFR readings, as at the start
   of a night, the charts show every filter until it has.
