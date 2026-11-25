@@ -10,17 +10,18 @@
  * `site_configured` once N.I.N.A. stops answering, where that same source
  * reads `unavailable`.
  *
- * Three channels this source reports as `"NaN"` have no entity anywhere in the
- * corpus: cloud cover, sky quality and star FWHM. Their cells are therefore left
- * out of every scenario below, and the sky-quality section — a bar, a label
- * and a scale — never renders at all. Nothing here can cover it without
- * inventing a channel, which is what `render.html` against a live rig is for.
+ * Three channels this source reports as `"NaN"` have no entity on the reference
+ * rig: cloud cover, sky quality and star FWHM. Only `simulator`, the ASCOM
+ * simulator's dump, renders their cells and the sky-quality section — a bar, a
+ * label and a scale — and its readings are synthetic; a live rig with an SQM is
+ * what `render.html` cannot stand in for.
  */
 
 import { linkScenarios, rig } from "../hass.mjs";
 
 const UP = "site_configured";
 const US = "site_configured_us_customary";
+const FROZEN = "weather_frozen";
 const SAFETY = "binary_sensor.n_i_n_a_safety_monitor_unsafe";
 const LINK = "binary_sensor.n_i_n_a_safety_monitor_connected";
 const TEMPERATURE = "sensor.n_i_n_a_weather_temperature";
@@ -92,6 +93,33 @@ export const scenarios = {
       rig(dump, UP).override(TEMPERATURE, 22.0).override(HUMIDITY, 91.0).build(),
   },
 
+  // `dew` with the monitor reading unsafe: the banner reads UNSAFE and the dew
+  // alert is left out, while the dew point cell keeps its warning. The verdict
+  // is invented as `unsafe`'s is.
+  unsafe_dew: {
+    hass: (dump) =>
+      rig(dump, UP)
+        .override(TEMPERATURE, 22.0)
+        .override(HUMIDITY, 91.0)
+        .override(SAFETY, "on")
+        .build(),
+  },
+
+  // `unsafe_dew`, then N.I.N.A. lost past the grace: the banner reads the
+  // safety state unknown, its last reading unsafe, and the held readings
+  // still leave the dew alert out.
+  lost_unsafe_dew: {
+    hass: (dump) =>
+      rig(dump, UP)
+        .override(TEMPERATURE, 22.0)
+        .override(HUMIDITY, 91.0)
+        .override(SAFETY, "on")
+        .build(),
+    after: (dump) => [
+      rig(dump, "nina_unreachable").changedAt(new Date(Date.now() - 45_000)).build(),
+    ],
+  },
+
   // Air at its dew point under the captured clear sky; dew forming, no fog
   // layer; safety verdict left as captured. Invented as `dew` is, as a
   // self-consistent pair: air at its 20.5 °C dew point is saturated, 100%.
@@ -159,6 +187,15 @@ export const scenarios = {
     config: { show_sky_brightness: false },
   },
 
+  // The same station at dawn, reading 5692 lx beside `station`'s 0: sky
+  // brightness spans five orders of magnitude, so it prints in significant
+  // figures rather than a fixed number of decimals. The monitor reads unsafe,
+  // as captured.
+  daylight: { hass: (dump) => rig(dump, "dawn_flats").build() },
+
+  // The ASCOM simulator, whose sky brightness has a fractional part.
+  simulator: { hass: (dump) => rig(dump, "simulator_dome_following").build() },
+
   // The pressure entity disabled: its cell is left out, not dashed, and the
   // other three atmosphere cells close up.
   pressure_disabled: { hass: (dump) => rig(dump, UP).without("weather_pressure").build() },
@@ -204,6 +241,18 @@ export const scenarios = {
   // not-connected panel in place of the whole body, under a grey banner.
   disconnected: { hass: (dump) => rig(dump, "equipment_disconnected").build() },
 
+  // The station that served a midday reading — 37.6 °C, 80123 lx — through
+  // two nights, still connected, beside a monitor reading safe: the frozen
+  // warning in place of the safe banner, over dimmed readings.
+  frozen: { hass: (dump) => rig(dump, FROZEN).build() },
+
+  // `frozen` with the monitor reading unsafe, which still takes the banner;
+  // the header carries the freeze. The verdict is invented as `unsafe`'s is.
+  frozen_unsafe: { hass: (dump) => rig(dump, FROZEN).override(SAFETY, "on").build() },
+
+  // `frozen` folded to its header, which cues the freeze.
+  frozen_folded: { hass: (dump) => rig(dump, FROZEN).build(), folded: ["card"] },
+
   // The lost link: must not read as the unconfigured rig above.
   ...linkScenarios(),
 
@@ -229,6 +278,17 @@ export const scenarios = {
   folded: {
     hass: (dump) =>
       rig(dump, UP).override(TEMPERATURE, 22.0).override(HUMIDITY, 91.0).build(),
+    folded: ["card"],
+  },
+
+  // `unsafe_dew` folded to its header: the UNSAFE banner and no dew alert.
+  folded_unsafe_dew: {
+    hass: (dump) =>
+      rig(dump, UP)
+        .override(TEMPERATURE, 22.0)
+        .override(HUMIDITY, 91.0)
+        .override(SAFETY, "on")
+        .build(),
     folded: ["card"],
   },
 

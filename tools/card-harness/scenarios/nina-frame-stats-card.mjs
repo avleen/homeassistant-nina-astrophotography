@@ -15,17 +15,19 @@
  * ADU by a power of two, which is exact, rather than invent a camera.
  *
  * The newest run — the lights since the last target change sharing the newest
- * light's filter and exposure — scales the star and ADU charts and bounds the
- * trend. The night truncated at earlier lights reaches a run of one and a run
- * read across interleaved filters.
+ * light's filter, exposure, gain and offset — scales every chart and bounds
+ * the trend. The night truncated at earlier lights reaches a run of one and a
+ * run read across interleaved filters; every captured light shares one gain,
+ * so a run split by gain relabels some.
  *
  * A pin reaches a filter charted alone across a target boundary and across
  * interleaved filters, and a pin waiting on a filter with too few lights.
  *
- * Not reached: a gap in a series, since no captured light lacks a reading,
- * nor a trend that reads Improving or Degrading, since the newest ten S frames
- * hold steady, nor a pinned filter returning to a target after another.
- * A pin is preset, never pressed: the click is a browser's to reach.
+ * No captured light lacks a reading or repeats one across a run, so those two
+ * scenarios edit the lights. Not reached: a trend that reads Improving or
+ * Degrading, since the newest ten S frames hold steady, nor a pinned filter
+ * returning to a target after another. A pin is preset, never pressed: the
+ * click is a browser's to reach.
  *
  * `site_configured` holds no session, because it is dumped on a later day than
  * its night. That is the empty card, and it is also what a new night shows
@@ -108,6 +110,14 @@ function relabelled(dump, names, { wheel = true } = {}) {
       { ...states[WHEEL].attributes, options: slots });
 }
 
+// The night with `recent_lights` passed through `edit`, for the readings no
+// captured light has; each caller says what it fabricates.
+function withLights(dump, edit) {
+  const row = dump[NIGHT].states[HFR];
+  return rig(dump, NIGHT).override(HFR, row.state,
+    { ...row.attributes, recent_lights: edit(row.attributes.recent_lights) });
+}
+
 // No `draw` hook: the three sparklines are painted from the frame the render
 // queues, which the runner fires.
 
@@ -183,8 +193,8 @@ export const scenarios = {
         .build(),
   },
 
-  // The first S light, after the Dark Shark's R run: a run of one, so the
-  // star and ADU charts are scaled with the whole night and nothing is faded.
+  // The first S light, after the Dark Shark's R run: a run of one, so every
+  // chart is scaled with the whole night and nothing is faded.
   first_of_run: { hass: (dump) => asOf(dump, 32).build() },
 
   // Midway through the Dark Shark's L and B pairs, the newest an L: the run is
@@ -198,8 +208,8 @@ export const scenarios = {
 
   // Target Scheduler moving one filter between targets: the S run's first
   // sixteen lights relabelled to another of the night's targets, so NGC 281's
-  // run is the newest eight. Too few for a trend, and the star and ADU charts
-  // scale to those eight. A label only, as with the filter relabels; the card
+  // run is the newest eight. Too few for a trend, and every chart scales to
+  // those eight. A label only, as with the filter relabels; the card
   // reads no per-target breakdown.
   target_rotation: {
     hass: (dump) => {
@@ -212,10 +222,26 @@ export const scenarios = {
     },
   },
 
+  // A plan switching gain within one filter: the S run's first twelve lights
+  // relabelled to gain 0, so a boundary marks the switch, the run is the
+  // newest twelve at gain 100, the trend has its ten and names the gain. A
+  // label only: the readings stay those of the captured lights, and the
+  // charts rescale to the twelve.
+  gain_switch: {
+    hass: (dump) => {
+      const states = dump[NIGHT].states;
+      const lights = states[HFR].attributes.recent_lights.map((light, i) =>
+        (i >= 31 && i < 43 ? { ...light, gain: 0 } : light));
+      return rig(dump, NIGHT)
+        .override(HFR, states[HFR].state, { ...states[HFR].attributes, recent_lights: lights })
+        .build();
+    },
+  },
+
   // The night from a 12- or 14-bit camera that does not scale to 16 bits. The
   // chart draws a run by its span about its centre, so the pedestal, scaled
   // with the sky, cannot show: the ops match `session`'s but for the ADU
-  // chart's newest-reading label.
+  // chart's numbers, which the 12-bit night prints to a decimal.
   unscaled_12_bit: { hass: (dump) => unscaled(dump, NIGHT, 16).build() },
   unscaled_14_bit: { hass: (dump) => unscaled(dump, NIGHT, 4).build() },
 
@@ -242,4 +268,24 @@ export const scenarios = {
 
   // Two charts folded to their headings; only the HFR chart is drawn.
   folded_charts: { hass: (dump) => rig(dump, NIGHT).build(), folded: ["stars", "adu"] },
+
+  // Synthetic: the newest light with no stars found, which reports no HFR and
+  // a count of zero. The HFR chart reads a dash for it, level with the light
+  // before, and the star chart scales down to its zero.
+  unmeasured_newest: {
+    hass: (dump) => {
+      const row = dump[NIGHT].states[HFR];
+      const lights = row.attributes.recent_lights.map((light, i, all) =>
+        (i === all.length - 1 ? { ...light, hfr: null, stars: 0 } : light));
+      return rig(dump, NIGHT)
+        .override(HFR, "unknown", { ...row.attributes, recent_lights: lights })
+        .override(STARS, 0)
+        .build();
+    },
+  },
+
+  // Synthetic: every S light given the newest's star count, so the run is
+  // level and the star chart prints its high alone.
+  level_run: { hass: (dump) => withLights(dump, (lights) => lights.map(
+    (light) => (light.filter === "S" ? { ...light, stars: lights.at(-1).stars } : light))).build() },
 };

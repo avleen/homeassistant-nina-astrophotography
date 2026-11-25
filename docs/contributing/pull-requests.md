@@ -27,6 +27,8 @@
   `## [Unreleased]`, in `Added`, `Changed` or `Fixed`: a bold lead sentence,
   then the issue or PR number. State what is true now, not what changed — no
   "no longer" or "now". Start the section if a release has just closed it.
+  The one exception is a PR that changes only docs written for contributors,
+  such as `docs/contributing/` and `docs/feature-ideas.md`: it has no entry.
 - **A release** bumps `version` in `manifest.json`, `pyproject.toml` and
   `uv.lock` and each card's `VERSION`, and dates its CHANGELOG section, then
   tags `v<version>` on `main` and publishes a GitHub release from it — HACS
@@ -34,6 +36,15 @@
   heads each release in Home Assistant's update dialog with the tag, and
   appends the title whenever it differs, so `2.3.0` reads "v2.3.0 - 2.3.0".
   A beta is `v<version>b<N>`, published as a pre-release.
+- **The release notes are the CHANGELOG section**, not GitHub's generated
+  list of PR titles, followed by a `### Contributors` section that thanks by
+  `@login` everyone outside the maintainers whose pull request, review or
+  issue went into the release, naming what each did, and then the line
+  `**Full Changelog**: <compare URL>` from GitHub's generated notes. Find them
+  with `gh api repos/{owner}/{repo}/releases/generate-notes -f
+  tag_name=v<version> -f previous_tag_name=v<previous>`, which lists each
+  PR's author and a *New Contributors* section; check reviews and issue
+  authors too, which it leaves out. A release with none drops the section.
 
 ## Quality bar
 

@@ -14,7 +14,9 @@ from nina_astrophotography.api.models import (
 )
 from nina_astrophotography.api.v2.mapper import map_event, map_frame
 from nina_astrophotography.session import (
+    CoverMove,
     fold,
+    last_cover_move,
     latest_stack,
     latest_target,
     meridian_flip,
@@ -363,7 +365,7 @@ def test_the_recent_frames_ignore_the_session_window(night) -> None:
     `image.last_frame` renders long after the rollover is still last night's
     frame.
     """
-    assert recent_frames(night, "g1")[0].date == max(f.date for f in night)
+    assert recent_frames(night, "g1")[0].frame.date == max(f.date for f in night)
 
 
 def test_the_recent_frames_of_another_process_are_not_offered(night) -> None:
@@ -734,3 +736,30 @@ def test_a_stack_not_updated_since_the_session_began_is_not_listed(
 def test_the_stacks_of_another_process_are_not_listed(night_events) -> None:
     """The plugin holds its stacks in memory; a restart drops every one."""
     assert stacks(night_events, "g2", None) == ()
+
+
+@pytest.mark.parametrize(
+    ("capture", "move"),
+    [
+        (
+            "dawn",
+            CoverMove(
+                closed=True,
+                time=datetime.fromisoformat("2026-09-04T06:21:45.9633511-05:00"),
+            ),
+        ),
+        (
+            "imaging_guiding",
+            CoverMove(
+                closed=False,
+                time=datetime.fromisoformat("2026-09-04T20:22:20.0079478-05:00"),
+            ),
+        ),
+        ("wait_for_time", None),
+    ],
+)
+def test_the_last_cover_move_is_the_newest_cover_event(
+    capture: str, move: CoverMove | None
+) -> None:
+    events = [map_event(e, "g1") for e in load_fixture(f"{capture}_event_history.json")]
+    assert last_cover_move(events, "g1") == move

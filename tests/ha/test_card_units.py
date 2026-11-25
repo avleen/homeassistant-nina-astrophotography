@@ -9,6 +9,7 @@ table would only prove itself right.
 """
 
 from collections.abc import Sequence
+from datetime import datetime, timedelta
 import json
 from pathlib import Path
 
@@ -207,6 +208,107 @@ def test_a_flip_under_way_reads_as_its_phase(
     assert _run([["flipStatus", underway]]) == [shown]
 
 
+WAITING = "binary_sensor.n_i_n_a_sequence_waiting"
+
+
+def _wait_hass(dump: str, **changes: object) -> dict[str, object]:
+    row = CARD_STATES[dump]["states"][WAITING]
+    attributes = {**row["attributes"], **changes}
+    return {"states": {WAITING: {"state": row["state"], "attributes": attributes}}}
+
+
+def _ms(at: str) -> int:
+    return int(datetime.fromisoformat(at).timestamp() * 1000)
+
+
+@pytest.mark.parametrize(
+    ("rows", "now", "wait"),
+    [
+        (
+            _wait_hass("scheduler_waiting"),
+            "2026-09-16T01:45:00+00:00",
+            {"kind": "scheduler", "atMost": False, "approx": False, "left": 1240.808},
+        ),
+        (
+            _wait_hass("wait_for_time"),
+            "2026-11-11T23:57:00+00:00",
+            {"kind": "time", "atMost": False, "approx": False, "left": 558.999},
+        ),
+        (
+            _wait_hass("simulator_altitude_wait"),
+            "2026-11-24T01:58:00+00:00",
+            {"kind": "altitude", "atMost": False, "approx": True, "left": 1440.0},
+        ),
+        (
+            _wait_hass("scheduler_waiting"),
+            "2026-09-16T02:06:00+00:00",
+            {"kind": "scheduler", "atMost": False, "approx": False, "left": None},
+        ),
+        # No capture caught a Wait for Time Span running, or an altitude wait
+        # N.I.N.A. places no end for (`--`).
+        pytest.param(
+            _wait_hass(
+                "wait_for_time", kind="time_span", ends_at=None, span_seconds=300
+            ),
+            "2026-11-11T23:58:00+00:00",
+            {"kind": "time_span", "atMost": True, "approx": False, "left": 240.0},
+            marks=pytest.mark.synthetic,
+        ),
+        pytest.param(
+            _wait_hass("simulator_altitude_wait", ends_at=None),
+            "2026-11-24T01:58:00+00:00",
+            {"kind": "altitude", "atMost": False, "approx": False, "left": None},
+            marks=pytest.mark.synthetic,
+        ),
+        (_wait_hass("site_configured"), "2026-09-16T01:45:00+00:00", None),
+    ],
+    ids=[
+        "Target Scheduler",
+        "Wait for Time",
+        "altitude, expected to the minute",
+        "past its end, the read not yet in",
+        "Wait for Time Span",
+        "altitude, no end expected",
+        "no wait",
+    ],
+)
+def test_a_wait_counts_down_to_the_end_it_names_or_is_placed_at(
+    rows: dict[str, object], now: str, wait: dict[str, object] | None
+) -> None:
+    [read] = _run([["sequenceWait", rows, WAITING, _ms(now)]])
+    if isinstance(read, dict):
+        del read["ends"]
+    assert read == (None if wait is None else pytest.approx(wait))
+
+
+@pytest.mark.parametrize(
+    ("wait", "shown"),
+    [
+        ({"left": 3846.2, "atMost": False, "approx": False}, "Waiting · 1:04:07"),
+        ({"left": 246.5, "atMost": True, "approx": False}, "Waiting · ≤ 4:07"),
+        ({"left": 1439.5, "atMost": False, "approx": True}, "Waiting · ≈ 24 min"),
+        ({"left": 3846.2, "atMost": False, "approx": True}, "Waiting · ≈ 1 h 05 min"),
+        ({"left": None, "atMost": False, "approx": False}, "Waiting"),
+    ],
+)
+def test_a_wait_reads_as_its_time_left(wait: dict[str, object], shown: str) -> None:
+    assert _run([["waitCountdown", wait]]) == [shown]
+
+
+@pytest.mark.parametrize(
+    ("kind", "shown"),
+    [
+        ("scheduler", "Waiting for next target"),
+        ("time", "Wait for Time"),
+        ("time_span", "Wait for Time Span"),
+        ("altitude", "Waiting for an altitude"),
+        (None, "Waiting"),
+    ],
+)
+def test_a_wait_reads_as_what_it_waits_for(kind: str | None, shown: str) -> None:
+    assert _run([["waitReason", {"kind": kind}]]) == [shown]
+
+
 @pytest.mark.parametrize(
     ("maxima", "full_scale"),
     [
@@ -233,3 +335,214 @@ def test_the_full_scale_is_the_brightest_pixel_rounded_up_to_a_bit_depth(
     maxima: list[float | None], full_scale: int
 ) -> None:
     assert _run([["aduFullScale", maxima]]) == [full_scale]
+
+
+@pytest.mark.parametrize(
+    ("value", "shown"),
+    [
+        (0.0, "0"),
+        (1.0, "1"),
+        (80123.0, "80123"),
+        (94.66666666666694, "94.7"),
+        (0.5, "0.5"),
+        (0.0012345, "0.00123"),
+    ],
+)
+def test_a_significant_reading_keeps_its_whole_part_and_sheds_padding(
+    value: float, shown: str
+) -> None:
+    q = {"value": value, "unit": "lx", "precision": None}
+    assert _run([["significant", q, 3]]) == [shown]
+
+
+def test_a_registry_precision_overrides_significant_figures() -> None:
+    q = {"value": 94.66666666666694, "unit": "lx", "precision": 0}
+    assert _run([["significant", q, 3]]) == ["95"]
+
+
+GUIDER_STATUS = "sensor.n_i_n_a_guider_status"
+GUIDER_RMS = "sensor.n_i_n_a_guider_rms_total"
+GUIDER = "switch.n_i_n_a_guider"
+LIGHTS = "sensor.n_i_n_a_last_image_hfr"
+IDS = {"status": GUIDER_STATUS, "rms": GUIDER_RMS, "guider": GUIDER, "lights": LIGHTS}
+GRACE = 180
+# `weather_frozen` holds the corpus's one mid-session `LostLock`, with RMS
+# unknown and the night's lights; the clock is its newest light.
+LIGHT = datetime.fromisoformat(
+    CARD_STATES["weather_frozen"]["states"][LIGHTS]["attributes"]["recent_lights"][-1][
+        "date"
+    ]
+)
+
+
+def _guider(
+    dump: str = "weather_frozen",
+    changed: dict[str, float | None] | None = None,
+    **readings: str,
+) -> dict[str, object]:
+    """`dump`'s guider and lights rows, each in `changed` last changed that
+    many minutes from `LIGHT`; a row given `None` is left out. `readings` moves
+    a row's state, keyed as in `IDS`.
+    """
+    states = CARD_STATES[dump]["states"]
+    rows = {}
+    for key, entity_id in IDS.items():
+        minutes = (changed or {}).get(entity_id, 0.0)
+        if minutes is None:
+            continue
+        rows[entity_id] = {
+            **states[entity_id],
+            "last_changed": (LIGHT + timedelta(minutes=minutes)).isoformat(),
+        }
+        if key in readings:
+            rows[entity_id]["state"] = readings[key]
+    return {"states": rows}
+
+
+def _not_guiding(rows: dict[str, object], minutes: float = 0) -> dict | None:
+    now = _ms((LIGHT + timedelta(minutes=minutes)).isoformat())
+    [read] = _run([["notGuiding", rows, IDS, GRACE, now]])
+    assert read is None or isinstance(read, dict)
+    return read
+
+
+@pytest.mark.parametrize(
+    ("rows", "warning"),
+    [
+        # The `LostLock` a stop leaves, with the switch off.
+        (_guider(), "Guiding stopped"),
+        (
+            _guider("simulator_guider_looping_after_guiding"),
+            "Guider looping, not guiding",
+        ),
+        (_guider("simulator_guider_paused"), "Guider paused, not guiding"),
+        (_guider("site_configured"), None),
+        # Without the switch, only `Stopped` is told from a stop's leftover.
+        (_guider(changed={GUIDER: None}), None),
+        # No dump holds these mid-session.
+        pytest.param(
+            _guider(guider="on"), "Guide star lost", marks=pytest.mark.synthetic
+        ),
+        pytest.param(
+            _guider("simulator_guider_looping_after_guiding", status="Selected"),
+            "Guider looping, not guiding",
+            marks=pytest.mark.synthetic,
+        ),
+        pytest.param(
+            _guider(guider="on", status="Calibrating"),
+            "Guider calibrating, not guiding",
+            marks=pytest.mark.synthetic,
+        ),
+        pytest.param(
+            _guider(changed={GUIDER: None}, status="Stopped"),
+            "Guiding stopped",
+            marks=pytest.mark.synthetic,
+        ),
+    ],
+    ids=[
+        "stopped",
+        "looping",
+        "paused",
+        "guiding",
+        "no switch",
+        "lost",
+        "selected",
+        "calibrating",
+        "stopped, no switch",
+    ],
+)
+def test_a_guider_not_guiding_is_named(
+    rows: dict[str, object], warning: str | None
+) -> None:
+    read = _not_guiding(rows)
+    assert (read and read["warning"]) == warning
+
+
+@pytest.mark.parametrize(
+    ("changed", "readings", "left"),
+    [
+        ({GUIDER_STATUS: -1, GUIDER_RMS: -1, GUIDER: -60}, {}, 120),
+        # Lost, then looping, then lost again: RMS unknown throughout.
+        ({GUIDER_STATUS: -1, GUIDER_RMS: -4, GUIDER: -60}, {}, 0),
+        # A stop's leftover, then guiding restarted.
+        ({GUIDER_STATUS: -60, GUIDER_RMS: -60, GUIDER: -2}, {}, 60),
+        # No RMS row, or one still reading, to say when guiding stopped.
+        ({GUIDER_STATUS: -1, GUIDER_RMS: None, GUIDER: -60}, {}, 120),
+        pytest.param(
+            {GUIDER_STATUS: -1, GUIDER_RMS: -4, GUIDER: -60},
+            {"rms": "0.41"},
+            120,
+            marks=pytest.mark.synthetic,
+        ),
+    ],
+    ids=[
+        "one status",
+        "a run of statuses",
+        "the switch since",
+        "no RMS row",
+        "RMS still reading",
+    ],
+)
+def test_not_guiding_is_timed_from_when_guiding_stopped(
+    changed: dict[str, float | None], readings: dict[str, str], left: float
+) -> None:
+    read = _not_guiding(_guider(changed=changed, **readings))
+    assert read is not None
+    assert read["left"] == pytest.approx(left)
+
+
+def test_a_stretch_of_unknown_age_is_never_due() -> None:
+    rows = {
+        entity_id: CARD_STATES["weather_frozen"]["states"][entity_id]
+        for entity_id in IDS.values()
+    }
+    assert _not_guiding({"states": rows}) == {
+        "kind": "Stopped",
+        "warning": "Guiding stopped",
+        "left": None,
+        "lit": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("dump", "began", "lit"),
+    [
+        # `weather_frozen`'s newest light is a 300 s sub.
+        ("weather_frozen", -6, True),
+        # Begun before the stop, so partly guided.
+        ("weather_frozen", -1, False),
+        # N.I.N.A. stops guiding about 3 s after saving a light, which a rig
+        # clock 10 s ahead of Home Assistant's stamps 7 s after the stop.
+        ("weather_frozen", -7 / 60, False),
+        # As through an autofocus run, which exposes and saves no light.
+        ("weather_frozen", 1, False),
+        ("simulator_guider_looping_after_guiding", -1, False),
+    ],
+    ids=[
+        "begun after guiding stopped",
+        "begun before",
+        "saved just before, the rig clock ahead",
+        "none since",
+        "no light at all",
+    ],
+)
+def test_only_a_light_begun_after_guiding_stopped_is_unguided(
+    dump: str, began: float, lit: bool
+) -> None:
+    changed = {GUIDER_STATUS: began, GUIDER_RMS: began, GUIDER: -60}
+    read = _not_guiding(_guider(dump, changed), minutes=5)
+    assert read is not None
+    assert read["lit"] is lit
+
+
+@pytest.mark.parametrize(
+    ("status", "shown"),
+    [
+        ("Guiding", "Active"),
+        ("LostLock", "Lost lock"),
+        ("Looping", "Looping"),
+        ("Calibrating", "Calibrating"),
+    ],
+)
+def test_the_guiding_heading_names_the_guider_status(status: str, shown: str) -> None:
+    assert _run([["guiderStatus", status]]) == [shown]

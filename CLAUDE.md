@@ -73,15 +73,21 @@ custom_components/nina_astrophotography/
   binary_sensor.py sensor.py number.py select.py light.py switch.py
   button.py image.py event.py   every platform is a table of entity
                       descriptors over NinaData; copy binary_sensor.py
-  www/                7 Lovelace cards and five shared modules; see
+  www/                8 Lovelace cards and five shared modules; see
                       docs/contributing/cards.md. `frontend.py` serves them and
                       registers each as a Lovelace resource
   views.py            the image proxy: a card fetches frames through Home
                       Assistant's own origin, since N.I.N.A. serves plain HTTP
   brand/              the icon and logo, which Home Assistant and HACS read
-blueprints/automation/nina_astrophotography/   6 automation blueprints; entities
-                      come from typed `!input` selectors, never hardcoded, and
-                      each is instantiated for real in tests/ha/test_blueprints.py
+  blueprints/         11 automation blueprints; entities come from typed
+                      `!input` selectors, never hardcoded, and each is
+                      instantiated for real in tests/ha/test_blueprints.py.
+                      `blueprint_sync.py` installs them into
+                      `<config>/blueprints/automation/nina_astrophotography/`
+                      on every start, so every automation runs the shipped
+                      version: never remove or rename a released input, and
+                      give a new one a default (`RELEASED` and `RELEASED_REQUIRED` in
+                      that test enforce it)
 tests/unit/                                    HA-free; tests/ha/ under PHACC
 tests/scenarios/                               FakeRig — see its README
 ```

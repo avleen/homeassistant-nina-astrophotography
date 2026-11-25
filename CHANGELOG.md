@@ -9,9 +9,12 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
 ### Added
 
 - **The frame statistics card's HFR, star count and mean ADU graphs print the
-  high and low of their line** on the left (#271), and the newest value, to fixed
-  places, on the right. The star count and mean ADU lines cover the newest
-  run, and HFR the whole night.
+  high and low of their line** on the left (#271), each level with its own
+  value, and the newest light's value on the right: HFR to two decimals, stars
+  and ADU as whole numbers, and ADU to one decimal from a camera whose counts
+  are too small for whole numbers to tell apart. A newest light that measured
+  nothing reads `—`. The line is the newest run the graph is scaled to, or
+  the whole night while that run has fewer than two readings.
 - **A filter chip on the frame statistics card charts that filter alone.**
   Pressing one draws that filter's recent lights, evenly spaced, and points the
   HFR trend and rolling average at its run; the chart titles name it. Pressing
@@ -19,8 +22,271 @@ All notable changes to the N.I.N.A. Astrophotography Home Assistant integration 
   and while the filter has fewer than two recent HFR readings, as at the start
   of a night, the charts show every filter until it has.
 
+## [2.9.0] - 2026-11-24
+
+### Added
+
+- **The observatory card counts down a sequence wait** (#310). While the
+  sequence waits, the header reads `Waiting · 20:41` and the session banner
+  says what it waits for and until when, in the browser's time zone:
+  `Waiting for next target · until 21:05` for Target Scheduler, or Wait for
+  Time. A Wait for Time Span counts down to the latest it can end,
+  `Waiting · ≤ 4:00`, since the sequence is read only every few minutes while
+  nothing is imaging.
+- **A wait for an altitude has an end** (#309): Wait for Altitude, Wait if
+  Sun Altitude, Wait if Moon Altitude and Wait until Above horizon publish
+  the time N.I.N.A. expects them to end on `sensor.<instance>_wait_ends_at`
+  and the `ends_at` attribute of `binary_sensor.<instance>_sequence_waiting`.
+  It is N.I.N.A.'s estimate, shown to the minute, so the observatory card
+  counts it down in minutes and marks it approximate: `Waiting · ≈ 24 min`,
+  and `Waiting for an altitude · until about 20:22`. A wait that runs past
+  its estimate still reads as waiting, keeping that end, until an hour past
+  it or twelve hours after it began, whichever is later. One N.I.N.A. cannot
+  place (`--`) has no end, and none has an end until the mount has connected
+  since Home Assistant started. The estimate carries no date, so a wait first
+  seen more than six hours past it, or expected 18 to 24 hours ahead, is
+  misread; the reference says how.
+- **The guider not guiding blueprint** (#311) notifies when a light begun
+  after guiding stopped is saved, once the guider has not guided for three
+  minutes: the guide star lost,
+  PHD2 looping, paused or calibrating, or guiding stopped, as when the guide
+  camera drops out. Not during a meridian flip or a sequence wait, and not for
+  an autofocus run or a plate solve, which save no light. The guiding alert
+  cannot see this, since guide RMS reads unknown whenever PHD2 is not
+  guiding.
+
 ### Fixed
 
+- **The observatory card warns of a guider not guiding while lights are
+  saved** (#311). Guiding stopped, the guide star lost, or a guider looping,
+  paused or calibrating, for three minutes with a light begun since, turns the
+  Guider chip orange and reads `Guiding stopped`, `Guide star lost` or
+  `Guider looping, not guiding` on a collapsed card. An autofocus run, which
+  stops guiding and saves no light, does not warn. The
+  Guiding heading names the status, such as `Lost lock` or `Looping`.
+- **The observatory card does not warn of guiding stopped during a wait**
+  (#310), which stops guiding on purpose: Target Scheduler stops it while it
+  waits for its next target, and a collapsed card would show it as a fault.
+- **The observatory card shows a dash for the target while Target Scheduler
+  waits for its next one** (#310), instead of the target before it, or
+  `unknown` before the night's first.
+
+## [2.8.0] - 2026-11-22
+
+### Added
+
+- **`binary_sensor.<instance>_weather_readings_frozen`** (#305) turns `on`
+  when every reading of a connected weather source has held exactly the same
+  value for an hour on a station, two hours on one of N.I.N.A.'s web sources,
+  or fifteen minutes when a daytime sky brightness is still reported after
+  dusk. A station, feed or driver that stops updating looks like this:
+  N.I.N.A. keeps reporting it connected, and every channel stays available at
+  its last value. Its `frozen_since` attribute is the first poll that read
+  those values. The weather card shows the freeze in place of a safe verdict,
+  with what to do about it, and dims the readings. Both the station and the
+  web source windows are options, under **Configure**.
+- **The weather readings frozen blueprint** (#305) notifies when the sensor
+  turns on.
+- **The unsafe conditions abort holds its resume while the weather readings are
+  frozen** (#305), and says so, once you pick the sensor in its new optional
+  input: a safety monitor fed by a frozen station reads safe whatever the sky.
+- **The imaging stall alert is not muted by an unsafe verdict over frozen
+  weather readings** (#305), once you pick the sensor in its new optional
+  input, and names the freeze in its detail.
+
+### Changed
+
+- **The frame statistics card's HFR chart is scaled to the newest run**
+  (#173), as the star count and mean ADU charts are, with the rest of the
+  night faded behind it, and its dashed line is the run's average, labelled
+  `run avg` and drawn from the run's first light. HFR is in pixels, so
+  luminance at 1×1 and colour at 2×2 sit roughly a factor of two apart: a
+  chart scaled to both would flatten each, with the night's average between
+  them. The newest run is also keyed on gain and offset, which move the mean
+  ADU, so a plan that switches gain within one filter does not read as a
+  trend; on a night that changes gain the trend box names the run's, and a
+  change of gain or offset is marked on the charts as a new target or
+  exposure is. `recent_lights` on `sensor.<instance>_last_image_hfr` carries
+  each light's `gain` and `offset`. N.I.N.A. reports no binning per frame, so
+  a change of binning within one filter is not told apart.
+
+### Fixed
+
+- **The weather card prints sky brightness to three significant figures**
+  (#117), keeping the whole part and dropping trailing zeros: `0 lx` and
+  `5692 lx` from a station that measures whole lux, `0.00123 lx` from one that
+  resolves a dark sky. A display precision set on the entity takes precedence.
+
+## [2.7.0] - 2026-11-15
+
+### Added
+
+- **`rotator_move` and `rotator_move_mechanical` actions** (#267) turn the
+  rotator to a sky position angle or to a mechanical angle. A mechanical angle
+  outside the half or quarter range set in N.I.N.A.'s profile is refused, as N.I.N.A.
+  would turn to another angle instead, and a sky angle is refused until a
+  plate solve syncs the rotator, as N.I.N.A. would leave the rotator where it
+  is. `number.<instance>_rotator_position` and
+  `_rotator_mechanical_position` refuse the same moves.
+- **Flat panel control and monitoring** (#268, #269, #288, #289, #294):
+  - **Actions:** `flat_panel_set_cover` opens or closes the cover,
+    `flat_panel_set_light` switches the light, at an optional `brightness`,
+    and `flat_panel_set_brightness` sets a `level`. Levels are in the panel's
+    own units and held to the range it reports. The light comes on at the
+    brightness given, else at the level it is already lit at, else at its
+    dimmest, and is lit as `light.<instance>_flat_panel_light` is: the
+    brightness alone first, then a light-on only if the panel reports that
+    level and still reads off. Switching on or setting a level on a panel
+    reporting no range is refused, since N.I.N.A. could light it at full
+    output, and a panel reporting no cover or no light has that action
+    refused. On a panel with a cover, lighting it is refused unless the cover
+    reads `Closed`, and opening the cover is refused while it is lit. Closing
+    the cover while a sequence runs, which blanks every light after it, is
+    refused unless the call sets `force: true`.
+  - **The observatory card shows the flat panel:** a Flat Panel chip and a
+    section with the cover, the light and the brightness in the panel's own
+    units, and Open or Close Flat Cover under Controls, each asking for
+    confirmation. A cover at rest offers the one button that moves it, and
+    the button pressed stays, greyed out, until the cover arrives. A cover
+    stuck, in error or not read offers both. Open is greyed out while the
+    panel is lit, and a close confirmed over a running sequence is forced.
+  - **A cover stuck part-way is a fault.** N.I.N.A. reports a cover still
+    moving and one stuck the same way, and some drivers never turn a stuck
+    cover into an error. Part-way for longer than the observatory card's
+    `cover_stuck_after` option (20–600 seconds, default 60), or in error, the
+    cover turns the Flat Panel chip red and stays on a collapsed card. The
+    **Flat cover fault** blueprint notifies when the cover stays part-way past
+    its own threshold, or reports an error; its **Only after a move** option
+    quiets a driver that reads part-way while idle. A cover stuck part-way can
+    vignette or block lights, or spoil flats.
+  - **A warning for light frames taken behind the closed cover:**
+    `binary_sensor.<instance>_flat_panel_light_frames_behind_closed_cover`
+    turns `on` when the newest frame is a light exposed after the cover was
+    seen closed. Flats and darks behind the cover, and a cover closed after
+    the night's last light, leave it `off`. The observatory card turns the
+    Flat Panel chip red and keeps the warning on a collapsed card, and the
+    **Flat cover closed on lights** blueprint sends a notification.
+  - **Both alerts hold through a panel disconnect.** A sequence that
+    disconnects the panel once its cover has moved leaves the warning holding
+    until N.I.N.A. reports the cover opened, and the cover state holding a
+    part-way or error reading until N.I.N.A. reports a finished move, so a
+    cover that jams on the way still alerts, and the observatory card keeps
+    the red Flat Panel chip, marked disconnected. What is held is forgotten
+    when Home Assistant restarts.
+  - **The Flat panel left lit blueprint** notifies when the panel's light has
+    been on for 30 minutes (adjustable) with no flat saved, after an aborted
+    flat run or a panel switched on and forgotten.
+- **The image panel has a Lights only button** beside the recent frames (#270). It
+  limits the main image and the strip to lights, so the last sub stays on
+  screen through a flat run of any length. The card's `lights_only` option
+  sets it, and a browser that presses the button away from that setting
+  remembers its own choice per rig. A card with `show_strip` off has no
+  button, and follows the option alone. `sensor.<instance>_last_image_mean_adu`'s
+  `recent_frames` also holds the 20 newest lights however many frames
+  followed them, and gives every entry its `age`.
+- **`custom:nina-site-camera-card`** shows a pier, all-sky or observatory
+  camera in the same frame as the other cards (#264), from any camera or image
+  entities. Two or more get chips to choose between them, a tap opens the
+  entity's more-info dialog, and a camera's `url` shows as an **Open** link.
+
+### Changed
+
+- **The integration installs and updates its blueprints** (#256). They ship
+  inside `custom_components/nina_astrophotography/blueprints/`, and each start
+  of Home Assistant writes any that differ to
+  `config/blueprints/automation/nina_astrophotography/` and reloads the
+  automations, so every automation built from one runs the installed release's
+  version. That folder belongs to the integration: an edit there is
+  overwritten, and **Take control** on an automation is how to customise one.
+  A copy imported from GitHub is never updated, so an automation still using
+  one raises a repair that says how to move it onto the installed copy, then
+  restart before deleting the old one. A
+  released input is never removed or renamed, and a new one comes with a
+  default. The blueprints carry no `source_url`, so Home Assistant offers no
+  **Re-import**, and there is no `just deploy-blueprints`.
+- **The weather card leaves out the dew alert while the safety monitor reads
+  unsafe** (#295), or last read unsafe before N.I.N.A. stopped answering: the
+  safety banner already calls for closing up. The Dew Point cell keeps its
+  warning colour.
+- **The observatory card shows both rotator angles out of the box** (#266).
+  `number.<instance>_rotator_mechanical_position` ships enabled, as a control
+  beside the sky position, and `binary_sensor.<instance>_rotator_synced` is a
+  sensor rather than a diagnostic. An upgraded install has both rows enabled
+  for it, unless you disabled them yourself.
+- **The README's dashboard and card samples are current**, taken from a live
+  rig, and the gallery gains the site camera card.
+- **The card harness logs each image a card asks for** (#264) and each
+  action it calls, and `Rig.add` gives a scenario a row from another
+  integration.
+- **A release's notes credit its contributors.** The GitHub release carries
+  the CHANGELOG section, then a *Contributors* section thanking everyone
+  outside the maintainers whose pull request, review or issue shaped it, and
+  GitHub's compare link to the previous release.
+- **The test VM's stable channel installs Advanced API 2.2.15.3** (#276), and the
+  AMD64 ASTAP pin matches the archive SourceForge serves.
+- **CI runs the current major of each action** (#275) — checkout v7, setup-uv
+  v10.3.3, upload-artifact v7, download-artifact v8 — and the Lovelace
+  module tests under Node 26, the active LTS.
+- **The development tooling and test libraries are current** (#272): ruff 0.17.5,
+  datamodel-code-generator 0.84.0 — the newest that resolves beside the
+  pydantic Home Assistant pins — pre-commit 4.7.0, and the test suite's
+  Home Assistant 2026.9.4 with the rest of the lock at the newest its pins
+  allow.
+- **The Home Assistant suite and pyright run against Home Assistant
+  2026.10.4** (#273), whose core validates with probatio in voluptuous's place.
+  `nina-units.js` converts `atm`, the pressure unit that release offers.
+- **The fake rig's disconnected flat panel is the captured one** (#282), from
+  `imaging_guiding`, which reports no on/off or cover support and a
+  `MaxBrightness` of 0. The camera, safety monitor and switch hub are the
+  three derived down-blocks, as `tests/scenarios/README.md` says.
+
+### Fixed
+
+- **The observatory card's buttons hold still after a press** (#294). An
+  update changes only what changed on the card, so the button under the
+  pointer is kept rather than replaced and faded back into its hover colour.
+- **The flat panel's light, brightness, cover and cover state** (#283,
+  #284, #285, #289, #290):
+  - **`light.<instance>_flat_panel_light` comes on at the brightness asked
+    for, never at full output.** N.I.N.A. runs a brightness and a light-on
+    concurrently, and a light-on that runs first lights an ASCOM or Alpaca
+    panel at `MaxBrightness` the first time after N.I.N.A. connects it. So the
+    light sends the brightness alone and waits for the panel to report it,
+    within one Home Assistant step: an ASCOM or Alpaca panel is lit by it, and
+    a native one is switched on after it. A panel that does not report it
+    within 30 seconds is refused, with the level it reports if it is lit at
+    another. Every level also scales to at least one step above the panel's
+    minimum, so a panel whose range is under 128, such as N.I.N.A.'s simulator
+    panel at 0–100, comes on dim: the minimum leaves an ASCOM panel dark, and
+    the light-on after it lights the panel at `MaxBrightness`.
+  - **The panel stays dark behind an open cover.** On a panel with a cover,
+    the light refuses to come on, and
+    `number.<instance>_flat_panel_brightness` refuses a level above the
+    minimum, unless the cover reads `Closed`: a lit panel with its cover open
+    shines at the sky and across the site. `switch.<instance>_flat_panel_cover`
+    refuses to open while the panel is lit. The brightness number is a box
+    rather than a slider, so a stray drag cannot light the panel.
+  - **`number.<instance>_flat_panel_brightness` is unavailable on a panel
+    reporting no brightness range**, such as a cover-only panel, rather than
+    offering Home Assistant's default 0–100 slider and refusing every value.
+    `number.<instance>_camera_usb_limit` does the same on a camera reporting
+    no USB limit range. As for any unavailable entity, Home Assistant skips a
+    `number.set_value` on it rather than raising an error.
+  - **`sensor.<instance>_flat_panel_cover_state` reads `NotPresent` on a
+    panel that reports it cannot open or close a cover**, whatever cover
+    state its driver reports, so a panel with no cover never reads as stuck
+    part-way.
+  - **The reference says what `number.<instance>_flat_panel_brightness` does
+    to the panel's light.** The number sends only the brightness, but
+    N.I.N.A.'s ASCOM driver sets one by switching the calibrator on at it, so
+    an ASCOM or Alpaca panel lights at any level above 0 and goes dark at 0.
+    A panel on one of N.I.N.A.'s native drivers, such as Alnitak's or
+    Pegasus's, keeps its light as it is. The reference also says when an ASCOM
+    or Alpaca panel's next bare light-on, N.I.N.A.'s own toggle included,
+    comes on at full brightness. `light.<instance>_flat_panel_light` turns any
+    panel on or off.
+- **The observatory card shows the last frame's mean ADU as a whole number**,
+  as the latest image card does, rather than every decimal the sensor holds.
 - **A screen reader reaches the live stack card's Start/Stop as a control of
   its own** (#262). The button sits beside the header that collapses the
   card, not inside it, and stays in place on a collapsed card.

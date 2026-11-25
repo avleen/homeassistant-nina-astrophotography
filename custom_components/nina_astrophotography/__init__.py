@@ -5,7 +5,7 @@ from dataclasses import asdict
 from datetime import timedelta
 import functools
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import (
@@ -29,7 +29,7 @@ from homeassistant.helpers.service import async_extract_config_entry_ids
 from homeassistant.helpers.typing import ConfigType
 import voluptuous as vol
 
-from . import binary_sensor, button, number, sensor, switch
+from . import binary_sensor, button, light, number, sensor, switch
 from .api.errors import (
     NinaCommandError,
     NinaConnectionError,
@@ -37,8 +37,9 @@ from .api.errors import (
     NinaRequestError,
     NinaUnavailableError,
 )
-from .api.models import NinaEvent
+from .api.models import FlatDeviceModel, NinaEvent
 from .api.v2 import NinaClientV2, NinaEventStream
+from .blueprint_sync import async_install_blueprints, async_track_imported_copies
 from .const import (
     CAMERA_SETPOINT_RANGE,
     CONF_HOST,
@@ -47,8 +48,12 @@ from .const import (
     CONF_POLL_INTERVAL,
     CONF_PORT,
     CONF_ROLLOVER_HOUR,
+    CONF_WEATHER_FREEZE_STATION,
+    CONF_WEATHER_FREEZE_WEB,
     DEFAULT_OUTAGE_GRACE,
     DEFAULT_ROLLOVER_HOUR,
+    DEFAULT_WEATHER_FREEZE_STATION,
+    DEFAULT_WEATHER_FREEZE_WEB,
     DOMAIN,
     POLL_INTERVAL,
     SERVICE_CAMERA_ABORT_CAPTURE,
@@ -59,6 +64,9 @@ from .const import (
     SERVICE_DOME_OPEN,
     SERVICE_DOME_PARK,
     SERVICE_FILTERWHEEL_CHANGE,
+    SERVICE_FLAT_PANEL_SET_BRIGHTNESS,
+    SERVICE_FLAT_PANEL_SET_COVER,
+    SERVICE_FLAT_PANEL_SET_LIGHT,
     SERVICE_FOCUSER_AUTO_FOCUS,
     SERVICE_FOCUSER_MOVE,
     SERVICE_GUIDER_START,
@@ -67,6 +75,8 @@ from .const import (
     SERVICE_MOUNT_SLEW,
     SERVICE_MOUNT_TRACKING,
     SERVICE_MOUNT_UNPARK,
+    SERVICE_ROTATOR_MOVE,
+    SERVICE_ROTATOR_MOVE_MECHANICAL,
     SERVICE_SEQUENCE_LOAD,
     SERVICE_SEQUENCE_START,
     SERVICE_SEQUENCE_STOP,
@@ -74,7 +84,17 @@ from .const import (
     normalize_host,
 )
 from .coordinator import NinaConfigEntry, NinaCoordinator, NinaData, NinaRuntimeData
-from .device import async_sync_devices, kind_of, refused_while_unsafe
+from .device import (
+    async_sync_devices,
+    kind_of,
+    raise_closing_while_running,
+    raise_if_level_lights_open_panel,
+    raise_outside_rotator_range,
+    raise_unless_cover_closed,
+    raise_while_lit,
+    refused_while_unsafe,
+    refused_while_unsynced,
+)
 from .entity import NinaEntityDescription, refusals_raised, usable
 from .frontend import (
     async_ensure_frontend_resources,
@@ -114,13 +134,23 @@ _DOME_ENABLED: tuple[tuple[Platform, NinaEntityDescription], ...] = tuple(
     if description.kind == "dome" and description.entity_registry_enabled_default
 )
 
+# The rotator rows minor version 4 enables, by unique id suffix.
+_ROTATOR_ENABLED = (
+    (Platform.BINARY_SENSOR, "rotator_synced"),
+    (Platform.NUMBER, "rotator_mechanical_position"),
+)
+
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Register the actions, the image proxy and the Lovelace cards."""
+    """Register the actions, the image proxy and the Lovelace cards, and
+    install the blueprints.
+    """
     _register_services(hass)
     async_register_views(hass)
     await async_serve_cards(hass)
     await async_register_frontend_resources(hass)
+    await async_install_blueprints(hass)
+    await async_track_imported_copies(hass)
     return True
 
 
@@ -135,6 +165,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: NinaConfigEntry) -> bool
     instance_name = entry.data[CONF_INSTANCE_NAME]
     rollover_hour = entry.options.get(CONF_ROLLOVER_HOUR, DEFAULT_ROLLOVER_HOUR)
     outage_grace = entry.options.get(CONF_OUTAGE_GRACE, DEFAULT_OUTAGE_GRACE)
+    freeze_station = entry.options.get(
+        CONF_WEATHER_FREEZE_STATION, DEFAULT_WEATHER_FREEZE_STATION
+    )
+    freeze_web = entry.options.get(CONF_WEATHER_FREEZE_WEB, DEFAULT_WEATHER_FREEZE_WEB)
 
     session = async_get_clientsession(hass)
     client = NinaClientV2(host, port, session)
@@ -160,6 +194,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: NinaConfigEntry) -> bool
         version=version,
         rollover_hour=rollover_hour,
         outage_grace=timedelta(seconds=outage_grace),
+        weather_freeze_station=timedelta(minutes=freeze_station),
+        weather_freeze_web=timedelta(minutes=freeze_web),
     )
 
     # ── The event socket: real-time push ─────────────────────────────────────
@@ -257,6 +293,12 @@ async def async_migrate_entry(hass: HomeAssistant, entry: NinaConfigEntry) -> bo
     Minor 3 drops the unique id, which was the address. The duplicate guard
     compares host and port in `data` instead, so the host is normalised the
     way the config flow stores it.
+
+    Minor 4 enables the rotator rows the observatory card reads, which earlier
+    versions registered disabled. Only rows the integration disabled, and not
+    on an entry whose system options disable new entities, which Home
+    Assistant records the same way: a row a user disabled is left alone.
+    Home Assistant reloads the entry 30 s after a row is enabled.
     """
     if entry.version == 1 and entry.minor_version < 2:
         data = {k: v for k, v in entry.data.items() if k != CONF_POLL_INTERVAL}
@@ -272,6 +314,17 @@ async def async_migrate_entry(hass: HomeAssistant, entry: NinaConfigEntry) -> bo
             unique_id=None,
             minor_version=3,
         )
+    if entry.version == 1 and entry.minor_version < 4:
+        if not entry.pref_disable_new_entities:
+            registry = er.async_get(hass)
+            for platform, key in _ROTATOR_ENABLED:
+                entity_id = registry.async_get_entity_id(
+                    platform, DOMAIN, f"{entry.entry_id}_{key}"
+                )
+                row = registry.async_get(entity_id) if entity_id else None
+                if row and row.disabled_by is er.RegistryEntryDisabler.INTEGRATION:
+                    registry.async_update_entity(row.entity_id, disabled_by=None)
+        hass.config_entries.async_update_entry(entry, minor_version=4)
     return True
 
 
@@ -397,9 +450,14 @@ async def _entry_for_target(hass: HomeAssistant, call: ServiceCall) -> NinaConfi
     return entry
 
 
+async def _coordinator_for(hass: HomeAssistant, call: ServiceCall) -> NinaCoordinator:
+    """The coordinator of the rig a call is aimed at."""
+    return (await _entry_for_target(hass, call)).runtime_data.coordinator
+
+
 async def _client_for_target(hass: HomeAssistant, call: ServiceCall) -> NinaClientV2:
     """The client of the rig a call is aimed at."""
-    return (await _entry_for_target(hass, call)).runtime_data.coordinator.client
+    return (await _coordinator_for(hass, call)).client
 
 
 def _format(value: float) -> str:
@@ -479,6 +537,109 @@ def _service(handler: Callable[[ServiceCall], Awaitable[None]]):
     return wrapped
 
 
+def _refuse_unsupported(
+    panel: FlatDeviceModel | None, feature: Literal["cover", "light"]
+) -> None:
+    """Refuse a command for a feature the connected panel reports it lacks.
+
+    A disconnected panel reports every capability false, so only an
+    explicit false from a connected one is believed.
+    """
+    if panel is None or not panel.connected:
+        return
+    supported = (
+        panel.supports_open_close if feature == "cover" else panel.supports_on_off
+    )
+    if supported is False:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="flat_panel_unsupported",
+            translation_placeholders={"feature": feature},
+        )
+
+
+def _panel_range(panel: FlatDeviceModel | None) -> tuple[float, float]:
+    """The panel's brightness range, refusing a panel reporting none.
+
+    An ASCOM panel lights at any level above 0 and N.I.N.A. clamps to
+    `MaxBrightness`, so a level sent to a panel whose range is unknown, or that
+    connects before the next poll, could light it at full output.
+    """
+    if panel is None or panel.brightness_range is None:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN, translation_key="flat_panel_no_range"
+        )
+    return panel.brightness_range
+
+
+async def _handle_flat_panel_set_cover(call: ServiceCall) -> None:
+    """Open the cover, refused while the panel reads lit; or close it, refused
+    while the sequencer runs unless `force` is set.
+    """
+    coordinator = await _coordinator_for(call.hass, call)
+    _refuse_unsupported(coordinator.data.snapshot.flat_device, "cover")
+    if call.data["open"]:
+        raise_while_lit(coordinator.data)
+        await coordinator.client.open_flat_cover()
+    else:
+        raise_closing_while_running(coordinator.data, call.data["force"])
+        await coordinator.client.close_flat_cover()
+
+
+async def _handle_flat_panel_set_light(call: ServiceCall) -> None:
+    """Switch the light, sending a brightness before every switch on.
+
+    A bare `set-light?on=true` lights the panel at the level N.I.N.A. last set
+    in this process, or at `MaxBrightness` when it has set none; so switching on
+    a panel reporting no range is refused rather than sent. An ASCOM panel off
+    reports brightness 0, so the level kept is only a lit panel's own.
+    `light.async_light_at` says when the `set-light` follows.
+    """
+    coordinator = await _coordinator_for(call.hass, call)
+    client, panel = coordinator.client, coordinator.data.snapshot.flat_device
+    requested = call.data.get("brightness")
+    _refuse_unsupported(panel, "light")
+    if not call.data["light_on"]:
+        if requested is not None:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="flat_panel_brightness_while_off",
+            )
+        await client.set_flat_light(False)
+        return
+    raise_unless_cover_closed(coordinator.data)
+    low, high = driver_range = _panel_range(panel)
+    lowest = light.lowest_lit_level(low)
+    if requested is not None:
+        _within_device_range("Brightness", requested, "flat panel", lowest, high)
+        level = requested
+    elif (
+        panel is not None
+        and panel.light_on
+        and panel.brightness is not None
+        and panel.brightness > low
+    ):
+        level = max(round(panel.brightness), lowest)
+    else:
+        level = light.driver_level(1, driver_range)
+    await light.async_light_at(client, level, driver_range)
+
+
+async def _handle_flat_panel_set_brightness(call: ServiceCall) -> None:
+    """Set a level within the panel's range.
+
+    An ASCOM panel lights at any level above its minimum, so such a level is
+    held to the cover as switching on is; a native driver keeps the light as it
+    is.
+    """
+    coordinator = await _coordinator_for(call.hass, call)
+    level = call.data["level"]
+    low, high = _panel_range(coordinator.data.snapshot.flat_device)
+    _within_device_range("Level", level, "flat panel", low, high)
+    raise_if_level_lights_open_panel(coordinator.data, level)
+    await coordinator.client.set_flat_brightness(level)
+
+
 def _register_services(hass: HomeAssistant) -> None:
     """Register every action, whether or not an entry is loaded.
 
@@ -501,7 +662,9 @@ def _register_services(hass: HomeAssistant) -> None:
             DOMAIN,
             service,
             _service(handler),
-            schema=vol.Schema({**cv.TARGET_SERVICE_FIELDS, **(fields or {})}),
+            # Home Assistant 2026.10 annotates a schema as probatio's, which
+            # stands in for voluptuous at runtime; 2026.9 imports only voluptuous.
+            schema=vol.Schema({**cv.TARGET_SERVICE_FIELDS, **(fields or {})}),  # pyright: ignore[reportArgumentType]
         )
 
     def register_command(
@@ -528,8 +691,7 @@ def _register_services(hass: HomeAssistant) -> None:
         register_command(service, command)
 
     async def handle_dome_open(call: ServiceCall) -> None:
-        entry = await _entry_for_target(hass, call)
-        coordinator = entry.runtime_data.coordinator
+        coordinator = await _coordinator_for(hass, call)
         if (key := refused_while_unsafe(coordinator.data)) is not None:
             raise ServiceValidationError(translation_domain=DOMAIN, translation_key=key)
         await coordinator.client.open_dome()
@@ -572,7 +734,7 @@ def _register_services(hass: HomeAssistant) -> None:
     )
 
     async def handle_camera_capture(call: ServiceCall) -> None:
-        coordinator = (await _entry_for_target(hass, call)).runtime_data.coordinator
+        coordinator = await _coordinator_for(hass, call)
         duration, gain = call.data["duration"], call.data.get("gain")
         if gain is not None and gain < 1:
             raise ServiceValidationError(
@@ -654,7 +816,7 @@ def _register_services(hass: HomeAssistant) -> None:
     # ── Filter Wheel ─────────────────────────────────────────────────────────
 
     async def handle_filterwheel_change_filter(call: ServiceCall) -> None:
-        coordinator = (await _entry_for_target(hass, call)).runtime_data.coordinator
+        coordinator = await _coordinator_for(hass, call)
         index = call.data["filter_index"]
         wheel = coordinator.data.snapshot.filter_wheel
         # Slots are the wheel's own `Id`s, which need not run 0..n-1.
@@ -678,6 +840,34 @@ def _register_services(hass: HomeAssistant) -> None:
         },
     )
 
+    # ── Flat panel ───────────────────────────────────────────────────────────
+
+    register(
+        SERVICE_FLAT_PANEL_SET_COVER,
+        _handle_flat_panel_set_cover,
+        {
+            vol.Required("open"): cv.boolean,
+            vol.Optional("force", default=False): cv.boolean,
+        },
+    )
+
+    register(
+        SERVICE_FLAT_PANEL_SET_LIGHT,
+        _handle_flat_panel_set_light,
+        {
+            vol.Required("light_on"): cv.boolean,
+            vol.Optional("brightness"): _bounded("Brightness", int, 0),
+        },
+    )
+
+    register(
+        SERVICE_FLAT_PANEL_SET_BRIGHTNESS,
+        _handle_flat_panel_set_brightness,
+        {
+            vol.Required("level"): _bounded("Level", int, 0),
+        },
+    )
+
     # ── Guider ───────────────────────────────────────────────────────────────
 
     async def handle_guider_start(call: ServiceCall) -> None:
@@ -690,6 +880,33 @@ def _register_services(hass: HomeAssistant) -> None:
         {
             vol.Optional("force_calibration", default=False): cv.boolean,
         },
+    )
+
+    # ── Rotator ──────────────────────────────────────────────────────────────
+
+    async def handle_rotator_move(call: ServiceCall) -> None:
+        coordinator = await _coordinator_for(hass, call)
+        if (key := refused_while_unsynced(coordinator.data)) is not None:
+            raise ServiceValidationError(translation_domain=DOMAIN, translation_key=key)
+        await coordinator.client.move_rotator(call.data["position"])
+
+    # Not held to the profile's range: N.I.N.A. folds a sky angle into it, which
+    # on a half range is the same framing flipped.
+    register(
+        SERVICE_ROTATOR_MOVE,
+        handle_rotator_move,
+        {vol.Required("position"): _bounded("Position", float, 0, 360)},
+    )
+
+    async def handle_rotator_move_mechanical(call: ServiceCall) -> None:
+        coordinator = await _coordinator_for(hass, call)
+        raise_outside_rotator_range(coordinator.data, call.data["position"])
+        await coordinator.client.move_rotator_mechanical(call.data["position"])
+
+    register(
+        SERVICE_ROTATOR_MOVE_MECHANICAL,
+        handle_rotator_move_mechanical,
+        {vol.Required("position"): _bounded("Position", float, 0, 360)},
     )
 
     # ── Sequence ─────────────────────────────────────────────────────────────

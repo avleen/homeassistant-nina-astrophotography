@@ -8,7 +8,9 @@ from nina_astrophotography.derive import (
     hfr_arcsec,
     hours_to_meridian,
     image_scale_arcsec_per_px,
+    rotator_fold,
     session_start,
+    sun_altitude,
     time_to_meridian_flip,
 )
 import pytest
@@ -146,3 +148,49 @@ def test_the_flip_fires_before_the_reading_reaches_zero() -> None:
 )
 def test_the_dew_point_is_the_magnus_formula(temperature, humidity, expected) -> None:
     assert dew_point(temperature, humidity) == expected
+
+
+@pytest.mark.parametrize(
+    ("angle", "start", "span", "expected"),
+    [
+        (90, 0, 360, 90),
+        (360, 0, 360, 0),
+        (179.9, 0, 180, 179.9),
+        (180, 0, 180, 0),
+        (270, 0, 180, 90),
+        # A range wrapping past 0: 300° to 120°.
+        (310, 300, 180, 310),
+        (30, 300, 180, 30),
+        (200, 300, 180, 20),
+        (299, 300, 180, 119),
+        # A quarter range turns by 90s, which changes a non-square framing.
+        (100, 0, 90, 10),
+        (200, 0, 90, 20),
+        (300, 0, 90, 30),
+    ],
+)
+def test_rotator_fold_lands_where_nina_turns_the_rotator(
+    angle: float, start: float, span: float, expected: float
+) -> None:
+    assert rotator_fold(angle, start, span) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    ("latitude", "longitude", "moment", "altitude"),
+    [
+        # The sun overhead: the equator at an equinox noon, the tropic of
+        # Cancer at the June solstice's.
+        (0.0, 0.0, "2026-03-20T12:07:00+00:00", 90.0),
+        (23.44, 0.0, "2026-06-21T12:02:00+00:00", 90.0),
+        # And underfoot, twelve hours on.
+        (0.0, 0.0, "2026-03-21T00:07:00+00:00", -90.0),
+        # East longitude is positive: noon at 90° E comes six hours earlier.
+        (0.0, 90.0, "2026-03-20T06:07:00+00:00", 90.0),
+    ],
+    ids=["equinox", "solstice", "midnight", "east"],
+)
+def test_the_sun_altitude(
+    latitude: float, longitude: float, moment: str, altitude: float
+) -> None:
+    found = sun_altitude(latitude, longitude, datetime.fromisoformat(moment))
+    assert found == pytest.approx(altitude, abs=1.0)

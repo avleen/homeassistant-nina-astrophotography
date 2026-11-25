@@ -18,8 +18,9 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
+# The package root is the one path that holds across 2026.9 and 2026.10.
 from homeassistant.components.binary_sensor import (
-    BinarySensorDeviceClass,
+    BinarySensorDeviceClass,  # pyright: ignore[reportPrivateImportUsage]
     BinarySensorEntity,
     BinarySensorEntityDescription,
 )
@@ -44,13 +45,11 @@ PARALLEL_UPDATES = 0
 class NinaBinarySensorDescription(NinaEntityDescription, BinarySensorEntityDescription):
     """A binary sensor, plus how to read it out of the snapshot.
 
-    `survives_disconnect` keeps an entity available while its device is down,
-    for the one whose job is to report that; `survives_outage` likewise while
-    N.I.N.A. is unreachable.
+    `survives_outage` keeps an entity available while N.I.N.A. is
+    unreachable, as `survives_disconnect` does while its device is down.
     """
 
     value: Callable[[NinaData], bool | None]
-    survives_disconnect: bool = False
     survives_outage: bool = False
 
 
@@ -132,7 +131,9 @@ def _waits(data: NinaData) -> Mapping[str, Any]:
     A read shows only that a wait was running, so a short one is caught on some
     reads and missed on others, and the history is a sample, not a record.
     `span_seconds` is a Wait for Time Span's length, which is how a consumer
-    tells a pacing step in a retry loop from a wait that explains hours.
+    tells a pacing step in a retry loop from a wait that explains hours. An
+    altitude wait's `ends_at` is N.I.N.A.'s estimate, printed to the minute,
+    and the wait can end a few minutes either side of it.
     """
     wait = data.wait
     return {
@@ -177,7 +178,7 @@ DESCRIPTIONS: tuple[NinaBinarySensorDescription, ...] = (
         device_class=BinarySensorDeviceClass.CONNECTIVITY,
         entity_category=EntityCategory.DIAGNOSTIC,
         kind="safety_monitor",
-        survives_disconnect=True,
+        survives_disconnect=lambda _data: True,
         value=read_field("safety_monitor", "connected"),
     ),
     NinaBinarySensorDescription(
@@ -217,6 +218,28 @@ DESCRIPTIONS: tuple[NinaBinarySensorDescription, ...] = (
         kind="focuser",
         value=_autofocus_failed,
         attributes=_autofocus_verdict,
+    ),
+    NinaBinarySensorDescription(
+        key="flat_panel_light_frames_behind_closed_cover",
+        translation_key="flat_panel_light_frames_behind_closed_cover",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        kind="flat_device",
+        supported=supports("flat_device", "supports_open_close"),
+        # A panel powered off after a move keeps its cover where it was, and
+        # the lights behind it stay blank.
+        survives_disconnect=lambda _data: True,
+        # A light is blank behind a closed cover; flats and darks are not.
+        value=lambda data: data.light_behind_cover,
+    ),
+    NinaBinarySensorDescription(
+        key="weather_frozen",
+        translation_key="weather_frozen",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        kind="weather",
+        # A frozen source stays connected and keeps every channel available
+        # with its last value, so nothing else shows it.
+        value=lambda data: data.weather_frozen_since is not None,
+        attributes=lambda data: {"frozen_since": data.weather_frozen_since},
     ),
     NinaBinarySensorDescription(
         key="sequencer_running",
@@ -274,7 +297,6 @@ DESCRIPTIONS: tuple[NinaBinarySensorDescription, ...] = (
     NinaBinarySensorDescription(
         key="rotator_synced",
         translation_key="rotator_synced",
-        entity_category=EntityCategory.DIAGNOSTIC,
         kind="rotator",
         # The sky position angle means nothing until the rotator is synced.
         value=read_field("rotator", "synced"),
@@ -323,10 +345,6 @@ class NinaBinarySensor(NinaDescribedEntity, BinarySensorEntity):
     entity_description: NinaBinarySensorDescription
     # Read live by the stall alert; recorded, each wait would write the history.
     _unrecorded_attributes = frozenset({"recent_waits"})
-
-    @property
-    def _survives_disconnect(self) -> bool:
-        return self.entity_description.survives_disconnect
 
     @property
     def available(self) -> bool:

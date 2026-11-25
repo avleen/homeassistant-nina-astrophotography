@@ -25,6 +25,7 @@ from helpers import state_of
 BRIGHTNESS = "number.n_i_n_a_flat_panel_brightness"
 FOCUSER_POSITION = "number.n_i_n_a_focuser_position"
 USB_LIMIT = "number.n_i_n_a_camera_usb_limit"
+MECHANICAL_POSITION = "number.n_i_n_a_rotator_mechanical_position"
 
 
 async def _set(hass: HomeAssistant, entity_id: str, value: float) -> None:
@@ -74,6 +75,7 @@ async def test_the_usb_limit_range_is_this_cameras_own(
     [
         (BRIGHTNESS, 99999),
         ("number.n_i_n_a_rotator_position", 400),
+        (MECHANICAL_POSITION, 400),
         ("number.n_i_n_a_camera_target_temperature", -80),
     ],
 )
@@ -86,26 +88,26 @@ async def test_out_of_range_input_is_refused_rather_than_silently_clamped(
     assert rig.sent == []
 
 
-async def test_a_panel_reporting_no_range_is_refused_rather_than_sent_to(
-    hass: HomeAssistant, set_up_with_flat_device, sent
+@pytest.mark.parametrize("entity_id", [BRIGHTNESS, "light.n_i_n_a_flat_panel_light"])
+async def test_a_connected_panel_reporting_no_range_is_unavailable(
+    hass: HomeAssistant, set_up_with_flat_device, entity_id: str
 ) -> None:
-    """A cover-only panel reports Min 0 / Max 0, and every value is in range of
-    an empty range.
+    """A cover-only panel reports Min 0 / Max 0, which maps to no range; the
+    number would otherwise offer Home Assistant's default 0-100.
     """
     await set_up_with_flat_device(brightness_range=None)
-    with pytest.raises(ServiceValidationError):
-        await _set(hass, BRIGHTNESS, 0)
-    assert sent.calls == []
+    assert state_of(hass, entity_id).state == "unavailable"
 
 
-async def test_a_set_sends_the_drivers_own_units_and_does_not_touch_the_light(
-    hass: HomeAssistant, flat_panel_entry, sent
+async def test_a_set_sends_only_set_brightness_in_the_drivers_own_units(
+    hass: HomeAssistant, loaded_entry, rig
 ) -> None:
-    """The number is raw driver units, where the `light` is HA's 0-255; and
-    brightness 0 is not off, so neither direction toggles the light (§5.3.4).
+    """The number is raw driver units, where the `light` is HA's 0-255. An
+    ASCOM panel lights above 0 and darkens at 0 without `set-light`; native
+    drivers leave the light as it is.
     """
     await _set(hass, BRIGHTNESS, 1024)
-    assert sent.calls == [("set_flat_brightness", 1024)]
+    assert rig.sent == [("/equipment/flatdevice/set-brightness", {"brightness": 1024})]
 
 
 async def test_a_set_does_not_read_the_new_value_back_from_the_response(
@@ -159,20 +161,76 @@ async def test_the_cut_numbers_are_not_registered(
     assert registered(NUMBER_DOMAIN, entity_registry, loaded_entry, key) is None
 
 
-@pytest.mark.parametrize("key", ["camera_usb_limit", "rotator_mechanical_position"])
-async def test_the_long_tail_ships_config_and_disabled(
-    loaded_entry: MockConfigEntry, entity_registry, key: str
+async def test_the_usb_limit_ships_config_and_disabled(
+    loaded_entry: MockConfigEntry, entity_registry
 ) -> None:
     """The dome's is in `test_dome.py`: the reference rig has none, so §5.2.2
     gates `dome_azimuth` out here.
     """
     entry = entity_registry.async_get(
-        registered(NUMBER_DOMAIN, entity_registry, loaded_entry, key)
+        registered(NUMBER_DOMAIN, entity_registry, loaded_entry, "camera_usb_limit")
     )
     assert (entry.entity_category, entry.disabled_by is not None) == (
         EntityCategory.CONFIG,
         True,
     )
+
+
+async def test_the_mechanical_position_ships_as_an_enabled_control(
+    loaded_entry: MockConfigEntry, entity_registry
+) -> None:
+    """The observatory card reads it."""
+    entry = entity_registry.async_get(
+        registered(
+            NUMBER_DOMAIN, entity_registry, loaded_entry, "rotator_mechanical_position"
+        )
+    )
+    assert (entry.entity_category, entry.disabled_by) == (None, None)
+
+
+async def test_a_mechanical_position_moves_the_rotator_mechanically(
+    hass: HomeAssistant, loaded_entry, rig
+) -> None:
+    """`/equipment/rotator/move` takes the sky angle instead."""
+    await _set(hass, MECHANICAL_POSITION, 90)
+    assert rig.sent == [("/equipment/rotator/move-mechanical", {"position": 90})]
+
+
+@pytest.mark.parametrize(
+    ("state", "entity_id", "value"),
+    [
+        pytest.param(
+            "scheduler_waiting",
+            "number.n_i_n_a_rotator_position",
+            90,
+            id="sky-angle-unsynced",
+        ),
+        pytest.param(
+            "rotator_half_range",
+            MECHANICAL_POSITION,
+            200,
+            id="mechanical-outside-the-range",
+            marks=pytest.mark.synthetic,
+        ),
+    ],
+)
+async def test_a_rotator_move_nina_would_not_make_as_asked_is_refused(
+    hass: HomeAssistant,
+    config_entry,
+    rig,
+    set_up_at,
+    state: str,
+    entity_id: str,
+    value: float,
+) -> None:
+    """Unsynced, N.I.N.A. answers a sky-angle move and leaves the rotator put;
+    outside the profile's range, it turns it to another mechanical angle.
+    """
+    await set_up_at(hass, config_entry, rig, state)
+
+    with pytest.raises(ServiceValidationError):
+        await _set(hass, entity_id, value)
+    assert rig.sent == []
 
 
 async def test_a_value_outside_this_cameras_usb_range_is_refused(

@@ -1,7 +1,6 @@
 """Fixtures for the Home-Assistant-dependent suite."""
 
-from dataclasses import replace
-from pathlib import Path
+from dataclasses import fields, replace
 import shutil
 import sys
 from typing import NamedTuple
@@ -18,6 +17,10 @@ import custom_components.nina_astrophotography as integration
 from custom_components.nina_astrophotography.api.v2 import NinaEventStream
 from custom_components.nina_astrophotography.api.v2.client import NinaClientV2
 from custom_components.nina_astrophotography.api.v2.mapper import map_equipment_info
+from custom_components.nina_astrophotography.blueprint_sync import (
+    MANAGED_FOLDER,
+    SHIPPED_DIR,
+)
 from custom_components.nina_astrophotography.const import (
     CONF_HOST,
     CONF_PORT,
@@ -62,7 +65,14 @@ def auto_enable_custom_integrations(enable_custom_integrations):
     return
 
 
-BLUEPRINTS = Path(__file__).resolve().parents[2] / "blueprints"
+# The managed blueprint folder, relative to the config directory.
+MANAGED = f"blueprints/automation/{MANAGED_FOLDER}"
+
+
+@pytest.fixture
+def hass_config_dir(hass_tmp_config_dir: str) -> str:
+    """A config directory per test, since setup writes the blueprints into it."""
+    return hass_tmp_config_dir
 
 
 @pytest.fixture
@@ -73,7 +83,7 @@ async def installed(hass: HomeAssistant):
     Turned off again afterwards: a time trigger registers a timer that would
     otherwise outlive the test.
     """
-    shutil.copytree(BLUEPRINTS, hass.config.path("blueprints"), dirs_exist_ok=True)
+    shutil.copytree(SHIPPED_DIR, hass.config.path(MANAGED), dirs_exist_ok=True)
 
     async def use_blueprint(name: str, inputs: dict) -> None:
         assert await async_setup_component(
@@ -82,7 +92,7 @@ async def installed(hass: HomeAssistant):
             {
                 AUTOMATION_DOMAIN: {
                     "use_blueprint": {
-                        "path": f"nina_astrophotography/{name}",
+                        "path": f"{MANAGED_FOLDER}/{name}",
                         "input": inputs,
                     }
                 }
@@ -272,6 +282,36 @@ def inside_the_dawn_session(freezer):
 
 
 @pytest.fixture
+def on_the_frozen_station_night(freezer):
+    """22:23 on the rig, when `scheduler_waiting_lost_lock` was captured, with
+    its station still serving the day's reading.
+    """
+    freezer.move_to("2026-09-19T03:23:00+00:00")
+
+
+@pytest.fixture
+def inside_the_scheduler_wait(freezer):
+    """20:45 on the rig, twenty minutes before the 21:05 end that
+    `scheduler_waiting`'s TS-WAITSTART names.
+    """
+    freezer.move_to("2026-09-16T01:45:00+00:00")
+
+
+@pytest.fixture
+def inside_the_wait_for_time(freezer):
+    """17:57 on the rig, nine minutes before `wait_for_time`'s target."""
+    freezer.move_to("2026-11-11T23:57:00+00:00")
+
+
+@pytest.fixture
+def inside_the_altitude_wait(freezer):
+    """19:58 on the rig, as `simulator_altitude_wait` was captured: 24 minutes
+    before the 20:22 N.I.N.A. expects its Wait if Sun Altitude to end.
+    """
+    freezer.move_to("2026-11-24T01:58:00+00:00")
+
+
+@pytest.fixture
 def set_up_at():
     """Set the entry up with the rig ALREADY in a state.
 
@@ -303,30 +343,64 @@ async def loaded_entry(hass, config_entry, rig) -> MockConfigEntry:
     return config_entry
 
 
-@pytest.fixture
-def set_up_with_flat_device(hass, config_entry, rig, monkeypatch):
-    """Set the entry up against the dawn snapshot with its panel varied.
+def _serve_flat_device(monkeypatch, **changes) -> None:
+    """Serve the dawn snapshot with its panel varied.
 
     Varies the mapped MODEL, not the captured wire JSON: the fixture rule bans
     hand-written wire documents, and every flat-panel state a test needs is one
     field away from the panel the rig actually reported.
     """
+    snapshot = map_equipment_info(load_fixture("dawn_equipment_info.json"))
+    assert snapshot.flat_device is not None
+    snapshot = replace(snapshot, flat_device=replace(snapshot.flat_device, **changes))
+    monkeypatch.setattr(NinaClientV2, "get_equipment", lambda self: _async(snapshot))
+
+
+@pytest.fixture
+def set_up_with_flat_device(hass, config_entry, rig, monkeypatch):
+    """Set the entry up against the dawn snapshot with its panel varied."""
 
     async def _set_up(**changes):
-        snapshot = map_equipment_info(load_fixture("dawn_equipment_info.json"))
-        assert snapshot.flat_device is not None
-        snapshot = replace(
-            snapshot, flat_device=replace(snapshot.flat_device, **changes)
-        )
-        monkeypatch.setattr(
-            NinaClientV2, "get_equipment", lambda self: _async(snapshot)
-        )
+        _serve_flat_device(monkeypatch, **changes)
         config_entry.add_to_hass(hass)
         assert await hass.config_entries.async_setup(config_entry.entry_id)
         await hass.async_block_till_done()
         return config_entry
 
     return _set_up
+
+
+@pytest.fixture
+def flat_device_changes(hass, config_entry, monkeypatch):
+    """Vary the loaded entry's panel, and poll it.
+
+    The refresh writes the states itself, so this does not wait for Home
+    Assistant to settle, which an automation in a `delay` would hold off.
+    """
+
+    async def _change(**changes):
+        _serve_flat_device(monkeypatch, **changes)
+        await config_entry.runtime_data.coordinator.async_refresh()
+
+    return _change
+
+
+@pytest.fixture
+def flat_panel_disconnects(flat_device_changes):
+    """Take the loaded entry's panel down as `imaging_guiding` captured it, and
+    poll. The dawn panel's identity is kept, so it reads as the same device.
+    """
+    down = map_equipment_info(
+        load_fixture("imaging_guiding_equipment_info.json")
+    ).flat_device
+    assert down is not None
+
+    async def _down() -> None:
+        await flat_device_changes(
+            **{f.name: getattr(down, f.name) for f in fields(down) if f.name != "meta"}
+        )
+
+    return _down
 
 
 @pytest.fixture
@@ -355,40 +429,3 @@ async def disconnected_flat_panel_entry(set_up_with_flat_device):
 @pytest.fixture
 async def cover_only_flat_panel_entry(set_up_with_flat_device):
     return await set_up_with_flat_device(supports_on_off=False)
-
-
-class _Sent:
-    """Records the flat panel commands the entity sends, in order."""
-
-    def __init__(self, monkeypatch) -> None:
-        self._monkeypatch = monkeypatch
-        self.calls: list[tuple[str, object]] = []
-
-    @property
-    def brightness(self):
-        """The last driver-unit brightness sent, or None."""
-        values = [value for name, value in self.calls if name == "set_flat_brightness"]
-        return values[-1] if values else None
-
-    @property
-    def last_call(self):
-        return self.calls[-1] if self.calls else None
-
-    def patch(self, name: str, method) -> None:
-        self._monkeypatch.setattr(NinaClientV2, name, method)
-
-
-@pytest.fixture
-def sent(monkeypatch) -> _Sent:
-    """Patched on the class, so it works whichever order the fixtures resolve."""
-    recorder = _Sent(monkeypatch)
-
-    async def set_flat_brightness(self, brightness: int) -> None:
-        recorder.calls.append(("set_flat_brightness", brightness))
-
-    async def set_flat_light(self, on: bool) -> None:
-        recorder.calls.append(("set_flat_light", on))
-
-    recorder.patch("set_flat_brightness", set_flat_brightness)
-    recorder.patch("set_flat_light", set_flat_light)
-    return recorder

@@ -1,14 +1,17 @@
 # Lovelace cards: neither suite renders one
 
-`www/` holds 7 Lovelace cards, plus five modules they import, which are not
+`www/` holds 8 Lovelace cards, plus five modules they import, which are not
 cards: `nina-entity-resolver.js`, `nina-card-config.js` (the prefix and the
 visual editor's `getConfigForm()` schema), `nina-collapse.js` (the headings a
 viewer folds, remembered per browser), `nina-units.js` (readings in the
-unit HA shows them in, the meridian flip window, the camera's ADU full scale,
-and `safe()` for any rig text bound for `innerHTML`) and `nina-theme.js` (the
+unit HA shows them in, the meridian flip window, a sequence wait's countdown,
+a guider not guiding, the camera's ADU full scale, and `safe()` for any rig
+text bound for `innerHTML`) and `nina-theme.js` (the
 colours, on a dark theme or a light one). Every card resolves its entity ids
 from the registry by `translation_key` and keeps the configured instance
-prefix only as a per-entity fallback. `frontend.py` serves them and
+prefix only as a per-entity fallback — but for `nina-site-camera-card`, which
+shows whatever camera or image entities its config names and reads nothing of
+the rig. `frontend.py` serves them and
 self-registers each as a Lovelace resource — nothing for a user to copy into
 `/config/www/`. Render them with `tools/card-harness/`.
 
@@ -119,6 +122,15 @@ Traps when changing a card:
 - **A folded card still shows what needs acting on**, and the observatory
   keeps Stop, Park and Close Dome wherever each applies: a folded card or
   Controls section must never hide the emergency stop.
+- **The observatory card patches its shadow root** rather than replacing it,
+  keeping every element whose tag, id and fold are unchanged, so the button
+  under the pointer keeps its hover through an update; an element that becomes
+  another control is replaced, so a press or the focus never carries from Stop
+  to Start. Bind its controls with
+  `onclick`: a listener added on every render fires once per render on a kept
+  button. `ops.mjs`'s stub holds no node tree, only the markup as one text
+  node, so there every render replaces it whole, and only `render.html`
+  exercises the patch.
 - A scenario's `folded: [...]` folds sections for that run alone. The stub's
   `getElementById` answers `null` for an id the markup lacks, as a browser
   does, so a draw guarded on its canvas is skipped there too.

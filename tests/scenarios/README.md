@@ -33,14 +33,20 @@ an ordered `SEQUENCES` entry step by step.
 
 ## Derived, not captured
 
-Four devices — **Camera, FlatDevice, SafetyMonitor and Switch** — are connected
-in every capture, so `disconnect()` derives their down-blocks by the rule the
-corpus does show: drop `DeviceId`, `Name`, `DisplayName`, `Description`,
+Three devices — **Camera, SafetyMonitor and Switch** — are connected in every
+capture, so `disconnect()` derives their down-blocks by the rule the corpus
+does show: drop `DeviceId`, `Name`, `DisplayName`, `Description`,
 `DriverInfo`, `DriverVersion` and `SupportedActions`, and set `Connected` false
 (the focuser goes 15 keys to 8, the rotator 15 to 8, the weather station 22 to
-15, each losing exactly that set). The other seven are copied from the capture
-that holds them down. Tests exercising a derived block carry
-`@pytest.mark.synthetic`.
+15, the flat panel 17 to 10, each losing exactly that set). The other eight
+are copied from a capture that holds them down: seven from the restart
+capture, and the flat panel from `imaging_guiding`, since it is up at the
+restart.
+
+A derived block keeps the connected block's readings, which a real disconnect
+may reset: the captured flat panel down reports `SupportsOnOff` and
+`SupportsOpenClose` false, `MaxBrightness` 0 and `CoverState` `Unknown`. Tests
+exercising a derived block carry `@pytest.mark.synthetic`.
 
 Bare `/image-history` for the dawn family is likewise assembled, because the
 dawn capture predates the bare path: the newest frame of the captured
@@ -75,8 +81,10 @@ endpoints, and `_captured(slug)` builds the state from it with none of the
 assembly a partial corpus needs. `imaging_guiding` is one; so are the three
 taken on 2026-09-15, in this order: `scheduler_waiting` (20:46), then
 `sequence_restarted` (20:49), then `sequence_stopped` (20:50). `wait_for_time`
-(2026-11-11, 17:56) is the only one holding a sequence's own wait: a `RUNNING`
-Wait for Time until civil dusk, with no `TS-WAITSTART`.
+(2026-11-11, 17:56) holds a sequence's own wait: a `RUNNING` Wait for Time
+until civil dusk, with no `TS-WAITSTART`. `simulator_altitude_wait`
+(2026-11-23, 19:58, from the test VM) holds a `RUNNING` Wait if Sun Altitude
+beside every other altitude wait, each with its `ExpectedTime`.
 
 Between them they hold what no earlier capture does — a sequence running with
 no frame taken, one ten seconds after `SEQUENCE-STARTING`, and one stopped by
@@ -89,7 +97,8 @@ image histories are empty, which is a rig before its first sub, not an error.
 A device block from a later `/equipment/info` capture of the same rig, swapped
 into a whole capture, is captured too: `_dome_from` builds the simulator dome's
 mid-slew and dropped states that way, because the moment is too short for all
-fourteen endpoints.
+fourteen endpoints, and `_guider_from` the simulator guider looping and
+paused.
 
 Enter a whole capture with the `set_up_at` fixture, not `advance`: it serves
 the three tier-polled endpoints that the dawn family withholds, and advancing

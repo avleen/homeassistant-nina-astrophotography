@@ -8,6 +8,7 @@
  *   type: custom:nina-observatory-card
  *   device_id: abc123   # which rig, for two or more; any one of its devices
  *   prefix: n_i_n_a     # fallback only, for the entities that cannot resolve
+ *   cover_stuck_after: 60   # seconds a flat cover may read part-way, 20–600
  */
 
 import { DEFAULT_PREFIX, configForm } from "./nina-card-config.js";
@@ -15,11 +16,11 @@ import { CHEVRON, COLLAPSE_STYLE, Collapse, worst } from "./nina-collapse.js";
 import { LinkView, RigEntities } from "./nina-entity-resolver.js";
 import { THEME, applyTheme } from "./nina-theme.js";
 import {
-  displayed, flipRange, flipSoon, flipStatus, flipUnderway, flipWindow, missing,
-  quantity, shown,
+  displayed, flipRange, flipSoon, flipStatus, flipUnderway, flipWindow, guiderStatus,
+  missing, notGuiding, quantity, safe, sequenceWait, shown, waitCountdown, waitReason,
 } from "./nina-units.js";
 
-const VERSION = "2.6.0";
+const VERSION = "2.9.0";
 
 // Home Assistant has no per-press confirmation for a custom card's own
 // buttons, and a mis-tap on any of these costs the rest of the night — or, for
@@ -33,6 +34,51 @@ const CONFIRM = {
 // A closing roll-off roof can strike a telescope that is not parked, and a
 // mount that cannot be read may be anywhere.
 const CONFIRM_CLOSE_UNPARKED = "Close the dome? The mount is not confirmed parked.";
+// One action opens and closes the flat panel's cover, so each way asks its own.
+// Flats and darks run with the cover closed, so a close is not refused
+// mid-sequence, only warned of.
+const CONFIRM_COVER_OPEN = "Open the flat panel cover? It spoils any flats or darks under way.";
+const CONFIRM_COVER_CLOSE = "Close the flat panel cover? It blocks the telescope.";
+const CONFIRM_COVER_CLOSE_RUNNING =
+  "Close the flat panel cover? A sequence is running, and lights taken behind it are blank.";
+
+// N.I.N.A.'s cover states. It reports a cover still moving, or stuck, as
+// neither open nor closed; `NotPresent` is a panel without a cover.
+const COVER = {
+  Open: "Open",
+  Closed: "Closed",
+  NeitherOpenNorClosed: "Part-way",
+  Error: "Error",
+  Unknown: "—",
+};
+// How long a cover may read part-way before it counts as stuck rather than
+// moving, in seconds. A Flip-Flat travels in 10–20 s; other panels are slower.
+// Some drivers report a stuck cover as part-way indefinitely, never `Error`.
+const DEFAULT_COVER_STUCK_AFTER = 60;
+// The editor's range, and the Flat cover fault blueprint's: the cover is read
+// every 10 s, so a Flip-Flat's travel plus one read, up to ten minutes.
+const MIN_COVER_STUCK_AFTER = 20;
+const MAX_COVER_STUCK_AFTER = 600;
+const COVER_MOVING = "The flat panel cover is moving";
+const COVER_SENT = "Sent; waiting for the flat panel cover to move";
+// The action refuses to open the cover of a lit panel.
+const COVER_LIT = "The flat panel light is on";
+// A wait's countdown shows seconds, and the sensor changes only as the wait
+// starts and ends.
+const WAIT_TICK_MS = 1000;
+// How long the guider may go without guiding before the card warns, in
+// seconds: longer than PHD2 takes to find a lost star again, or to loop while
+// guiding restarts. `docs/reference.md` has the measurements.
+const NOT_GUIDING_GRACE = 180;
+// The Guider chip's words for what guiding is doing instead.
+const GUIDER_CHIP = {
+  Stopped: "guiding stopped",
+  LostLock: "guide star lost",
+  Looping: "looping, not guiding",
+  Selected: "looping, not guiding",
+  Paused: "paused, not guiding",
+  Calibrating: "calibrating, not guiding",
+};
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -99,6 +145,43 @@ function linkBanner(link, dome) {
       <div class="detail">No answer${time}; it may still be imaging.${shown} ${still}</div>
     </div>
   </div>`;
+}
+
+// Brings `root` in line with `html`, keeping every element whose tag, id and
+// fold are unchanged at its place; an empty root takes every node. A replaced
+// button under the pointer loses its hover and fades back in, which on a card
+// updated every few seconds is a flicker. An element that becomes another
+// control is replaced, never reused: a press or the focus held across an
+// update would otherwise land on Start where the viewer meant Stop.
+function patch(root, html) {
+  const next = document.createElement("template");
+  next.innerHTML = html;
+  morph(root, next.content);
+}
+
+function morph(node, next) {
+  const want = [...next.childNodes];
+  while (node.childNodes.length > want.length) node.lastChild.remove();
+  want.forEach((wanted, i) => {
+    const have = node.childNodes[i];
+    if (!have) {
+      node.appendChild(wanted);
+    } else if (have.nodeName !== wanted.nodeName
+      || (have.nodeType === Node.ELEMENT_NODE
+        && (have.id !== wanted.id || have.dataset.fold !== wanted.dataset.fold))) {
+      have.replaceWith(wanted);
+    } else if (have.nodeType !== Node.ELEMENT_NODE) {
+      if (have.nodeValue !== wanted.nodeValue) have.nodeValue = wanted.nodeValue;
+    } else {
+      for (const { name } of [...have.attributes]) {
+        if (!wanted.hasAttribute(name)) have.removeAttribute(name);
+      }
+      for (const { name, value } of wanted.attributes) {
+        if (have.getAttribute(name) !== value) have.setAttribute(name, value);
+      }
+      morph(have, wanted);
+    }
+  });
 }
 
 function statusDot(on) {
@@ -210,7 +293,14 @@ const STYLE = `
   .equip-chip.connected { border-color: rgba(87,204,153,0.4); }
   .equip-chip.disconnected { opacity: 0.5; }
   .equip-chip.fault { border-color: var(--danger); color: var(--danger); }
+  .equip-chip.warn { border-color: var(--warn); color: var(--warn); }
+  .equip-chip.warn .dot { background: var(--warn); box-shadow: 0 0 5px var(--warn); }
   .equip-chip.fault .dot { background: var(--danger); box-shadow: 0 0 5px var(--danger); }
+  /* A fault held by a device that is down: not dimmed, its dot hollow */
+  .equip-chip.fault.disconnected { opacity: 1; }
+  .equip-chip.fault.disconnected .dot {
+    background: transparent; box-shadow: none; outline: 1px solid var(--danger); outline-offset: -1px;
+  }
 
   /* ── Section ── */
   .section { display: flex; flex-direction: column; gap: 6px; }
@@ -340,11 +430,22 @@ class NinaObservatoryCard extends HTMLElement {
   }
 
   setConfig(config) {
-    this._config = config || {};
+    const stuckAfter = Number(config?.cover_stuck_after);
+    this._config = {
+      ...config,
+      cover_stuck_after: stuckAfter > 0
+        ? Math.min(Math.max(stuckAfter, MIN_COVER_STUCK_AFTER), MAX_COVER_STUCK_AFTER)
+        : DEFAULT_COVER_STUCK_AFTER,
+    };
     this._rig = new RigEntities(
       this._config.prefix || DEFAULT_PREFIX, this._config.device_id);
     this._collapse.scope(this._config);
     this._view.reset();
+    // What the card has seen of the cover: the press it is waiting on, where it
+    // was last at rest, its last reading, and when it went part-way. Another
+    // rig's cover is not this one's.
+    this._cover = {};
+    this._html = undefined;
   }
 
   set hass(hass) {
@@ -352,6 +453,43 @@ class NinaObservatoryCard extends HTMLElement {
     this._rig.refresh(hass);
     applyTheme(this);
     this._render();
+  }
+
+  // A detached card drops the wait for a part-way cover to count as stuck,
+  // and a render on reattaching sets it again.
+  connectedCallback() {
+    if (this._hass) this._render();
+  }
+
+  disconnectedCallback() {
+    this._awaitStuck(null);
+    this._awaitNotGuiding(null);
+    this._tickWait(false);
+  }
+
+  // Renders again in `ms`, once a part-way cover counts as stuck.
+  _awaitStuck(ms) {
+    clearTimeout(this._stuckTimer);
+    this._stuckTimer = ms > 0 && this.isConnected
+      ? setTimeout(() => this._render(), ms) : undefined;
+  }
+
+  // Renders again in `ms`, once a guider not guiding has lasted the grace.
+  _awaitNotGuiding(ms) {
+    clearTimeout(this._notGuidingTimer);
+    this._notGuidingTimer = ms > 0 && this.isConnected
+      ? setTimeout(() => this._render(), ms) : undefined;
+  }
+
+  // Renders every second while a wait counts down. A render that changes
+  // nothing but the countdown patches only its text.
+  _tickWait(run) {
+    if (run && !this._waitTimer) {
+      this._waitTimer = setInterval(() => this._render(), WAIT_TICK_MS);
+    } else if (!run && this._waitTimer) {
+      clearInterval(this._waitTimer);
+      this._waitTimer = undefined;
+    }
   }
 
   // Falls back to a prefixed `slug` when nothing resolves. The select keyed
@@ -365,8 +503,8 @@ class NinaObservatoryCard extends HTMLElement {
     // The actions resolve which rig they mean from the device targeted; an
     // untargeted call is refused as soon as a second instance is configured.
     const device_id = this._config.device_id;
-    this._hass.callService(domain, service,
-                           device_id ? { ...data, device_id } : data);
+    return this._hass.callService(domain, service,
+                                  device_id ? { ...data, device_id } : data);
   }
 
   _render() {
@@ -385,6 +523,18 @@ class NinaObservatoryCard extends HTMLElement {
     const frameCountId = this._eid("sensor", "session_image_count");
     const seqRunning  = isOn(h, seqId);
     const imaging     = isOn(h, imagingId);
+    // Held readings are not current: the wait may be over.
+    // Target Scheduler names no target while it waits, and may pick another
+    // than the one before; the target sensor still reads that one.
+    const wait = seqRunning && !quiet
+      ? sequenceWait(h, this._eid("binary_sensor", "scheduler_waiting", "sequence_waiting"))
+      : null;
+    this._tickWait(wait?.left != null && this.isConnected);
+    // An end already past reads as a stale card, and a looping Time Span's is
+    // the pass before; the next read ends the wait.
+    const waitEnds = wait?.left == null ? "" : ` · ${
+      wait.atMost ? "by" : wait.approx ? "until about" : "until"} ${
+      new Date(wait.ends).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
     const camConnected = available(h, this._eid("sensor", "camera_state"));
     const mntConnected = available(h, this._eid("sensor", "mount_right_ascension"));
     const focConnected = available(h, this._eid("number", "focuser_position"));
@@ -406,7 +556,8 @@ class NinaObservatoryCard extends HTMLElement {
     // The guider switch has no `translation_key` and stays on the prefix path,
     // so a prefix that does not match the instance loses it; the status sensor
     // it is derived from resolves.
-    const guiding      = onOff(h, this._eid("switch", "guider")) ?? notStopped(h, gdrStatusId);
+    const guiderId     = this._eid("switch", "guider");
+    const guiding      = onOff(h, guiderId) ?? notStopped(h, gdrStatusId);
     const cooling      = onOff(h, this._eid("switch", "camera_cooler"));
     const parkedId     = this._eid("binary_sensor", "mount_at_park");
     // No state reads as unparked on purpose: Park is an emergency control, and
@@ -423,6 +574,93 @@ class NinaObservatoryCard extends HTMLElement {
     const notSafe      = !!h.states[unsafeId] && state(h, unsafeId) !== "off";
     // A park remembered from before N.I.N.A. went quiet is not a current one.
     this._mountUnparked = quiet || !parked;
+    this._seqRunning = seqRunning;
+
+    // A panel may have a cover, a light, or both, so any of its rows says it
+    // is connected — but the cover's state, which stays available through a
+    // disconnect while it holds a fault, says so only where nothing else is
+    // enabled to.
+    const coverStateId = this._eid("sensor", "flat_panel_cover_state");
+    const coverId      = this._eid("switch", "flat_panel_cover");
+    const flatLightId  = this._eid("light", "flat_panel_light");
+    const flatLevelId  = this._eid("number", "flat_panel_brightness");
+    const flatRows     = [coverId, flatLightId, flatLevelId];
+    const coverStateUp = available(h, coverStateId);
+    const flatConnected = flatRows.some((id) => available(h, id))
+      || (coverStateUp && flatRows.every((id) => !h.states[id]));
+    // Something reports the cover: the panel, or a fault held while it is down.
+    const coverReported = flatConnected || coverStateUp;
+    // The sensor names a cover stuck part-way, which the switch reads as
+    // `unknown`; the switch stands in where the sensor is disabled.
+    const coverRead    = h.states[coverStateId] ? state(h, coverStateId)
+      : { on: "Open", off: "Closed" }[state(h, coverId)];
+    const coverState   = missing(coverRead) ? "Unknown" : coverRead;
+    const atRest       = (s) => s === "Open" || s === "Closed";
+    const seen         = this._cover;
+    const coverBefore  = seen.state;
+    seen.state = coverState;
+    // A press holds its button until the reading leaves the state it was
+    // pressed in, or a cover's travel has passed, which lapses with the next
+    // update past it.
+    const now          = Date.now();
+    const travelMs     = this._config.cover_stuck_after * 1000;
+    if (seen.press && (coverState !== seen.press.from || now - seen.press.at > travelMs)) {
+      seen.press = null;
+    }
+    if (atRest(coverState)) seen.rest = coverState;
+    // The switch reads `unknown` part-way.
+    const coverPartWay = coverState === "NeitherOpenNorClosed"
+      || (!h.states[coverStateId] && coverState === "Unknown");
+    // Timed on this browser's clock from when the card saw the cover leave
+    // rest; a card that first sees it part-way has only the row's
+    // `last_changed`, on Home Assistant's.
+    if (!coverPartWay) {
+      seen.partSince = null;
+    } else if (seen.partSince == null) {
+      seen.partSince = atRest(coverBefore) ? now
+        : Date.parse((h.states[coverStateId] ?? h.states[coverId])?.last_changed);
+    }
+    // A cover part-way is moving until it has been for a cover's travel, and
+    // stuck after. Readings held over a quiet link are timed to when it went
+    // quiet, which is as late as they are known; without that moment their
+    // age is unknown, and the cover is never stuck.
+    const asOf         = link.stale ? link.since : now;
+    const partFor      = coverPartWay ? (asOf ?? NaN) - seen.partSince : NaN;
+    // False for NaN: a cover not part-way, or readings of unknown age.
+    const partStuck    = partFor >= travelMs;
+    const coverStuck   = coverReported && partStuck;
+    // No state change marks the moment it turns stuck.
+    this._awaitStuck(coverReported && coverPartWay && !link.stale ? travelMs - partFor : null);
+    const travelling   = coverPartWay && !partStuck;
+    // A press from rest waits for the cover to leave it, and is dropped as soon
+    // as it does. A press from a cover stuck, in error or unread changes no
+    // reading while it waits, so it holds only its own button.
+    const pressPending = atRest(seen.press?.from);
+    const coverMoving  = pressPending || travelling;
+    // Which way it is going: the press, else away from where this card last
+    // saw it at rest; null for a cover first seen moving.
+    const coverOpening = seen.press?.open
+      ?? { Closed: true, Open: false }[seen.rest] ?? null;
+    const cover        = travelling ? "Moving" : COVER[coverState] ?? safe(coverState);
+    // The switch exists only on a panel that can move its cover, and reads
+    // `unknown` for one part-way, which is when it needs a button most.
+    const canCover     = flatConnected && !!h.states[coverId]
+      && state(h, coverId) !== "unavailable";
+    const flatLit      = onOff(h, flatLightId);
+    const flatLevel    = numState(h, flatLevelId, 0);
+    const flatMax      = h.states[flatLevelId]?.attributes?.max;
+    // The number is unavailable on a panel reporting no range; a maximum of 1
+    // is a light that only switches, which Light already says.
+    const dimmable     = flatLit !== null && flatLevel !== "—" && !(flatMax <= 1);
+    const coverFault   = coverReported && coverState === "Error";
+    // Flats and darks run behind a closed cover; a light saved since it closed
+    // is blank, and so is every one after it until the cover opens. It stays
+    // on through the panel disconnecting, which a sequence may do mid-run.
+    const behindCoverId = this._eid("binary_sensor", "flat_panel_light_frames_behind_closed_cover");
+    const behindCover  = isOn(h, behindCoverId);
+    const flatWarning  = coverFault || coverStuck || behindCover ? "danger" : null;
+    // A fault outlives the panel disconnecting; the chip says it is down.
+    const flatChip     = flatConnected ? "Flat Panel" : "Flat Panel disconnected";
 
     const target       = state(h, this._eid("sensor", "sequence_target"), "No target");
     // Ships disabled and reads `unknown` on a Target Scheduler rig; a bar at 0%
@@ -451,7 +689,6 @@ class NinaObservatoryCard extends HTMLElement {
     // Unsynced, N.I.N.A. reports the mechanical angle as the sky angle.
     const rotSky       = isOn(h, this._eid("binary_sensor", "rotator_synced"))
       ? numState(h, rotatorId, 1) : "—";
-    // Ships disabled.
     const rotMech      = numState(h, this._eid("number", "rotator_mechanical_position"), 1);
 
     // NaN rather than 0 when there is no reading: a missing RMS rendered as
@@ -464,7 +701,7 @@ class NinaObservatoryCard extends HTMLElement {
 
     const hfr          = numState(h, this._eid("sensor", "last_image_hfr"), 2);
     const stars        = shown(state(h, this._eid("sensor", "last_image_star_count")));
-    const meanAdu      = shown(state(h, this._eid("sensor", "last_image_mean_adu")));
+    const meanAdu      = numState(h, this._eid("sensor", "last_image_mean_adu"), 0);
 
     // RMS bar widths (max = 4 arcsec = 100%)
     const rmsMax = 4;
@@ -473,6 +710,7 @@ class NinaObservatoryCard extends HTMLElement {
 
     const [status, dot] = link.lost ? ["Unreachable", "dot-warn"]
       : link.stale ? ["Not answering", "dot-warn"]
+      : wait ? [waitCountdown(wait), "dot-on"]
       : seqRunning ? ["Session active", "dot-on"] : ["Standby", "dot-off"];
     // The park row, not the RA probe, which a user may disable.
     const mountStatus = !available(h, parkedId) ? ""
@@ -483,6 +721,24 @@ class NinaObservatoryCard extends HTMLElement {
       `<button class="nina-btn${cls && ` ${cls}`}" id="${id}"`
       + `${off ? ` disabled title="${off}"` : ""}>${label}</button>`;
     const LOST = link.lost ? "N.I.N.A. unreachable" : "N.I.N.A. is not answering";
+    const coverOpen  = (off) =>
+      btn("btn-cover-open", "🌕 Open Flat Cover", "", off || (flatLit ? COVER_LIT : ""));
+    const coverClose = (off) => btn("btn-cover-close", "🌑 Close Flat Cover", "", off);
+    const coverPressed = (open) => seen.press?.open === open ? COVER_SENT : "";
+    // One button for a cover at rest, and the one it is moving by, held until
+    // it arrives. Stuck part-way, in error or unread, it may need moving
+    // either way.
+    const coverButtons = () => {
+      if (!canCover) return [];
+      if (coverMoving) {
+        if (coverOpening === true) return [coverOpen(COVER_MOVING)];
+        if (coverOpening === false) return [coverClose(COVER_MOVING)];
+        return [btn("btn-cover-moving", "⏳ Flat Cover Moving", "", COVER_MOVING)];
+      }
+      if (coverState === "Open") return [coverClose()];
+      if (coverState === "Closed") return [coverOpen()];
+      return [coverOpen(coverPressed(true)), coverClose(coverPressed(false))];
+    };
     // With no current state to choose either of a pair, the set is fixed:
     // commands that end activity stay live, the rest wait.
     const controls = quiet ? [
@@ -521,6 +777,7 @@ class NinaObservatoryCard extends HTMLElement {
           ? btn("btn-stop-guide", "◼ Stop Guiding", "danger")
           : btn("btn-start-guide", "▶ Start Guiding", "success", unread(guiding, "guider")),
       ],
+      coverButtons(),
     ];
 
     const showFlipWarning =
@@ -534,16 +791,34 @@ class NinaObservatoryCard extends HTMLElement {
           </div>`;
 
     // What a folded heading cues: what needs attention in the section it hides
-    // — an RMS bar past its limit, the cooler off or guiding stopped mid-session,
-    // a device lost mid-session, or a mount not known parked with the link down.
+    // — an RMS bar past its limit, the cooler off mid-session, a guider not
+    // guiding while lights are saved, a device lost mid-session, or a mount
+    // not known parked with the link down.
     // Lost is a row reading `unavailable`, not a missing one: a user may disable
     // an entity, and a disabled entity has no row at all.
     const lost = (id) => seqRunning && !quiet && h.states[id]?.state === "unavailable";
     const camLost = lost(this._eid("sensor", "camera_state"));
     const mntLost = lost(parkedId);
     const worstRms = worst([rmsClass(rmsRa), rmsClass(rmsDec)]);
+    // Guiding stopped, or PHD2 running but not guiding, while lights are saved,
+    // which leaves them unguided. Only once it has lasted: PHD2 finds a lost
+    // star again, and loops while guiding restarts. A flip and a wait both
+    // stop guiding on purpose.
+    const offGuide = seqRunning && !quiet && !flipping && !wait
+      ? notGuiding(h, {
+        status: gdrStatusId,
+        rms: this._eid("sensor", "guider_rms_total"),
+        guider: guiderId,
+        lights: this._eid("sensor", "last_image_hfr"),
+      }, NOT_GUIDING_GRACE)
+      : null;
+    // A light saved is a new state, so only the grace needs a timer.
+    this._awaitNotGuiding(offGuide?.lit && offGuide.left ? Math.ceil(offGuide.left * 1000) : null);
+    const notGuidingWarning = offGuide?.lit && offGuide.left === 0 ? offGuide.warning : "";
+    // The open card's word for what the folded one warns of.
+    const guiderChip = notGuidingWarning ? GUIDER_CHIP[offGuide.kind] : "";
     const guidingLevel = guided && worstRms ? worstRms
-      : seqRunning && !quiet && guiding === false && !flipping ? "warn" : null;
+      : notGuidingWarning ? "warn" : null;
     const cameraLevel = camLost ? "danger"
       : seqRunning && !quiet && cooling === false ? "warn" : null;
     const mountLevel = quiet && !parked ? "warn" : mntLost ? "danger" : null;
@@ -552,9 +827,12 @@ class NinaObservatoryCard extends HTMLElement {
     // rig idle by day has every reason to be disconnected.
     const faults = [
       !unreachable && shutter === "error" ? "Dome shutter error" : "",
+      coverFault ? "Flat panel cover error" : "",
+      coverStuck ? "Flat panel cover stuck part-way" : "",
+      behindCover ? "Light frames behind the closed flat cover" : "",
       camLost ? "Camera disconnected" : "",
       mntLost ? "Mount disconnected" : "",
-      seqRunning && !quiet && gdrConnected && guiding === false && !flipping ? "Guiding stopped" : "",
+      notGuidingWarning,
     ].filter(Boolean);
     const faultAlert = faults.length
       ? `<div class="fault-alert">⚠️ ${faults.join(" · ")}</div>` : "";
@@ -598,7 +876,7 @@ class NinaObservatoryCard extends HTMLElement {
           <span class="dot ${dot}"></span>
           ${CHEVRON}
         </div>
-        ${fold.banner(worst([cameraLevel, mountLevel, guidingLevel]))}
+        ${fold.banner(worst([cameraLevel, mountLevel, guidingLevel, flatWarning]))}
 
         ${!fold.open("card") ? (folded.length ? `
         <div class="body${link.stale ? " stale" : ""}">${folded.join("")}</div>` : "") : `
@@ -608,8 +886,10 @@ class NinaObservatoryCard extends HTMLElement {
           ${unreachable ? linkBanner(link, canClose) : `
           <div class="session-banner">
             <div>
-              <div class="target">${seqRunning ? target : "—"}</div>
-              <div style="font-size:0.68rem;color:var(--muted);margin-top:2px;">${imaging ? "Imaging" : seqRunning ? "Running, not imaging" : "Sequence not running"}</div>
+              <div class="target">${seqRunning && wait?.kind !== "scheduler" ? safe(shown(target)) : "—"}</div>
+              <div style="font-size:0.68rem;color:var(--muted);margin-top:2px;">${wait ? `${waitReason(wait)}${waitEnds}`
+                : imaging ? "Imaging"
+                : seqRunning ? "Running, not imaging" : "Sequence not running"}</div>
             </div>
             <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
               ${isNaN(progress) ? "" : `
@@ -626,8 +906,12 @@ class NinaObservatoryCard extends HTMLElement {
             ${chip("Mount", mntConnected)}
             ${chip("Focuser", focConnected)}
             ${chip("Filter Wheel", fwConnected)}
-            ${chip("Guider", gdrConnected)}
+            ${guiderChip ? chip(`Guider · ${guiderChip}`, true, "warn") : chip("Guider", gdrConnected)}
             ${rotConnected ? chip("Rotator", true) : ""}
+            ${coverFault ? chip(`${flatChip} · cover error`, flatConnected, "fault")
+              : coverStuck ? chip(`${flatChip} · cover stuck`, flatConnected, "fault")
+              : behindCover ? chip(`${flatChip} · lights behind cover`, flatConnected, "fault")
+              : flatConnected ? chip("Flat Panel", true) : ""}
             ${!domeConnected ? ""
               : shutter === "error" ? chip("Dome · shutter error", true, "fault")
               : chip("Dome", true)}
@@ -666,8 +950,16 @@ class NinaObservatoryCard extends HTMLElement {
               ${rotMech === "—" ? "" : metric("Mechanical", rotMech, "°")}
             </div>`) : ""}
 
+          ${flatConnected ? section("flat_panel", `Flat Panel${flatLit ? " · 💡 Lit" : ""}`, `
+            <div class="metric-grid">
+              ${coverState === "NotPresent" ? "" : metric("Cover", cover, "")}
+              ${flatLit === null ? "" : metric("Light", flatLit ? "On" : "Off", "")}
+              ${!dimmable ? "" : metric("Brightness", flatLevel, flatMax ? ` / ${flatMax}` : "")}
+            </div>`, flatWarning) : ""}
+
           ${gdrConnected ? section("guiding",
-            `Guiding · ${guiding === null ? "" : guiding ? "Active · " : "Stopped · "}bars full scale 4"`, `
+            `Guiding · ${guiding === null ? ""
+              : guiding ? `${safe(guiderStatus(state(h, gdrStatusId)))} · ` : "Stopped · "}bars full scale 4"`, `
               <div class="guider-meter">
                 <div style="font-size:0.72rem;color:var(--muted);">
                   Total RMS: <strong style="color:var(--text)">${guided ? `${rmsTotal.toFixed(2)}"` : "—"}</strong>
@@ -698,7 +990,8 @@ class NinaObservatoryCard extends HTMLElement {
           <div class="section controls">
             ${fold.heading("controls", "section-title", "Controls")}
             ${fold.open("controls")
-              ? controls.map((row) => `<div class="btn-row">${row.join("")}</div>`).join("")
+              ? controls.filter((row) => row.some(Boolean))
+                .map((row) => `<div class="btn-row">${row.join("")}</div>`).join("")
               : safetyRow}
           </div>
 
@@ -706,14 +999,18 @@ class NinaObservatoryCard extends HTMLElement {
       </ha-card>
     `;
 
-    this._collapse.keepFocus(() => { this.shadowRoot.innerHTML = html; });
+    if (html === this._html) return;
+    this._html = html;
+    this._collapse.keepFocus(() => patch(this.shadowRoot, html));
     this._attachListeners();
   }
 
+  // `onclick`, not a listener: a patched render keeps its buttons, and a
+  // listener added on every render would fire once for each.
   _attachListeners() {
     const bind = (id, fn) => {
       const el = this.shadowRoot.getElementById(id);
-      if (el) el.addEventListener("click", fn);
+      if (el) el.onclick = fn;
     };
     const svc = (s, d, ask = CONFIRM[s]) => {
       if (ask && !window.confirm(ask)) return;
@@ -732,18 +1029,59 @@ class NinaObservatoryCard extends HTMLElement {
     bind("btn-warm",       () => svc("camera_warm", { minutes: 20 }));
     bind("btn-start-guide",() => svc("guider_start"));
     bind("btn-stop-guide", () => svc("guider_stop"));
+    bind("btn-cover-open", () => this._setCover(true));
+    bind("btn-cover-close",() => this._setCover(false));
+  }
+
+  // The button pressed stays, disabled, until the cover leaves the state it
+  // was pressed in. A refused call releases it; Home Assistant shows the error.
+  // The action refuses a close while a sequence runs unless forced, so one the
+  // viewer confirmed over a running sequence is.
+  _setCover(open) {
+    const force = !open && this._seqRunning;
+    const ask = open ? CONFIRM_COVER_OPEN
+      : force ? CONFIRM_COVER_CLOSE_RUNNING : CONFIRM_COVER_CLOSE;
+    if (!window.confirm(ask)) return;
+    const press = { from: this._cover.state, open, at: Date.now() };
+    this._cover.press = press;
+    this._render();
+    this._callService("nina_astrophotography", "flat_panel_set_cover",
+                      force ? { open, force } : { open })
+      .catch(() => {
+        if (this._cover.press !== press) return;
+        this._cover.press = null;
+        this._render();
+      });
   }
 
   getCardSize() { return 8; }
 
-  static getConfigForm() { return configForm(); }
+  static getConfigForm() {
+    return configForm([
+      {
+        name: "cover_stuck_after",
+        label: "Flat cover stuck after",
+        helper: "How long the flat panel's cover may read part-way before the "
+          + "card shows it as stuck. Longer than your cover takes to open or close, "
+          + "plus 10 s: the cover is read every 10 s.",
+        default: DEFAULT_COVER_STUCK_AFTER,
+        selector: {
+          number: {
+            min: MIN_COVER_STUCK_AFTER, max: MAX_COVER_STUCK_AFTER,
+            mode: "box", unit_of_measurement: "s",
+          },
+        },
+      },
+    ]);
+  }
 
   static getStubConfig() {
     return {};
   }
 }
 
-// `fault` marks a connected device reporting a failure of its own.
+// `fault` marks a device reporting a failure of its own, or holding one it
+// reported before it disconnected.
 function chip(label, connected, fault = "") {
   return `<div class="equip-chip ${connected ? "connected" : "disconnected"}${fault && ` ${fault}`}">
     ${statusDot(connected)} ${label}

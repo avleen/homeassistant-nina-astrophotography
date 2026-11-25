@@ -63,6 +63,7 @@ from .entity import (
     usable,
 )
 from .sequence import progress_percent
+from .session import RecentFrame
 
 PARALLEL_UPDATES = 0
 
@@ -212,31 +213,36 @@ _BY_TARGET = _breakdown("by_target")
 _BY_FILTER = _breakdown("by_filter")
 
 
-def _recent_frames(data: NinaData) -> tuple[Mapping[str, Any], ...]:
-    """Recent frames of every type, newest first, for the image panel card.
-
-    The fields are hand-picked: this is the card's contract, not `Frame`'s.
+def _recent_frame(recent: RecentFrame) -> Mapping[str, Any]:
+    """One `recent_frames` entry. The fields are hand-picked: this is the
+    card's contract, not `Frame`'s.
     Each frame carries its own readings, which the `last_image_*` sensors hold
-    only for the newest light.
+    only for the newest light, and the `age` the image proxy fetches it by.
     """
-    return tuple(
-        {
-            "date": frame.date.isoformat(),
-            "filename": frame.filename,
-            "image_type": frame.image_type,
-            "target": frame.target_name,
-            "filter": frame.filter_name,
-            "exposure": frame.exposure_time,
-            "hfr": frame.hfr,
-            "stars": frame.stars,
-            "rms": frame.rms_arcsec,
-            "mean": frame.mean,
-            "median": frame.median,
-            "min": frame.min,
-            "max": frame.max,
-        }
-        for frame in data.recent_frames
-    )
+    frame = recent.frame
+    return {
+        "age": recent.age,
+        "date": frame.date.isoformat(),
+        "filename": frame.filename,
+        "image_type": frame.image_type,
+        "target": frame.target_name,
+        "filter": frame.filter_name,
+        "exposure": frame.exposure_time,
+        "hfr": frame.hfr,
+        "stars": frame.stars,
+        "rms": frame.rms_arcsec,
+        "mean": frame.mean,
+        "median": frame.median,
+        "min": frame.min,
+        "max": frame.max,
+    }
+
+
+def _recent_frames(data: NinaData) -> tuple[Mapping[str, Any], ...]:
+    """The newest frames of any type, then the newest lights, newest first, for
+    the image panel card.
+    """
+    return tuple(map(_recent_frame, data.recent_frames))
 
 
 def _recent_lights(data: NinaData) -> tuple[Mapping[str, Any], ...]:
@@ -247,6 +253,8 @@ def _recent_lights(data: NinaData) -> tuple[Mapping[str, Any], ...]:
             "target": frame.target_name,
             "filter": frame.filter_name,
             "exposure": frame.exposure_time,
+            "gain": frame.gain,
+            "offset": frame.offset,
             "hfr": frame.hfr,
             "stars": frame.stars,
             "mean": frame.mean,
@@ -735,8 +743,12 @@ EQUIPMENT: tuple[NinaSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         kind="flat_device",
         # Beside `switch.flat_panel_cover`, which cannot express a cover stuck
-        # half-way (`NeitherOpenNorClosed`).
-        value=read_field("flat_device", "cover_state"),
+        # half-way (`NeitherOpenNorClosed`). A fault outlives the panel
+        # disconnecting, so an alert timing it still sees it.
+        value=lambda data: (
+            read_field("flat_device", "cover_state")(data) or data.cover_fault_held
+        ),
+        survives_disconnect=lambda data: data.cover_fault_held is not None,
     ),
     # ── Sequence ─────────────────────────────────────────────────────────
     NinaSensorDescription(

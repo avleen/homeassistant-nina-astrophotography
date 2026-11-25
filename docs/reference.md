@@ -16,8 +16,10 @@ instance name `N.I.N.A.` the prefix is `n_i_n_a`, so
 - [Sessions](#sessions)
 - [Is the rig working?](#is-the-rig-working)
 - [The imaging stall alert blueprint](#the-imaging-stall-alert-blueprint)
+- [The guider not guiding blueprint](#the-guider-not-guiding-blueprint)
 - [Weather](#weather)
 - [Flats](#flats)
+  - [Flat panel cover and light](#flat-panel-cover-and-light)
 - [Autofocus](#autofocus)
 - [The autofocus curve attributes](#the-autofocus-curve-attributes)
 - [Other attributes](#other-attributes)
@@ -82,8 +84,8 @@ the readings your source actually provides.
 | Filter Wheel | filter (`select`); moving (`binary_sensor`) |
 | Guider | RMS total, RA and declination, status; guider (`switch`); clear calibration (`button`) |
 | Rotator | position, mechanical position (`number`); reverse (`switch`); moving, synced (`binary_sensor`) |
-| Flat Panel | cover state; brightness (`number`); light (`light`); cover (`switch`) |
-| Weather | temperature, humidity, dew point, pressure, wind speed/direction/gust, rain rate, sky brightness, sky temperature, cloud cover, sky quality, star FWHM |
+| Flat Panel | cover state; brightness (`number`); light (`light`); cover (`switch`); light frames behind closed cover (`binary_sensor`) |
+| Weather | temperature, humidity, dew point, pressure, wind speed/direction/gust, rain rate, sky brightness, sky temperature, cloud cover, sky quality, star FWHM; readings frozen (`binary_sensor`) |
 | Safety Monitor | unsafe, connected (`binary_sensor`) |
 | Dome | shutter status; azimuth (`number`); following (`switch`); at park, at home, slewing, synchronized (`binary_sensor`); open, close, park, home (`button`) |
 | Switch | one entity per channel the driver reports: a read-only channel is a `sensor`, an on/off channel a `switch`, a range a `number` |
@@ -109,10 +111,8 @@ These are disabled by default; enable them from the entity's settings page:
   position against temperature
 - `focuser_step_size`
 - the moving sensors of the focuser, filter wheel and rotator
-- the configuration controls `number.<instance>_camera_usb_limit`,
-  `number.<instance>_rotator_mechanical_position` and
-  `switch.<instance>_rotator_reverse`; the mechanical position adds a line to
-  the observatory card
+- the configuration controls `number.<instance>_camera_usb_limit` and
+  `switch.<instance>_rotator_reverse`
 - the dome's `binary_sensor.<instance>_dome_at_home`,
   `button.<instance>_dome_home` and `number.<instance>_dome_azimuth`:
   N.I.N.A. slaves the dome to the mount, and moving it by hand fights that
@@ -160,9 +160,22 @@ Two more entities explain why frames might not be arriving:
   waits for a target's start window, or while the sequence runs one of its own
   wait instructions: Wait for Time, Wait for Time Span, or a wait for the
   target, sun or moon to reach an altitude. `sensor.<instance>_wait_ends_at`
-  says until when, for a scheduler wait or a Wait for Time; the others name no
-  end. The wait doesn't say why: darkness, moon separation, target altitude and
-  a meridian window all look the same. An install from 2.5.1 or earlier keeps
+  says until when, for a scheduler wait, a Wait for Time, or an altitude wait
+  N.I.N.A. has an estimate for; a Wait for Time Span names no end. An altitude
+  wait's end is N.I.N.A.'s own estimate, shown to the minute, and the wait runs
+  until the altitude is reached, which can be a few minutes either side of it.
+  It has no end until the mount has connected since Home Assistant started,
+  since the mount's clock gives the rig's time zone.
+
+  N.I.N.A. sends that estimate as a time with no date, so it is read as the
+  next one from six hours before the read. Two waits are misread. One first
+  seen more than six hours past its estimate, after a restart, shows an end a
+  day later. One whose estimate is 18 to 24 hours ahead, which near the
+  solstice at a high latitude a wait from dawn to dusk can be, shows no end
+  and is taken as over twelve hours after it began.
+
+  The wait doesn't say why: darkness, moon separation, target altitude and a
+  meridian window all look the same. An install from 2.5.1 or earlier keeps
   the id `binary_sensor.<instance>_scheduler_waiting`.
 
   It reads whether a wait was running when the sequence was last read, which
@@ -174,13 +187,14 @@ Two more entities explain why frames might not be arriving:
   |---|---|
   | `kind` | `scheduler`, `time`, `time_span` or `altitude` |
   | `started_at` | when a read first showed it, up to one read after it began |
-  | `ends_at` | its end, for a scheduler wait or a Wait for Time |
+  | `ends_at` | its end, for a scheduler wait or a Wait for Time; N.I.N.A.'s estimate for an altitude wait |
   | `span_seconds` | a Wait for Time Span's length |
   | `recent_waits` | the last ten that ended, newest first, each with `kind`, `started_at`, `ended_at` and `span_seconds`; not recorded, and empty after a restart |
 
   A wait still showing as running after it must have ended is over: a Wait for
-  Time at its end, an altitude wait after twelve hours. A span still showing
-  past its length plus five minutes is taken as the next pass of a loop.
+  Time at its end, and an altitude wait an hour past its estimate or twelve
+  hours after it began, whichever is later. A span still showing past its
+  length plus five minutes is taken as the next pass of a loop.
 
   A wait for safe conditions is a loop that repeats until the monitor reads
   safe. If the loop holds a Wait for Time Span, this blinks `on` while the span
@@ -280,9 +294,71 @@ Limitations:
 - After a restart the quiet case waits the full quiet period (20 minutes by
   default) before it can fire, because its timers restart with Home Assistant.
 - A rig taking bad frames is not stalled; this blueprint won't notice it.
-  Guiding problems are covered by `guiding_alert.yaml`. A lost guide star that
-  stops frames will show up here as a stall, with the guider state in the
-  message.
+  Guiding problems are covered by `guiding_alert.yaml`, and a lost guide star
+  while lights keep arriving by `guider_not_guiding_alert.yaml`. A lost guide
+  star that stops frames will show up here as a stall, with the guider state
+  in the message.
+
+## The guider not guiding blueprint
+
+`guider_not_guiding_alert.yaml` notifies when lights are saved while the
+guider is not guiding: `sensor.<instance>_guider_status` reads `LostLock`,
+`Looping`, `Selected`, `Paused`, `Calibrating` or `Stopped`. `Stopped` covers
+a guide camera that drops out mid-night, which stops PHD2 while unguided
+lights keep arriving. The guiding alert cannot see any of this, since guide RMS
+reads `unknown` whenever PHD2 is not guiding.
+
+It alerts once the guider has not guided for three minutes, by default, and a
+light begun since it stopped has been saved, while
+`binary_sensor.<instance>_sequencer_running` is on and no meridian flip or
+sequence wait is under way. Both stop and restart guiding on purpose, a flip's
+calibration included. An autofocus run or a plate solve exposes without saving
+a light, so autofocus and plate solving never alert on their own, and neither
+does a guider N.I.N.A. stopped for one. A light begun while PHD2 calibrates
+does alert: N.I.N.A. takes none while it calibrates for its own guider start.
+A light begun before guiding stopped is partly guided, and does not count.
+
+The notification names the status. `LostLock` is either a lost guide star or
+what a stop leaves behind, such as guiding that never restarted after an
+autofocus run: the guider status cannot tell them apart, so the message says
+only that the guider has not guided.
+
+The time runs from when guide RMS turned `unknown`, so a lock lost, then
+looping, then lost again is one stretch, and guiding again ends it. It is
+checked each time a light is saved, and when RMS has read `unknown` for the
+time. So it alerts the set time after guiding stopped at the earliest, and at
+the latest when the first light begun after guiding stopped is saved, which is
+one exposure later.
+
+It alerts again for the same stretch at most once per cooldown, 15 minutes by
+default; a stretch that begins after the last alert alerts at once. A Home
+Assistant restart, or N.I.N.A. dropping out and coming back, starts the
+stretch again, so the same stretch can then alert again inside the cooldown.
+
+Patchy cloud that makes PHD2 alternate between `LostLock` and `Guiding` ends
+the stretch each time it guides, so this never fires for it, and neither does
+the card; a cloud sensor covers that case.
+
+The light gate compares when a light began, from N.I.N.A.'s stamp less its
+exposure, with when Home Assistant saw guiding stop. N.I.N.A. stops guiding a
+few seconds after saving a light, so only a rig clock ahead of Home
+Assistant's by more than a whole exposure could make that light count.
+
+To image unguided on purpose, disconnect the guider in N.I.N.A.
+
+Three minutes is longer than PHD2 needed on one Target Scheduler rig over ten
+nights. Mid-session, it found a lost star again within 10 to 35 seconds, and
+looped for 10 to 20 seconds while guiding restarted, and twice for a minute.
+
+The observatory card warns of the same, by the same light gate, while a
+sequence runs, but its three minutes are fixed and it has no cooldown: it warns for as long as it holds. Its
+Guider chip turns orange, a collapsed card says "Guiding stopped", "Guide star
+lost", "Guider looping, not guiding", "Guider paused, not guiding" or "Guider
+calibrating, not guiding", and a collapsed Guiding heading shows a warning dot.
+The Guiding heading names the status, `Lost lock` or `Looping`, from the moment
+it changes. The card also needs the guider switch to tell a guider stopped from
+one that has lost its star, since a stop can leave `LostLock` behind; without
+the switch it warns only of `Stopped`.
 
 ## Weather
 
@@ -300,6 +376,46 @@ formula, which adds under 0.35 °C to the error of the humidity reading itself.
 The weather card's dew alert and any automation on the sensor then work as
 they would with a dew point sensor.
 The source's own dew point is used whenever it reports one.
+
+A station, feed or driver that stops updating keeps reporting connected, with
+every channel still available at its last value, so nothing else shows it.
+N.I.N.A. does the same when a driver throws on every read: it serves the last
+good value. `binary_sensor.<instance>_weather_readings_frozen` turns `on` once
+every channel has held exactly the same value for:
+
+- an hour, on a station: its temperature, humidity, pressure or IR sky
+  temperature moves within that;
+- two hours, on one of N.I.N.A.'s own web sources (OpenWeatherMap, Open-Meteo,
+  The Weather Company, Weather Underground). N.I.N.A. queries them every ten
+  minutes, but a provider may refresh its readings less often;
+- fifteen minutes, when the sky brightness reads over 10 lx with the sun below
+  −12°: a daytime reading held into the night. The sun is placed at the rig's
+  site from its N.I.N.A. profile, else at Home Assistant's location.
+
+Change the first two under **Settings → Devices & Services → N.I.N.A.
+Astrophotography → Configure → Weather Station Freeze Window** and **Web
+Weather Source Freeze Window**, in minutes. Give a station that reports in
+coarse steps longer, and set the web window above your provider's refresh
+interval, or a working source reads frozen for the last stretch of every
+refresh. The fifteen minutes is fixed.
+
+Its `frozen_since` attribute is the first poll that read those values. It
+judges only a source that reports at least one of temperature, humidity, dew
+point, pressure and sky temperature, since rain, wind, cloud cover and sky
+brightness can all hold through a still, clear night. Every channel has to
+hold, so one stuck sensor beside working ones is not caught. A source that
+comes back from a disconnect, or a N.I.N.A. restart, on the readings it froze
+on is still frozen; Home Assistant starting measures afresh.
+
+The channels stay available, so an automation that should not act on frozen
+readings has to check this sensor. Reconnecting the weather source in N.I.N.A.
+clears a driver that stopped reading, such as N.I.N.A.'s OpenWeatherMap client
+after a network error; if the readings still hold, the station or its feed has
+stopped. The weather card shows the freeze in place of a safe verdict and dims
+the readings. The weather readings frozen blueprint notifies; the unsafe
+conditions abort holds its resume while the sensor is on, and the imaging
+stall alert stops letting an unsafe verdict mute it, once you pick the sensor
+in each.
 
 Don't use weather readings to decide it's safe to image. Forecast-based
 sources such as OpenMeteo are gridded forecasts updated every 10 minutes, and
@@ -330,6 +446,124 @@ How a flat run shows up elsewhere:
   `unavailable` until it connects again. While N.I.N.A. is using the panel,
   don't let a scene or automation change its light or brightness; it will
   spoil the flats.
+### Flat panel cover and light
+
+The flat panel's cover and light are guarded against lighting a panel that
+shines into the observatory, and against closing the cover on a running
+sequence's lights.
+
+- **Lighting needs a closed cover.** On a panel with a cover, turning the light
+  on (`light.<instance>_flat_panel_light`, `flat_panel_set_light`) and any
+  brightness above the panel's minimum (`flat_panel_set_brightness`,
+  `number.<instance>_flat_panel_brightness`) are refused unless the cover reads
+  `Closed`. That includes a cover whose driver reports `Unknown` or no state,
+  as some Alpaca and DIY drivers do until the cover's first move; closing it
+  through Home Assistant clears that. The brightness refusal applies on
+  N.I.N.A.'s native drivers (Alnitak, Pegasus) too, where a brightness alone
+  does not light the panel, because the integration cannot tell which kind
+  of driver it has. A panel with no cover is exempt. Switching off and
+  setting the minimum are always allowed, and a disconnected panel reports no
+  cover, so N.I.N.A. refuses it itself.
+- **Opening needs a dark panel.** `flat_panel_set_cover` open and
+  `switch.<instance>_flat_panel_cover` on are refused while the light is on.
+- **Closing while a sequence runs needs `force`.** `flat_panel_set_cover` with
+  `open: false` is refused while the sequencer runs, unless `force: true`: a
+  closed cover blanks every light frame the sequence takes after it. The cover
+  switch's turn-off is not held back, and the observatory card asks first, then
+  sends `force: true`.
+- N.I.N.A.'s Advanced API has no endpoint to halt a cover mid-travel; its flat
+  device endpoints are info, connect, disconnect, list-devices, rescan,
+  set-light, set-cover and set-brightness.
+- `binary_sensor.<instance>_flat_panel_light_frames_behind_closed_cover` is
+  `on` while the newest frame is a light exposed after the cover was seen
+  closed; flats and darks never turn it on, and nor does a light exposed
+  before N.I.N.A. reported the cover closed but saved after. It goes `off`
+  when the cover opens or a frame of another type follows, and after a Home
+  Assistant restart until the next light. It relies on the driver reporting
+  the cover `Closed`: a cover reading `Unknown` or `Error` cannot turn it on.
+  A sequence that disconnects the panel after closing its cover does not make
+  the sensor `unavailable`: it holds its reading through the disconnect until
+  N.I.N.A. reports the cover opened. A `FLAT-COVER-OPENED` missed while the
+  event socket is down leaves it held after an open-then-disconnect, so lights
+  can alert falsely until a connected reading shows the cover not closed. A
+  panel switched off or disconnected before the cover was seen closed reports
+  no cover and cannot warn; when it reconnects reading closed, the lights
+  taken before then do not turn the sensor on, and only a light after that
+  does.
+- `sensor.<instance>_flat_panel_cover_state` reads `NeitherOpenNorClosed` both
+  while the cover travels and when it is stuck part-way; some drivers never
+  turn a stuck cover into `Error`. On a panel that reports it cannot open or
+  close a cover, it reads `NotPresent` whatever the driver says. A part-way or
+  `Error` reading survives a panel disconnect until N.I.N.A. reports the cover
+  opened or closed after it was last seen at rest, or since the panel was last
+  down; any other reading is `unavailable` while the panel is down. What the
+  sensors hold is forgotten when Home Assistant restarts.
+- The observatory card shows a cover part-way for longer than its
+  `cover_stuck_after` as stuck. The option is 20 to 600 seconds, default 60,
+  in YAML and in the editor alike. The card keeps a held cover fault and the
+  behind-cover warning through a panel disconnect, and disables Open Flat
+  Cover while the panel is lit.
+- The **Flat cover fault** blueprint notifies after its own *Stuck after*
+  time, default 60 seconds, or at once on `Error`.
+- The cover is read every 10 seconds, so a cover can read part-way for up to
+  10 seconds longer than it takes to travel: set the card's
+  `cover_stuck_after` and the blueprint's *Stuck after* a little longer than
+  your cover's travel plus that read. Both count from the sensor's last
+  change:
+  - an outage that makes it `unavailable` restarts the count, so a link that
+    keeps dropping can hold off the alert indefinitely;
+  - the card, while N.I.N.A. is not answering, times the last readings to when
+    it went quiet, and with the Reachable sensor disabled does not show a
+    held reading as stuck.
+- The blueprint's optional *Only after a move* input (`after_move_only`,
+  default off) alerts on a part-way cover only when it reached it from `Open`
+  or `Closed`, for a driver that reads part-way while idle or unhomed. A cover
+  first read part-way never alerts, and an `Error` always does. With it on,
+  a cover left part-way when a sequence disconnects the panel alerts only if
+  it was read `Open` or `Closed` after the panel connected: on a rig whose
+  panel is down all day, a first reading already part-way never alerts.
+- The blueprint alerts for a cover already at fault when Home Assistant
+  starts, once its *Stuck after* time has passed, so each restart repeats the
+  alert while the fault lasts. Reloading or editing the automation while the
+  cover is already stuck drops the alert until the cover's state next changes.
+- A cover without position sensing reports where it was told to go, so a
+  jammed one reads `Open` or `Closed`, and neither the card nor the blueprint
+  can tell.
+- `number.<instance>_flat_panel_brightness` sets only the brightness, in the
+  panel's own units, and is a box input rather than a slider. On an ASCOM or
+  Alpaca panel a level above 0 also lights it, and 0 darkens it. After the
+  number is set to 0, or N.I.N.A. reconnects the panel, the next light-on that
+  sends no brightness, N.I.N.A.'s own light toggle included, comes on at full
+  brightness. A panel on one of N.I.N.A.'s native drivers, such as Alnitak's
+  or Pegasus's, keeps its light as it is. Use
+  `light.<instance>_flat_panel_light` to turn the panel on or off.
+- Turning the light on, or `flat_panel_set_light`, sends the brightness and
+  waits for the panel to report it, which takes a few seconds: N.I.N.A. reads
+  the panel once per device polling interval. A reading within one Home
+  Assistant step of the level sent, and never less than one of the panel's
+  own units, counts as that level, but never one at or below the minimum.
+  An ASCOM or Alpaca panel is lit by the brightness itself; a native one is
+  then switched on. A panel that does not report the level
+  within 30 seconds is refused with an error that names the level it reports
+  when it is lit at another one, and is not switched on, though an ASCOM or
+  Alpaca panel may still come on at the level sent.
+
+#### The flat panel left lit blueprint
+
+**Flat Panel Left Lit** (`flat_panel_left_lit_alert.yaml`) notifies when the
+panel's light has been on for *Lit with no flat for* (`lit_minutes`, default
+30, 5 to 240) with no FLAT saved by the same rig. Its other inputs are the
+`flat_panel_light` and `notify_target`.
+
+- Each FLAT saved restarts the count. It sees flats through the
+  `nina_image_save` event, so it relies on the event socket: with the socket
+  down, a flat run longer than the threshold alerts. A light or dark does not
+  count.
+- A light that is `unavailable` never alerts, and the count starts over once
+  it reads lit again.
+- It alerts once each time the panel is left lit. A panel already lit when
+  Home Assistant starts alerts once the time has passed, so a restart while
+  lit repeats the alert.
 
 ## Autofocus
 
@@ -599,20 +833,27 @@ card, an ApexCharts `data_generator`, or a template. For history, chart
   also sends `MOUNT-AFTER-FLIP`, so the sensor turning `off` does not prove the
   mount flipped.
 
-- `sensor.<instance>_last_image_mean_adu` has `recent_frames`: the newest
-  frames of every type, newest first, each with its target, filter, exposure,
-  HFR, star count, guide RMS and N.I.N.A.'s min, median, mean and max ADU. The
-  image panel card draws its ADU range from these, on an axis to the camera's
-  full scale, which it also reads from `recent_lights`. They are statistics,
+- `sensor.<instance>_last_image_mean_adu` has `recent_frames`: the 20 newest
+  frames of every type, then whichever of the 20 newest lights are older than
+  those, newest first. Each entry has its target, filter, exposure, HFR, star
+  count, guide RMS, N.I.N.A.'s min, median, mean and max ADU, and its `age`:
+  how many frames N.I.N.A. saved after it, which the image proxy fetches it
+  by. Without the older lights, twenty calibration frames in a row would
+  leave the image panel's Lights only button no light to show. The image
+  panel card draws its ADU range from these, on an axis to the camera's full
+  scale, which it also reads from `recent_lights`. They are statistics,
   not a histogram like the one in N.I.N.A.'s Statistics panel: the Advanced
   API publishes none. Building one means fetching the whole raw frame a second
   time, which a remote observatory is already sending elsewhere. Issue #178
   tracks doing it as an option.
 
 - `sensor.<instance>_last_image_hfr` has `recent_lights`: the session's
-  newest 60 lights, oldest first, each with its target, filter, exposure, HFR,
-  star count, and mean and max ADU. The frame statistics card draws its charts
-  from these.
+  newest 60 lights, oldest first, each with its target, filter, exposure, gain,
+  offset, HFR, star count, and mean and max ADU. The frame statistics card
+  draws its charts from these. N.I.N.A. does not report a frame's binning, so
+  it is not among them, and the card cannot tell a change of binning within
+  one filter from a change in focus: HFR is in pixels, and 2×2 roughly halves
+  it.
 
   Both cards read the camera's full scale from their frames' max: a camera
   that does not scale its data to 16 bits saturates at or below 4095 or 16383.
